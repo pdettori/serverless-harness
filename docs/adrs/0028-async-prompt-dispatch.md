@@ -1,6 +1,6 @@
 # ADR-0028: Async prompt dispatch as a `kind:"prompt"` leaf sharing the `/turn` core
 
-- **Status:** Proposed <!-- Proposed → Accepted → Superseded by ADR-NNNN / Deprecated -->
+- **Status:** Proposed, amended 2026-09-01 (see [Amendment](#amendment-2026-09-01-prompt-leaves-lease-a-pool-sandbox)) <!-- Proposed → Accepted → Superseded by ADR-NNNN / Deprecated -->
 - **Date:** 2026-08-25
 - **Deciders:** Serverless Harness team
 - **Spec:** [`../specs/2026-08-25-async-prompt-dispatch-design.md`](../specs/2026-08-25-async-prompt-dispatch-design.md)
@@ -40,6 +40,43 @@ default`) and inherits `/turn`'s `resolveSandboxConfig` sandbox routing.
 - Positive: a prompt behaves identically sync (`/turn`, `async:false`) or async (`async:true`) because it runs the *same* code; the `/runs` route, job runner, and KEDA `ScaledJob` are unchanged; prompt leaves inherit async resumability for free from the durable session log.
 - Negative / accepted cost: prompt leaves get no per-leaf pool isolation (they share `/turn`'s sandbox model), so a fleet of async prompts is not lease-bounded the way solve leaves are; `runTurn` is refactored, so its behavior is now pinned by a regression test rather than by being the only caller. A prompt leaf may still be addressed to a `workloadId` (the workload gates existence and returns 404 if absent), but its pool selector is intentionally ignored — the API boundary logs a warning rather than injecting a selector that `executeTurn` would silently drop.
 - Follow-up owed: pool-based isolation (a `selectPoolSandbox` lease) for prompt leaves, deferred until a driver needs it; extend `deploy/knative/leaf-async-smoke.sh` with a `responded` claim.
+
+## Amendment (2026-09-01): prompt leaves lease a pool sandbox
+
+The deferred follow-up above now has its driver, and the deferral turned out to cost more than
+"no per-leaf isolation". The remote-sandbox demo
+([`../demos/remote-sandbox-demo.md`](../demos/remote-sandbox-demo.md)) needs a free-form prompt to
+run its tool calls on a laptop container reached over the sandbox relay, and
+`SH_REMOTE_SANDBOX`/`SH_RELAY_ADDR` are read only on the lease path — so a prompt leaf could not
+reach a remote sandbox at all. Worse, on any deployment that configures a pool the way
+`deploy/knative/service.yaml` does (a `KAGENTI_SANDBOX_POOL_SELECTOR`, no `KAGENTI_SANDBOX_POD`),
+`resolveSandboxConfig` returned null and a prompt leaf's tool calls ran **in the harness container's
+own filesystem** — silently, and indistinguishably from a sandbox that happened to answer.
+
+**Amended decision.** `runPromptLeaf` leases through `selectPoolSandbox` exactly as the converge and
+solve paths do — heartbeat while the turn runs, release in a `finally` — and hands the leased
+sandbox to the turn. `executeTurn` gains an optional pre-leased `sandbox`; `resolveTurnSandbox`
+returns it verbatim when present and otherwise falls back to `resolveSandboxConfig`, so **`/turn`
+is unchanged**. This is a superset rather than a swap: with no pool selector configured
+`selectPoolSandbox` performs that same single-pod resolution itself.
+
+The alternative rejected above ("imports the saturation/503 path") is accepted as a consequence
+rather than avoided: saturation propagates as `{status:"failed", reason:"saturated"}`, which the
+sync `/runs` path bounded-waits then 503s on, and which `classifyOutcome` already keeps retryable
+for the async queue. Suppressing it would have taken extra code to be less consistent. The
+"identical sync or async" promise is preserved — both paths run the same `runPromptLeaf` — but a
+prompt leaf can now 503 on a saturated pool, where before it could not.
+
+A second, smaller contract change falls out of the `finally` that releases the lease: a throw from
+the turn is now caught and returned as `{status:"failed", reason:"error"}` instead of propagating
+out of `runLeaf` (which the sync route turned into a `500`). That matches what the converge and
+solve paths have always done, and `classifyOutcome` already treats `error` as retryable, so the
+async queue behaves the same as before.
+
+- Still deferred: a **workload-addressed** prompt leaf (`workloadId`) continues to ignore the
+  workload's own `sandboxSelector`, and the API boundary still logs that warning. The envelope's
+  `sandboxPoolSelector` is honored now, so only the workload-resolver special case remains, and
+  whether a workload's pool should bound its prompt leaves is a separate call from this one.
 
 ---
 

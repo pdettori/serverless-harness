@@ -2,10 +2,10 @@
 # deploy/knative/tests/lib-relay-shared.test.sh
 #
 # Locks the property lib-relay.sh exists to provide: the assertions that decide whether a
-# remote-sandbox proof HOLDS are defined once and shared by both callers. Nothing else
-# enforces it -- a future edit can re-inline a copy of validate_discriminator or
-# assert_verdict into either script and every existing check still passes, while the two
-# proofs quietly drift apart and one keeps asserting something the other dropped.
+# remote-sandbox proof HOLDS are defined once in lib-relay.sh. Nothing else enforces it -- a
+# future edit can re-inline a copy of validate_discriminator or assert_verdict into either
+# script and every existing check still passes, while the two proofs quietly drift apart and
+# one keeps asserting something the other dropped.
 #
 # Static: greps the scripts, runs no cluster and no kubectl. Complements the live gate
 # (RELAY_LIVE_SMOKE=1 relay-leaf-smoke.sh), which cannot run in CI.
@@ -17,8 +17,21 @@ LIB="$DIR/lib-relay.sh"
 CALLERS=("$DIR/relay-leaf-smoke.sh" "$DIR/demo-remote-worker.sh")
 
 # The assertions whose duplication would let the two proofs disagree about what "passing"
-# means. Not every helper in lib-relay.sh -- only the ones that decide a verdict.
-SHARED_FNS=(validate_discriminator assert_verdict dispatch_pattern assert_no_pods_match count_pool_pods)
+# means. Not every helper in lib-relay.sh -- only the ones that decide an outcome.
+#
+# The two callers now dispatch differently ON PURPOSE, and both pairs are locked here:
+#   - demo-remote-worker.sh uses dispatch_prompt + assert_reply_contains/_lacks, whose reply
+#     NAMES the OS the model read -- that is what the demo has to show a room.
+#   - relay-leaf-smoke.sh keeps dispatch_pattern + assert_verdict, whose binary CLEAR/FLAGGED
+#     is the stronger gate for a live smoke that cannot run in CI.
+# What must NOT diverge is the placement machinery both proofs rest on
+# (validate_discriminator, assert_no_pods_match, count_pool_pods) -- and neither pair may be
+# re-inlined into a caller, or the two proofs can drift apart exactly as before.
+SHARED_FNS=(
+  validate_discriminator assert_no_pods_match count_pool_pods
+  assert_verdict dispatch_pattern
+  dispatch_prompt assert_reply_contains assert_reply_lacks reply_text
+)
 
 FAILS=0
 pass() { echo "  ok: $1"; }

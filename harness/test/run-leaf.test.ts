@@ -384,3 +384,100 @@ it("solve without env_key uses convergeWorkspace, not swebench setup", async () 
   expect(isSwebenchEnvelope({ kind: "solve", problemStatement: "x", repoUrl: "git://h/r.git", ref: "main" })).toBe(false);
   expect(isSwebenchEnvelope({ kind: "solve", problemStatement: "x", repoUrl: "/repos/a/b.git", ref: "c", env_key: "k:latest" })).toBe(true);
 });
+
+describe("runPromptLeaf sandbox leasing", () => {
+  const FAKE_CONFIG = { pod: "sandbox-0", namespace: "default", context: undefined, podCwd: "/workspace", headCwd: "/head" };
+  const base: LeafEnvelope = {
+    sessionId: "run-1/i1", item: { item_id: "x", file: "f", pattern: "p" },
+    kind: "prompt", prompt: "Read /etc/os-release and name the distro.",
+  };
+  const okTurn = () => vi.fn(async () => ({ sessionId: "run-1-i1", response: "RHEL 9.8", stopReason: "end_turn" }));
+
+  // A leased sandbox reaches the turn only if runPromptLeaf hands it over: before this, a prompt
+  // leaf resolved its own sandbox from process.env and the lease was never consulted.
+  it("hands the leased grpc transport to the turn so tool calls reach the remote sandbox", async () => {
+    const transport = { exec: vi.fn(async () => ({ stdout: Buffer.from(""), exitCode: 0, truncated: false })), close: vi.fn(async () => {}) };
+    selectPoolSandboxMock.mockReset().mockResolvedValue({
+      config: FAKE_CONFIG, transport, heartbeat: vi.fn(async () => {}), release: vi.fn(async () => {}),
+    });
+    const executeTurn = okTurn();
+
+    await runLeaf(base, undefined, { executeTurn });
+
+    expect(executeTurn).toHaveBeenCalledWith(expect.objectContaining({
+      sandbox: { config: FAKE_CONFIG, transport },
+    }));
+  });
+
+  it("asks for remote candidates when SH_REMOTE_SANDBOX=1", async () => {
+    selectPoolSandboxMock.mockReset().mockResolvedValue({
+      config: FAKE_CONFIG, heartbeat: vi.fn(async () => {}), release: vi.fn(async () => {}),
+    });
+    const prev = process.env.SH_REMOTE_SANDBOX;
+    process.env.SH_REMOTE_SANDBOX = "1";
+    try {
+      await runLeaf(base, undefined, { executeTurn: okTurn() });
+    } finally {
+      if (prev === undefined) delete process.env.SH_REMOTE_SANDBOX; else process.env.SH_REMOTE_SANDBOX = prev;
+    }
+
+    expect(selectPoolSandboxMock).toHaveBeenCalledWith(
+      expect.any(Object), expect.any(String), expect.any(String),
+      expect.objectContaining({ remoteSandbox: true }),
+    );
+  });
+
+  it("uses a request-scoped sandbox pool selector", async () => {
+    selectPoolSandboxMock.mockReset().mockResolvedValue({
+      config: FAKE_CONFIG, heartbeat: vi.fn(async () => {}), release: vi.fn(async () => {}),
+    });
+
+    await runLeaf({ ...base, sandboxPoolSelector: "sh.kagenti.io/sandbox-pool=demo-remote-only" },
+      undefined, { executeTurn: okTurn() });
+
+    expect(selectPoolSandboxMock).toHaveBeenCalledWith(
+      expect.objectContaining({ KAGENTI_SANDBOX_POOL_SELECTOR: "sh.kagenti.io/sandbox-pool=demo-remote-only" }),
+      expect.any(String), expect.any(String), expect.any(Object),
+    );
+  });
+
+  it("maps pool saturation to failed/saturated rather than throwing", async () => {
+    selectPoolSandboxMock.mockReset().mockRejectedValue(new SandboxPoolSaturatedError("pool=x"));
+    const executeTurn = okTurn();
+
+    const r = await runLeaf(base, undefined, { executeTurn });
+
+    expect(r).toMatchObject({ status: "failed", reason: "saturated" });
+    expect(executeTurn).not.toHaveBeenCalled();
+  });
+
+  it("releases the lease and closes the leased transport after the turn", async () => {
+    const release = vi.fn(async () => {});
+    const close = vi.fn(async () => {});
+    selectPoolSandboxMock.mockReset().mockResolvedValue({
+      config: FAKE_CONFIG,
+      transport: { exec: vi.fn(), close },
+      heartbeat: vi.fn(async () => {}),
+      release,
+    });
+
+    await runLeaf(base, undefined, { executeTurn: okTurn() });
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  // A lease held past a crashed turn shrinks pool capacity until its TTL expires.
+  it("releases the lease even when the turn throws", async () => {
+    const release = vi.fn(async () => {});
+    selectPoolSandboxMock.mockReset().mockResolvedValue({
+      config: FAKE_CONFIG, heartbeat: vi.fn(async () => {}), release,
+    });
+    const executeTurn = vi.fn(async () => { throw new Error("turn exploded"); });
+
+    const r = await runLeaf(base, undefined, { executeTurn });
+
+    expect(r).toMatchObject({ status: "failed", reason: "error", message: "turn exploded" });
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+});

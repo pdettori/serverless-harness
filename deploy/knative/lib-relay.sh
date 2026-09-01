@@ -224,6 +224,69 @@ verdict_reason() {
   jq -r '.verdict.reason // empty' <<<"$1" 2>/dev/null || true
 }
 
+# --- Prompt dispatch + reply assertions ------------------------------------------------
+# The free-form counterpart to dispatch_pattern/assert_verdict above. Both pairs are kept:
+# the demo proves placement with a prompt whose reply NAMES the OS it read, while
+# relay-leaf-smoke.sh keeps the verdict pair, whose binary CLEAR/FLAGGED is the stronger
+# gate for a live smoke that cannot run in CI.
+
+# dispatch_prompt <sessionId> <prompt> -> echoes terminal JSON from POST /runs for a
+# kind:prompt leaf. The reply lands in .text as the model's own words.
+# `|| true` for the same reason as dispatch_pattern: a connection-level failure must yield an
+# empty body so the assertion's "endpoint unreachable" hint is reached, not bypassed by set -e.
+dispatch_prompt() {
+  local sid="$1" prompt="$2" body
+  body=$(jq -nc --arg s "$sid" --arg m "$MODEL" --arg p "$prompt" \
+    '{sessionId:$s, model:$m, kind:"prompt", prompt:$p}')
+  # shellcheck disable=SC2086  # CURL_OPTS is intentionally word-split
+  curl -s $CURL_OPTS --max-time 120 ${CURL_HDR[@]+"${CURL_HDR[@]}"} \
+    -H "Content-Type: application/json" -d "$body" "$BASE/runs" || true
+}
+
+# Echo the model's reply text (empty when absent). Usage: reply_text <response-json>
+reply_text() {
+  jq -r '.text // empty' <<<"$1" 2>/dev/null || true
+}
+
+# Shared precondition for the reply assertions: echo the reply text, or report the
+# "no reply at all" failure and return non-zero. Kept in one place so a missing reply can
+# never be mistaken for a reply that merely lacks the needle.
+_reply_or_ko() {
+  local label="$1" resp="$2" text
+  text="$(reply_text "$resp")"
+  if [ -z "$text" ]; then
+    # Two very different causes look identical here -- name both, as assert_verdict does.
+    ko "$label: no reply text returned (empty/non-JSON response -- either the harness endpoint at $BASE is unreachable, or the model is; check the kourier port-forward, then the llm-credentials secret / SH_MODEL); raw: $(echo "$resp" | head -c 200)"
+    return 1
+  fi
+  echo "$text"
+}
+
+# assert_reply_contains <label> <response-json> <needle> <hint-if-absent>
+# Case-insensitive substring match on the model's reply.
+assert_reply_contains() {
+  local label="$1" resp="$2" needle="$3" hint="$4" text
+  text="$(_reply_or_ko "$label" "$resp")" || return
+  if grep -qiF -- "$needle" <<<"$text"; then
+    ok "$label: reply names '$needle'"
+  else
+    ko "$label: reply does not name '$needle' -- $hint; reply: $(echo "$text" | head -c 300)"
+  fi
+}
+
+# assert_reply_lacks <label> <response-json> <needle> <hint-if-present>
+# The other half of the placement proof: a free-form reply has no binary flag to flip, so the
+# wrong backend is ruled out by asserting the OS it must NOT have read is absent as well.
+assert_reply_lacks() {
+  local label="$1" resp="$2" needle="$3" hint="$4" text
+  text="$(_reply_or_ko "$label" "$resp")" || return
+  if grep -qiF -- "$needle" <<<"$text"; then
+    ko "$label: reply names '$needle' but must not -- $hint; reply: $(echo "$text" | head -c 300)"
+  else
+    ok "$label: reply does not name '$needle'"
+  fi
+}
+
 # --- Harness env flip / restore --------------------------------------------------------
 # Capture the harness ksvc env exactly, for exact restore later.
 snapshot_harness_env() {
