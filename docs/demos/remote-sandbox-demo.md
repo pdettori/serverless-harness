@@ -4,9 +4,10 @@ A ~10-minute walkthrough of **SandboxTransport**: the harness dispatches a leaf'
 sandbox running as a plain `docker run` **on your laptop** — outside the cluster, with **zero
 inbound rules**, holding no cluster credential.
 
-The task — grep a file for a pattern — is just a vehicle. The real show is *which machine's
-filesystem answers*. You will send the same request twice and get opposite verdicts, then plant a
-secret in a container by hand and watch the cluster read it back.
+The task — read a file and say what it contains — is just a vehicle. The real show is *which
+machine's filesystem answers*. You will send the same free-form prompt twice and watch the model
+name a different OS each time, then plant a secret in a container by hand and watch the cluster
+read it back.
 
 ```
 laptop
@@ -44,7 +45,7 @@ export ANTHROPIC_API_KEY=sk-...    # ...or a gateway: ANTHROPIC_BASE_URL + ANTHR
 ./deploy/knative/setup-kind.sh
 ```
 
-> The model must be reachable **from the cluster** — the leaf's verdict is a real model call.
+> The model must be reachable **from the cluster** — the leaf's answer is a real model call.
 > See [`../../deploy/knative/README-kind.md`](../../deploy/knative/README-kind.md) for setup
 > options and [`../../deploy/knative/README-worker.md`](../../deploy/knative/README-worker.md)
 > for the worker/relay reference.
@@ -90,8 +91,7 @@ curl -s -o /dev/null -w 'harness HTTP %{http_code}\n' --max-time 5 -H "$HOSTHDR"
 
 > **`404` is success.** This is a transport check, not a health check: any response proves the
 > tunnel and Host header reach the harness. Skipping it is a trap — an empty `/runs` reply later
-> is indistinguishable at the verdict layer from an unreachable *model*, and the two have
-> completely different fixes.
+> is indistinguishable from an unreachable *model*, and the two have completely different fixes.
 
 ### Build the worker image
 
@@ -204,27 +204,44 @@ PRETTY_NAME="Alpine Linux v3.20"                    <- in-cluster pool
 PRETTY_NAME="Red Hat Enterprise Linux 9.8 (Plow)"   <- remote host container
 ```
 
-> The pool is Alpine, the worker is RHEL. So a leaf grepping `/etc/os-release` for `Alpine` flips
-> its verdict with the backend — and the model **names the OS it read**, so you see which
-> filesystem answered instead of inferring it from a green check. Verify the fingerprint *before*
-> anything relies on it; an unverified discriminator makes every later assertion meaningless.
+> The pool is Alpine, the worker is RHEL. So one free-form question — *what does
+> `/etc/os-release` say?* — gets a different answer depending on which machine ran it, and the
+> model **names the OS it read** rather than handing you a flag you have to trust. Verify the
+> fingerprint *before* anything relies on it; an unverified discriminator makes every later
+> assertion meaningless.
+
+Set the prompt you will send unchanged to both backends:
+
+```bash
+OS_PROMPT='Using your read tool, read the file /etc/os-release and tell me in one sentence exactly which OS distribution and version it reports.'
+```
+
+> **"read tool" and the absolute path are load-bearing.** The agent's tools execute in the
+> sandbox, so a relative path would be resolved against the harness process cwd instead — the
+> same reason `buildLeafPrompt` in
+> [`harness/src/run-leaf.ts`](../../harness/src/run-leaf.ts) spells out an absolute path for the
+> review path.
 
 ### 2b. Run A — the in-cluster pod
 
 ```bash
-BODY=$(jq -nc '{sessionId:"demo-pod-1", model:"claude-haiku-4-5",
-                item:{item_id:"i1", file:"/etc/os-release", pattern:"Alpine"}}')
+BODY=$(jq -nc --arg p "$OS_PROMPT" '{sessionId:"demo-pod-1", model:"claude-haiku-4-5",
+                kind:"prompt", prompt:$p}')
 curl -s --max-time 120 -H "$HOSTHDR" -H 'Content-Type: application/json' \
-  -d "$BODY" $BASE/runs | jq '{status, verdict:.verdict.verdict, reason:.verdict.reason}'
+  -d "$BODY" $BASE/runs | jq -r '.status, .text'
 ```
 
 ```
-verdict: "FLAGGED"
-reason:  "...confirming the OS is Alpine Linux."
+responded
+The file /etc/os-release reports Alpine Linux v3.20.
 ```
 
 > Baseline. This ran on an in-cluster pod via `kubectl exec`. Nothing remote yet — the relay and
 > worker are up but the harness has not been told to use them.
+>
+> `kind:"prompt"` is what makes this a free-form leaf: the reply comes back as `.text`, the
+> model's own words, with `status: "responded"`. No verdict schema, no `submit_verdict` tool —
+> which is why the answer can *name* what it read.
 
 ### 2c. Flip to the remote path — and make a pod win *impossible*
 
@@ -270,6 +287,14 @@ kubectl get pods -n $NS -l sh.kagenti.io/sandbox-pool=demo-remote-only \
 > so an idle in-cluster pod can still win the lease — and you would get a green demo that proved
 > nothing. Pointing the selector at a label **no pod carries** means a pod cannot win a lease it
 > is not a candidate for. Structural, not merely detected.
+
+> **This is also why the demo needs a harness new enough to lease on the prompt path.** Until the
+> [ADR-0028 amendment](../adrs/0028-async-prompt-dispatch.md#amendment-2026-09-01-prompt-leaves-lease-a-pool-sandbox)
+> a `kind:"prompt"` leaf never took a lease at all: it resolved its own sandbox from the
+> environment, ignored `SH_REMOTE_SANDBOX`, and on a pool-only deployment like this one ran its
+> tool calls **in the harness container** — which is itself Alpine, so Act 2b would have looked
+> exactly this green while proving nothing whatsoever. If your reply below names Alpine on both
+> backends, that is the first thing to check.
 
 Wait for the new revision — a `spec.template` change mints one:
 
@@ -336,26 +361,36 @@ atomically. `containers/0` is the first (user) container in the revision templat
 The third is the load-bearing one for the demo's honesty. The first two alone would leave idle
 Alpine pods in the candidate set, and least-loaded-first could hand the exec to one.
 
-### 2e. Run B — the same request, both directions
+### 2e. Run B — the same prompt, a different machine
+
+Byte-for-byte the request from 2b, with only the session id changed:
 
 ```bash
-for PAT in Alpine "Red Hat"; do
-  BODY=$(jq -nc --arg p "$PAT" '{sessionId:("demo-remote-"+($p|gsub(" ";"-"))),
-    model:"claude-haiku-4-5", item:{item_id:"i1", file:"/etc/os-release", pattern:$p}}')
-  echo "--- $PAT ---"
-  curl -s --max-time 120 -H "$HOSTHDR" -H 'Content-Type: application/json' \
-    -d "$BODY" $BASE/runs | jq -r '"verdict=\(.verdict.verdict)  \(.verdict.reason)"'
-done
+BODY=$(jq -nc --arg p "$OS_PROMPT" '{sessionId:"demo-remote-1", model:"claude-haiku-4-5",
+                kind:"prompt", prompt:$p}')
+REPLY=$(curl -s --max-time 120 -H "$HOSTHDR" -H 'Content-Type: application/json' \
+  -d "$BODY" $BASE/runs | jq -r '.text')
+echo "$REPLY"
 ```
 
 ```
---- Alpine ---   verdict=CLEAR    "...the system is running Red Hat Enterprise Linux 9.8."
---- Red Hat ---  verdict=FLAGGED  "...indicating this system runs Red Hat Enterprise Linux 9.8."
+The file /etc/os-release reports Red Hat Enterprise Linux 9.8 (Plow).
 ```
 
-> Same request as 2b, **opposite verdict** — and the model names the OS it actually read. Both
-> directions are asserted on purpose: an exec that landed on a pod fails one check or the other,
-> never neither.
+> Same prompt as 2b, **different OS named.** Now check it in both directions — the reply must say
+> `Red Hat` **and** must not say `Alpine`. Assert against the reply you already captured; a second
+> `curl` with the same `sessionId` would *resume* that session rather than ask afresh:
+
+```bash
+grep -qi 'red hat' <<<"$REPLY" && echo "ok: named Red Hat"  || echo "FAIL: did not name Red Hat"
+grep -qi 'alpine'  <<<"$REPLY" && echo "FAIL: named Alpine" || echo "ok: did not name Alpine"
+```
+
+> Both directions on purpose: a free-form reply has no flag to flip, so "it landed on an Alpine
+> pod" is ruled out by asserting the OS it must *not* have read is absent too. This is the one
+> place the free-form version is weaker than a `CLEAR`/`FLAGGED` verdict — a reply that mentions
+> neither OS fails the first check rather than being caught as nonsense. Act 3 is what closes
+> that gap, and it is the stronger proof anyway.
 
 ---
 
@@ -379,20 +414,30 @@ kubectl exec sandbox-0 -n $NS -- cat /tmp/proof.txt
 ### 3b. Ask the cluster for it
 
 ```bash
-BODY=$(jq -nc --arg p "$MARK" '{sessionId:"demo-proof-1", model:"claude-haiku-4-5",
-        item:{item_id:"i1", file:"/tmp/proof.txt", pattern:$p}}')
-curl -s --max-time 120 -H "$HOSTHDR" -H 'Content-Type: application/json' \
-  -d "$BODY" $BASE/runs | jq -r '"verdict=\(.verdict.verdict)\n\(.verdict.reason)"'
+BODY=$(jq -nc '{sessionId:"demo-proof-1", model:"claude-haiku-4-5", kind:"prompt",
+        prompt:"Using your read tool, read the file /tmp/proof.txt and tell me exactly what marker string it contains."}')
+PROOF=$(curl -s --max-time 120 -H "$HOSTHDR" -H 'Content-Type: application/json' \
+  -d "$BODY" $BASE/runs | jq -r '.text')
+echo "$PROOF"
 ```
 
 ```
-verdict=FLAGGED
-The pattern tuscan-lentils-29765 is present in the file /tmp/proof.txt as a secret marker.
+The file /tmp/proof.txt contains the marker string: tuscan-lentils-29765
+```
+
+> **Note what the free-form reply buys you here.** It does not confirm a string you already
+> supplied — it *reads one back to you*. Check it against the `$MARK` you printed thirty seconds
+> ago:
+
+```bash
+grep -qF "$MARK" <<<"$PROOF" \
+  && echo "ok: the cluster read the marker planted on this laptop" || echo "FAIL"
 ```
 
 > There is no `kubectl exec` anywhere in that path, no inbound route to this machine, and the
-> worker holds no cluster credential — only a token it used to dial *out*. A verdict on
-> `/etc/os-release` can be argued with; a random string you typed yourself cannot.
+> worker holds no cluster credential — only a token it used to dial *out*. An answer about
+> `/etc/os-release` can be argued with — image drift, a lucky guess from context. A random string
+> you generated yourself, echoed back verbatim, cannot be.
 
 ### 3c. Presence vanishes with the stream
 
@@ -406,6 +451,11 @@ docker stop sh-demo-remote-worker
 > "registration *is* the live stream" means — and why the harness never routes to a sandbox that
 > has quietly gone away.
 
+> `make demo-remote-sandbox` asserts this act too — the planted marker *and* this teardown. The
+> one exception is `--keep`, which promises the worker is still running when the run ends: proving
+> the record clears means closing the stream, so the script skips this step and tells you to do it
+> by hand instead.
+
 ---
 
 # What just happened
@@ -416,10 +466,11 @@ You drove a sandbox that:
    (Act 1d).
 2. **Registered by existing** — its presence record *was* its open stream, and vanished with it
    (Act 1e, 3c).
-3. **Provably ran the exec** — same request, opposite verdicts, with the model naming the OS it
-   read, and a pool selector that made a pod win structurally impossible (Act 2).
+3. **Provably ran the exec** — same prompt, and the model named a different OS each time, with a
+   pool selector that made a pod win structurally impossible (Act 2).
 4. **Held no standing authority** — one scoped bearer token; no LLM key, no kubeconfig (Act 1d).
-5. **Read a secret you planted by hand**, which the cluster had no other way to see (Act 3b).
+5. **Read back a secret you planted by hand**, which the cluster had no other way to see, in the
+   model's own words rather than as a yes/no on a string you supplied (Act 3b).
 
 That is the SandboxTransport headline: the sandbox is a **pool peer**, not a replacement — the
 same contract as an in-cluster pod, on a machine the cluster cannot reach.

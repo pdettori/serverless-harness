@@ -8,7 +8,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { RedisSessionBackend } from "@sh/session-backend";
 import { k8sSandboxExtension, KubectlTransport } from "@sh/k8s-sandbox";
-import { selectPoolSandbox, SandboxPoolSaturatedError } from "./select-sandbox.js";
+import { selectPoolSandbox, SandboxPoolSaturatedError, type SelectedSandbox } from "./select-sandbox.js";
 import { convergeWorkspace, cleanupWorkspace, captureWorkspaceDiff } from "./converge.js";
 import { setupSwebenchWorkspace, captureSwebenchDiff, cleanupSwebench, swebenchVenvDir, buildSwebenchSolvePrompt } from "./swebench-setup.js";
 import { executeTurn, resolveModelSelection, requireModel, applyModelGateway, sumBranchUsage, type TurnConfig, type TurnResult } from "./run-turn.js";
@@ -242,21 +242,66 @@ async function runPromptLeaf(
   deps?: { executeTurn?: typeof executeTurn },
 ): Promise<LeafResult> {
   if (!env.prompt) return { status: "failed", reason: "bad_inputs" };
+  const cwd = config?.cwd ?? process.cwd();
+  const sid = leafSessionId(env);
   const selection = resolveModelSelection({
     model: env.model ?? config?.model,
     provider: env.provider ?? config?.provider,
   });
   const exec = deps?.executeTurn ?? executeTurn;
-  const r: TurnResult = await exec({
-    prompt: env.prompt,
-    sessionId: env.sessionId,
-    config,
-    createIfAbsent: true,
-    selection,
-  });
-  if (r.stopReason === "aborted") return { status: "aborted" };
-  if (r.stopReason === "error") return { status: "failed", reason: "error", message: r.errorMessage };
-  return { status: "responded", text: r.response, usage: r.usage };
+
+  // Lease a pool sandbox the way the verdict and solve paths do, then hand it to the turn, so a
+  // prompt leaf's tool calls land in the sandbox it actually holds a lease on — including a remote
+  // one reached over the relay. ADR 0028 deferred this ("prompt leaves inherit /turn's sandbox
+  // routing"), which left SH_REMOTE_SANDBOX unreachable from a prompt leaf and, on a deployment
+  // that sets only a pool selector, ran its tools in the harness container itself.
+  //
+  // Substituting selectPoolSandbox for executeTurn's own resolveSandboxConfig is a superset, not a
+  // behavior swap: with no KAGENTI_SANDBOX_POOL_SELECTOR set it falls back to exactly that same
+  // single-pod resolution and returns null when nothing is configured.
+  let selected: SelectedSandbox | null;
+  try {
+    selected = await selectPoolSandbox(sandboxEnvironment(env), cwd, sid, {
+      cap: Number(process.env.KAGENTI_SANDBOX_CAP ?? "20"),
+      ttlMs: Number(process.env.KAGENTI_SANDBOX_LEASE_TTL_MS ?? "60000"),
+      remoteSandbox: process.env.SH_REMOTE_SANDBOX === "1",
+    });
+  } catch (err) {
+    // Saturation stays a distinct transient signal, as for the other kinds: the sync /runs path
+    // bounded-waits then 503s on it, and classifyOutcome keeps it retryable for the async queue.
+    if (err instanceof SandboxPoolSaturatedError) {
+      return { status: "failed", reason: "saturated", message: err.message };
+    }
+    return { status: "failed", reason: "error", message: err instanceof Error ? err.message : String(err) };
+  }
+
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  try {
+    if (selected) {
+      const hbMs = Number(process.env.KAGENTI_SANDBOX_HEARTBEAT_MS ?? "20000");
+      const lease = selected;
+      heartbeat = setInterval(() => { void lease.heartbeat(); }, hbMs);
+    }
+    const r: TurnResult = await exec({
+      prompt: env.prompt,
+      sessionId: env.sessionId,
+      config,
+      createIfAbsent: true,
+      selection,
+      sandbox: { config: selected?.config ?? null, transport: selected?.transport },
+    });
+    if (r.stopReason === "aborted") return { status: "aborted" };
+    if (r.stopReason === "error") return { status: "failed", reason: "error", message: r.errorMessage };
+    return { status: "responded", text: r.response, usage: r.usage };
+  } catch (err) {
+    // A throw from the turn must not escape past the finally: a lease held past a crashed turn
+    // shrinks pool capacity until its TTL expires.
+    return { status: "failed", reason: "error", message: err instanceof Error ? err.message : String(err) };
+  } finally {
+    if (heartbeat) clearInterval(heartbeat);
+    if (selected) await selected.release();
+    if (selected?.transport) await selected.transport.close();
+  }
 }
 
 // Real solve runner: lease a sandbox, converge the per-leaf worktree, run the agent with ONLY the

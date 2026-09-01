@@ -48,9 +48,10 @@ SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")"
 source ./lib.sh   # NS, KSVC, BASE, CURL_OPTS, CURL_HDR, ok/ko, PASS/FAIL, ensure_port_forward
 # shellcheck source=./lib-relay.sh
-source ./lib-relay.sh  # MODEL, claim/abort, dispatch_pattern, assert_verdict,
-                       # validate_discriminator, assert_presence, assert_no_pods_match,
-                       # snapshot/flip/restore_harness_env. Shared with relay-leaf-smoke.sh.
+source ./lib-relay.sh  # MODEL, claim/abort, dispatch_prompt, assert_reply_contains/_lacks,
+                       # reply_text, validate_discriminator, assert_presence(_gone),
+                       # assert_no_pods_match, snapshot/flip/restore_harness_env.
+                       # Shared with relay-leaf-smoke.sh (which keeps the verdict pair).
 
 REPO_ROOT="$(cd ../.. && pwd)"
 CLUSTER_NAME="${CLUSTER_NAME:-sh-knative}"
@@ -72,6 +73,11 @@ RELAY_TOKEN="${SANDBOX_TOKEN:-}"
 IN_CLUSTER_RELAY_ADDR="sandbox-relay.${NS}.svc:8443"
 # A label no pod carries, so the remote worker is the only lease candidate (defense 1).
 REMOTE_ONLY_SELECTOR="sh.kagenti.io/sandbox-pool=demo-remote-only"
+# The free-form ask, identical for both backends -- the reply NAMES the OS it read, so which
+# filesystem answered is stated by the model rather than inferred from a flag. "read tool" and
+# the absolute path are load-bearing: the tools run in the sandbox, and a relative path would be
+# resolved against the harness process cwd instead (cf. buildLeafPrompt in harness/src/run-leaf.ts).
+OS_PROMPT="Using your read tool, read the file /etc/os-release and tell me in one sentence exactly which OS distribution and version it reports."
 PF_LOG="${TMPDIR:-/tmp}/sh-demo-relay-pf.$$.log"
 
 REUSE_CLUSTER=0
@@ -448,18 +454,20 @@ claim "Discriminator: verify Alpine vs RHEL BEFORE relying on it"
 POD_OS="$(kubectl exec "$SBOX_POD" -n "$NS" -- cat /etc/os-release 2>/dev/null || true)"
 WORKER_OS="$(docker exec "$WORKER_CTR" cat /etc/os-release 2>/dev/null || true)"
 validate_discriminator "$POD_OS" "$WORKER_OS" "$SBOX_POD" "$WORKER_CTR (host container)"
-note "Now a verdict on the pattern 'Alpine' identifies which filesystem answered."
+note "Now a free-form prompt asking what /etc/os-release says identifies which filesystem answered."
 
 # --- 9. Run A: the pod path ------------------------------------------------------------
 claim "Run A -- in-cluster Alpine sandbox pod"
 [ "$(ksvc_env_value SH_REMOTE_SANDBOX)" = "1" ] \
   && abort "the harness is already on SH_REMOTE_SANDBOX=1, so run A would not be the pod path. Run '$0 --teardown' first, or restore the ksvc env by hand."
 snapshot_harness_env
-RESP_A="$(dispatch_pattern "demo-pod-$$" "Alpine")"
-assert_verdict "A/pod-path/Alpine" "$RESP_A" "FLAGGED" \
-  "the in-cluster pool is Alpine, so a leaf grepping for 'Alpine' must be FLAGGED here; an empty verdict usually means the model endpoint is unreachable"
-REASON_A="$(verdict_reason "$RESP_A")"
-[ -n "$REASON_A" ] && note "model's reason: $REASON_A"
+RESP_A="$(dispatch_prompt "demo-pod-$$" "$OS_PROMPT")"
+assert_reply_contains "A/pod-path" "$RESP_A" "Alpine" \
+  "the in-cluster pool is Alpine, so the reply must name Alpine here; an empty reply usually means the model endpoint is unreachable"
+assert_reply_lacks "A/pod-path" "$RESP_A" "Red Hat" \
+  "naming Red Hat here means the exec already went remote, so run A is not the pod baseline it claims to be"
+TEXT_A="$(reply_text "$RESP_A")"
+[ -n "$TEXT_A" ] && note "model's reply: $TEXT_A"
 
 # --- 10. Flip --------------------------------------------------------------------------
 claim "Flip to the remote path (and make a pod win IMPOSSIBLE)"
@@ -474,28 +482,63 @@ note "worker -> relay via host.docker.internal:${RELAY_PORT} (outbound through t
 
 # --- 11. Run B: the remote path --------------------------------------------------------
 claim "Run B -- remote host container (both directions asserted)"
-RESP_B="$(dispatch_pattern "demo-remote-alpine-$$" "Alpine")"
-assert_verdict "B/remote/Alpine" "$RESP_B" "CLEAR" \
-  "FLAGGED here means the exec landed on an Alpine sandbox pod, not the remote RHEL worker -- the demo would be proving nothing"
-REASON_B="$(verdict_reason "$RESP_B")"
-[ -n "$REASON_B" ] && note "model's reason: $REASON_B"
-RESP_B2="$(dispatch_pattern "demo-remote-redhat-$$" "Red Hat")"
-assert_verdict "B/remote/RedHat" "$RESP_B2" "FLAGGED" \
-  "CLEAR here means the exec landed on an Alpine sandbox pod, not the remote RHEL worker -- the demo would be proving nothing"
+RESP_B="$(dispatch_prompt "demo-remote-$$" "$OS_PROMPT")"
+assert_reply_contains "B/remote" "$RESP_B" "Red Hat" \
+  "the reply must name Red Hat: anything else means the exec landed on an Alpine sandbox pod, not the remote RHEL worker -- the demo would be proving nothing"
+assert_reply_lacks "B/remote" "$RESP_B" "Alpine" \
+  "naming Alpine means the exec landed on an in-cluster pod despite the remote-only selector"
+TEXT_B="$(reply_text "$RESP_B")"
+[ -n "$TEXT_B" ] && note "model's reply: $TEXT_B"
 note "Asserted both ways: a pod-landed exec fails one check or the other, never neither."
 
-# --- 12. Summary -----------------------------------------------------------------------
+# --- 12. Planted marker: evidence that exists ONLY on this laptop ----------------------
+# The strongest assertion in the demo, and the one a free-form reply carries best: /etc/os-release
+# can be argued with (image drift, a cached answer, a model that guesses "Red Hat" from context),
+# but a random string written seconds ago into a container the cluster cannot reach cannot be.
+claim "Planted marker -- the cluster reads a secret created on this laptop"
+MARK="tuscan-lentils-$RANDOM-$$"
+docker exec "$WORKER_CTR" sh -c "echo 'secret marker: $MARK' > /tmp/proof.txt" \
+  || abort "could not write the marker into $WORKER_CTR"
+# Fail closed: if the pod DOES have the file, the discriminator is void and the next assertion
+# would pass for the wrong reason.
+if kubectl exec "$SBOX_POD" -n "$NS" -- cat /tmp/proof.txt >/dev/null 2>&1; then
+  abort "/tmp/proof.txt unexpectedly exists on $SBOX_POD -- the marker no longer distinguishes the two filesystems"
+fi
+ok "marker exists only in $WORKER_CTR on this host; $SBOX_POD has no /tmp/proof.txt"
+RESP_C="$(dispatch_prompt "demo-proof-$$" "Using your read tool, read the file /tmp/proof.txt and tell me exactly what marker string it contains.")"
+assert_reply_contains "C/remote/marker" "$RESP_C" "$MARK" \
+  "the cluster did not read the planted marker -- either the exec did not reach the remote worker, or it read a different filesystem"
+TEXT_C="$(reply_text "$RESP_C")"
+[ -n "$TEXT_C" ] && note "model's reply: $TEXT_C"
+
+# --- 13. Presence vanishes with the stream ---------------------------------------------
+# Skipped under --keep, which promises the worker is still running when the run ends: proving the
+# record clears means closing the Attach stream, and there is no way to do both.
+if [ "$KEEP" = 1 ]; then
+  claim "Presence teardown -- SKIPPED (--keep)"
+  note "--keep leaves the worker running, so its Attach stream stays open and the record stays."
+  note "Re-run without --keep to assert the record clears, or watch it go by hand:"
+  note "  docker stop $WORKER_CTR"
+  note "  kubectl exec deploy/redis -n $NS -- redis-cli HGETALL sh:sandbox:records"
+else
+  claim "Presence: the record clears when the Attach stream closes"
+  docker stop "$WORKER_CTR" >/dev/null 2>&1 || true
+  assert_presence_gone "$SANDBOX_ID"
+  note "Nothing deleted it -- the registration IS the stream, so it went with it."
+fi
+
+# --- 14. Summary -----------------------------------------------------------------------
 echo ""
 echo "=== The A/B ==="
-printf '%-34s | %-8s | %s\n' "backend" "'Alpine'" "model's stated reason"
-printf '%-34s-+-%-8s-+-%s\n' "----------------------------------" "--------" "---------------------"
-printf '%-34s | %-8s | %s\n' "in-cluster pod ($SBOX_POD)" \
-  "$(jq -r '.verdict.verdict // "?"' <<<"$RESP_A" 2>/dev/null || echo '?')" "${REASON_A:-(none returned)}"
-printf '%-34s | %-8s | %s\n' "remote host container" \
-  "$(jq -r '.verdict.verdict // "?"' <<<"$RESP_B" 2>/dev/null || echo '?')" "${REASON_B:-(none returned)}"
+printf '%-34s | %s\n' "backend" "what the model said it read"
+printf '%-34s-+-%s\n' "----------------------------------" "---------------------------"
+printf '%-34s | %s\n' "in-cluster pod ($SBOX_POD)" "${TEXT_A:-(no reply returned)}"
+printf '%-34s | %s\n' "remote host container" "${TEXT_B:-(no reply returned)}"
 echo ""
-echo "Same request, opposite verdicts. The second one ran on a container on this host that"
-echo "the cluster cannot reach and never authenticated to -- it dialed out, and nothing else."
+echo "Same prompt, and the model names a different OS each time. The second one ran on a"
+echo "container on this host that the cluster cannot reach and never authenticated to -- it"
+echo "dialed out, and nothing else. Then it read a marker planted here seconds earlier:"
+printf '  %s\n' "${MARK}"
 
 echo ""; echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ "$FAIL" -gt 0 ]; then echo "DEMO FAIL"; exit 1; else echo "DEMO PASS"; exit 0; fi

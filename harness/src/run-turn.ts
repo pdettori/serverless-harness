@@ -10,7 +10,7 @@ import { getModel, getModels, getProviders, type AssistantMessage, type Model } 
 import { RedisSessionBackend } from "@sh/session-backend";
 import { BufferedRedisBackend } from "./buffered-redis-backend.js";
 import { flushExtension } from "./flush-extension.js";
-import { k8sSandboxExtension, resolveSandboxConfig } from "@sh/k8s-sandbox";
+import { k8sSandboxExtension, resolveSandboxConfig, type K8sSandboxConfig, type SandboxTransport } from "@sh/k8s-sandbox";
 import { checkpointExtension } from "./checkpoint-extension.js";
 import { budgetVoterExtension, branchSpend } from "./budget-voter.js";
 import { toolChoiceExtension } from "./tool-choice-extension.js";
@@ -18,6 +18,32 @@ import { toolChoiceExtension } from "./tool-choice-extension.js";
 // cycle: run-leaf.ts imports values from run-turn.js, but a `import type` adds no runtime edge.
 import type { LeafUsage } from "./run-leaf.js";
 import { sseExtension, type TurnStreamFrame } from "./turn-stream.js";
+
+/**
+ * The sandbox a turn's tool calls run in: a resolved pod/pool config (null ⇒ run tools in the
+ * harness process itself) plus, for a leased grpc presence record, the transport that carries
+ * exec frames to it.
+ */
+export interface TurnSandbox {
+  config: K8sSandboxConfig | null;
+  /** Present ONLY for a leased grpc sandbox; undefined for pods (each exec spawns kubectl). */
+  transport?: SandboxTransport;
+}
+
+/**
+ * Decide which sandbox a turn runs its tools in. A caller that has already leased one (a prompt
+ * leaf, which must reach the very sandbox it holds a lease on — including a remote one behind the
+ * relay) injects it and env resolution is skipped entirely. `/turn` injects nothing and keeps the
+ * original behavior: resolve from the environment, or null for local tools.
+ */
+export async function resolveTurnSandbox(
+  injected: TurnSandbox | undefined,
+  env: NodeJS.ProcessEnv,
+  headCwd: string,
+): Promise<TurnSandbox> {
+  if (injected) return injected;
+  return { config: await resolveSandboxConfig(env, headCwd) };
+}
 
 export interface TurnConfig {
   redisUrl?: string;
@@ -331,6 +357,7 @@ export interface ExecuteTurnInput {
   selection?: ModelSelection; // pre-resolved model/provider; default: resolveModelSelection(config)
   onEvent?: (frame: TurnStreamFrame) => void; // present ⇒ append sseExtension(onEvent) to the stack
   signal?: AbortSignal; // present ⇒ signal → session.abort() (client disconnect)
+  sandbox?: TurnSandbox; // pre-leased sandbox; absent ⇒ resolve from the environment (/turn)
 }
 
 /**
@@ -377,16 +404,21 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<TurnResult> 
 
   const budgetLimit = Number(process.env.SH_BUDGET_TOKENS);
   const budgetMargin = Number(process.env.SH_BUDGET_MARGIN);
-  const sandboxConfig = await resolveSandboxConfig(process.env, cwd);
+  // resolveTurnSandbox returns exactly k8sSandboxExtension's argument, and is handed over
+  // untransformed below — so a leased transport cannot be dropped by a field-by-field rebuild here.
+  const sandbox = await resolveTurnSandbox(input.sandbox, process.env, cwd);
   // Surface whether sandbox routing actually resolved: a null config means tool calls run in
   // the harness pod's own filesystem (local), not a sandbox pod — a common cause of "the file
   // never appeared in the sandbox". Cheap one-line signal in container logs.
   if (process.env.SH_MODEL_CUSTOM === "1") {
-    console.error(`[sandbox] resolved config: ${sandboxConfig ? "pod/pool" : "NULL (tools run LOCAL)"}`);
+    const how = sandbox.config
+      ? `${input.sandbox ? "leased" : "pod/pool"}${sandbox.transport ? " (grpc transport)" : ""}`
+      : "NULL (tools run LOCAL)";
+    console.error(`[sandbox] resolved config: ${how}`);
   }
   const extensionFactories = [
     flushExtension(backend),
-    k8sSandboxExtension({ config: sandboxConfig }),
+    k8sSandboxExtension(sandbox),
     checkpointExtension(store, sessionManager),
     toolChoiceExtension(),
   ];
