@@ -1,0 +1,15 @@
+// Both Go modules are coupled: remote-worker consumes gen/go through a local
+// `replace`, and the `proto` CI job builds both. Without a workspace, any bump to a
+// gen/go dependency leaves remote-worker/go.mod stale and the build fails with
+// "updates to go.mod needed" -- which Dependabot cannot fix, because the tidy has to
+// land in the same commit as the bump and its branches are not maintainer-writable.
+// In workspace mode the go command resolves one MVS across both modules, so the
+// modules can be bumped independently. See issue #212.
+//
+// Keep this `go` line in sync with both go.mod files (and CI's go-version-file).
+go 1.25.0
+
+use (
+	./gen/go
+	./remote-worker
+)
