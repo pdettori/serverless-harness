@@ -34,17 +34,17 @@ The worker **dials out** to the relay and keeps ONE full-duplex gRPC stream open
 
 ### Wire contract the worker must honor (proto §8)
 
-| Rule | This worker |
-|------|-------------|
-| `Hello` first, with `sandbox_id` | ✅ before anything else; capabilities probed from PATH |
-| stdout → `Chunk{STREAM_STDOUT}`, stderr → `STREAM_STDERR` | ✅ separate pipes, separate frames |
-| `Chunk` capped so one frame stays small | ✅ 32 KiB, which is also the pipe read size |
-| terminate each exec with `End{req_id, exit_code}` | ✅ real child exit code; `-1` when signalled |
-| failures → `ExecError{req_id, message}` | ✅ spawn failures, and `timeout:<n>` on expiry |
-| `Abort` → SIGKILL the in-flight child | ✅ kills the whole process group (`Setpgid`) |
-| worker-side `timeout_s` | ✅ SIGKILL at expiry → `ExecError{"timeout:<n>"}` |
+| Rule                                                                                     | This worker                                                  |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `Hello` first, with `sandbox_id`                                                         | ✅ before anything else; capabilities probed from PATH       |
+| stdout → `Chunk{STREAM_STDOUT}`, stderr → `STREAM_STDERR`                                | ✅ separate pipes, separate frames                           |
+| `Chunk` capped so one frame stays small                                                  | ✅ 32 KiB, which is also the pipe read size                  |
+| terminate each exec with `End{req_id, exit_code}`                                        | ✅ real child exit code; `-1` when signalled                 |
+| failures → `ExecError{req_id, message}`                                                  | ✅ spawn failures, and `timeout:<n>` on expiry               |
+| `Abort` → SIGKILL the in-flight child                                                    | ✅ kills the whole process group (`Setpgid`)                 |
+| worker-side `timeout_s`                                                                  | ✅ SIGKILL at expiry → `ExecError{"timeout:<n>"}`            |
 | dedup / at-least-once: cache `req_id →` terminal frame (`End`, or a timeout `ExecError`) | ✅ bounded LRU (256), guarded by a command+stdin fingerprint |
-| `Heartbeat` for liveness | ✅ every 15s |
+| `Heartbeat` for liveness                                                                 | ✅ every 15s                                                 |
 
 ## What it does on each Exec
 
@@ -61,7 +61,7 @@ The worker **dials out** to the relay and keeps ONE full-duplex gRPC stream open
 5. Streams stdout and stderr back as 32 KiB `Chunk` frames tagged with their stream.
    With `streaming: false` it buffers output and emits it at exit in the same
    32 KiB-capped `Chunk` frames — one burst rather than incremental delivery. The
-   guarantee is *when* output is sent, not that it is a single frame: the cap
+   guarantee is _when_ output is sent, not that it is a single frame: the cap
    still applies, since an 8 MiB frame would exceed gRPC's default receive limit.
 6. Terminates with `End{exit_code}`, or `ExecError{"timeout:<n>"}` if `timeout_s`
    expired, or `End{-1}` if aborted.
@@ -69,13 +69,13 @@ The worker **dials out** to the relay and keeps ONE full-duplex gRPC stream open
 There is no persistent shell: every command the harness sends is self-contained
 (`cd 'cwd' && …`), and a shared shell could not give each exec its own stdin EOF.
 
-## Running locally on this laptop, against ykt1  ← the interesting part
+## Running locally on this laptop, against ykt1 ← the interesting part
 
 The worker **dials the relay**; the relay never dials the worker. So a laptop
 worker does **not** need any inbound route — we just need the laptop to reach the
 relay. In-cluster that's the ClusterIP `sandbox-relay.default.svc:8443`; from a
 laptop we tunnel to it with `oc port-forward`. The harness→relay→worker execs
-then ride *back down* the worker-initiated stream through the same tunnel.
+then ride _back down_ the worker-initiated stream through the same tunnel.
 
 ```
  laptop:  remote-worker ──dial──▶ localhost:8443 ─┐
@@ -152,6 +152,7 @@ directly with the `grpcurl` exec above; the worker pod log shows the matching
 > exec is silently default-denied (harness→relay blocked) and times out. This repo's
 > `deploy/knative/harness-egress-policy.yaml` now adds the missing rule
 > (`app=sandbox-relay` :8443). If you deployed before that fix, patch it live:
+>
 > ```bash
 > oc patch networkpolicy serverless-harness-egress -n default --type=json \
 >   -p '[{"op":"add","path":"/spec/egress/-","value":{"ports":[{"port":8443,"protocol":"TCP"}],"to":[{"podSelector":{"matchLabels":{"app":"sandbox-relay"}}}]}}]'
@@ -162,7 +163,7 @@ directly with the `grpcurl` exec above; the worker pod log shows the matching
 harness-driven leaf, since the block is on the harness→relay leg regardless of
 where the worker runs.
 
-For a worker on *other* infrastructure (not this cluster), expose the relay via an
+For a worker on _other_ infrastructure (not this cluster), expose the relay via an
 OpenShift Route on :443 with TLS + HTTP/2 and point `RELAY_ADDR` at the Route
 host; the worker then dials with TLS (`RELAY_TLS=1`) instead of `insecure`. No
 code or binary changes are needed — the same worker image and the env vars in
@@ -171,15 +172,15 @@ outside-the-cluster (`RELAY_TLS=1`, Route host) cases.
 
 ## Environment variables
 
-| Var | Default | Meaning |
-|-----|---------|---------|
-| `RELAY_ADDR` | `localhost:8443` | relay address (tunnel, ClusterIP, or Route host) |
-| `SANDBOX_ID` | `sbx-laptop-1` | stable id; one live Attach per id |
-| `SANDBOX_TOKEN` | `dev-token` | Bearer token; must match the relay |
-| `RELAY_TLS` | `0` | `1`/`true` to dial with TLS (for a Route :443); `0`/`false` = plaintext h2c. Anything else is **fatal** — it gates whether the bearer token crosses the wire in cleartext, so the worker refuses to guess |
-| `WORKER_MAX_CONCURRENT` | `4` | dispatch pool size; also advertised as `Hello.capacity_max` |
-| `SANDBOX_IMAGE` | (empty) | advertised in `Hello`; informational, not enforced by the worker |
-| `SANDBOX_TRUST` | `untrusted` | advertised in `Hello`; informational, not enforced by the worker |
+| Var                     | Default          | Meaning                                                                                                                                                                                                   |
+| ----------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RELAY_ADDR`            | `localhost:8443` | relay address (tunnel, ClusterIP, or Route host)                                                                                                                                                          |
+| `SANDBOX_ID`            | `sbx-laptop-1`   | stable id; one live Attach per id                                                                                                                                                                         |
+| `SANDBOX_TOKEN`         | `dev-token`      | Bearer token; must match the relay                                                                                                                                                                        |
+| `RELAY_TLS`             | `0`              | `1`/`true` to dial with TLS (for a Route :443); `0`/`false` = plaintext h2c. Anything else is **fatal** — it gates whether the bearer token crosses the wire in cleartext, so the worker refuses to guess |
+| `WORKER_MAX_CONCURRENT` | `4`              | dispatch pool size; also advertised as `Hello.capacity_max`                                                                                                                                               |
+| `SANDBOX_IMAGE`         | (empty)          | advertised in `Hello`; informational, not enforced by the worker                                                                                                                                          |
+| `SANDBOX_TRUST`         | `untrusted`      | advertised in `Hello`; informational, not enforced by the worker                                                                                                                                          |
 
 ## Files
 

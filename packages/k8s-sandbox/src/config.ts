@@ -21,9 +21,9 @@ export function resolveConfig(env: NodeJS.ProcessEnv, headCwd: string): K8sSandb
   if (!pod) return null;
   return {
     pod,
-    namespace: env.KAGENTI_SANDBOX_NAMESPACE ?? "default",
+    namespace: env.KAGENTI_SANDBOX_NAMESPACE ?? 'default',
     context: env.KAGENTI_SANDBOX_CONTEXT || undefined,
-    podCwd: env.KAGENTI_SANDBOX_CWD ?? "/workspace",
+    podCwd: env.KAGENTI_SANDBOX_CWD ?? '/workspace',
     headCwd,
   };
 }

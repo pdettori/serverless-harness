@@ -1,7 +1,7 @@
 // packages/session-backend/src/redis-backend.ts
-import { createClient, type RedisClientType } from "redis";
-import { makeStoredEntry, type StoredEntry } from "./entry";
-import type { LogStore } from "./backend";
+import { createClient, type RedisClientType } from 'redis';
+import { makeStoredEntry, type StoredEntry } from './entry';
+import type { LogStore } from './backend';
 
 const streamKey = (sid: string) => `session:${sid}`;
 const seqKey = (sid: string) => `session:${sid}:seq`;
@@ -19,7 +19,7 @@ const seqKey = (sid: string) => `session:${sid}:seq`;
 export class RedisSessionBackend<E = unknown> implements LogStore<E> {
   private client: RedisClientType;
   private ready: Promise<void>;
-  constructor(url = process.env.REDIS_URL ?? "redis://127.0.0.1:6379") {
+  constructor(url = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379') {
     this.client = createClient({ url });
     this.ready = this.client.connect().then(() => undefined);
   }
@@ -32,7 +32,13 @@ export class RedisSessionBackend<E = unknown> implements LogStore<E> {
   async append(sid: string, entry: E, piType: string): Promise<StoredEntry<E>> {
     await this.ready;
     const position = await this.nextPosition(sid);
-    const stored = makeStoredEntry({ position, session_id: sid, piType, entry, timestamp: Date.now() });
+    const stored = makeStoredEntry({
+      position,
+      session_id: sid,
+      piType,
+      entry,
+      timestamp: Date.now(),
+    });
     await this.client.xAdd(streamKey(sid), `${stored.position}-0`, {
       position: String(stored.position),
       timestamp: String(stored.timestamp),
@@ -45,8 +51,8 @@ export class RedisSessionBackend<E = unknown> implements LogStore<E> {
 
   async read(sid: string, fromPosition = 1): Promise<StoredEntry<E>[]> {
     await this.ready;
-    const start = fromPosition <= 1 ? "-" : `${fromPosition}-0`;
-    const rows = await this.client.xRange(streamKey(sid), start, "+");
+    const start = fromPosition <= 1 ? '-' : `${fromPosition}-0`;
+    const rows = await this.client.xRange(streamKey(sid), start, '+');
     return rows.map((r): StoredEntry<E> => ({
       position: Number(r.message.position),
       timestamp: Number(r.message.timestamp),
@@ -73,8 +79,8 @@ export class RedisSessionBackend<E = unknown> implements LogStore<E> {
 
   async list(): Promise<string[]> {
     await this.ready;
-    const keys = await this.client.keys("session:*");
-    return keys.filter((k) => !k.endsWith(":seq")).map((k) => k.slice("session:".length));
+    const keys = await this.client.keys('session:*');
+    return keys.filter((k) => !k.endsWith(':seq')).map((k) => k.slice('session:'.length));
   }
 
   /** Test helper: delete a session's stream + sequence counter. */

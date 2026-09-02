@@ -1,4 +1,4 @@
-import type { SandboxTransport } from "@sh/k8s-sandbox";
+import type { SandboxTransport } from '@sh/k8s-sandbox';
 
 /** Single-quote-escape a string for safe interpolation into a bash command. */
 function sq(s: string): string {
@@ -37,7 +37,7 @@ export function buildConvergeScript(repoUrl: string, ref: string, runId: string)
     `COMMIT=$(git -C "$REPO" rev-parse FETCH_HEAD)`,
     `[ -d "$LEAF" ] || git -C "$REPO" worktree add --quiet --detach "$LEAF" "$COMMIT"`,
     `printf '%s' "$LEAF"`,
-  ].join("\n");
+  ].join('\n');
 }
 
 /** Remove the per-leaf worktree and prune orphans (best-effort; never fails the leaf). */
@@ -48,24 +48,37 @@ export function buildCleanupScript(runId: string): string {
     `REPO=/workspace/repo; LEAF=${sq(LEAF)}`,
     `git -C "$REPO" worktree remove --force "$LEAF" 2>/dev/null || rm -rf "$LEAF"`,
     `git -C "$REPO" worktree prune 2>/dev/null || true`,
-  ].join("\n");
+  ].join('\n');
 }
 
 /** Run the converge script in the pod; return the worktree ref. Throws on non-zero exit. */
 export async function convergeWorkspace(
-  transport: SandboxTransport, repoUrl: string, ref: string, runId: string,
+  transport: SandboxTransport,
+  repoUrl: string,
+  ref: string,
+  runId: string,
 ): Promise<string> {
-  const { stdout, exitCode, truncated } = await transport.exec(buildConvergeScript(repoUrl, ref, runId), {
-    timeout: 300,
-  });
-  if (truncated) throw new Error(`converge exceeded the sandbox output cap (converge output too large): ${runId}`);
+  const { stdout, exitCode, truncated } = await transport.exec(
+    buildConvergeScript(repoUrl, ref, runId),
+    {
+      timeout: 300,
+    },
+  );
+  if (truncated)
+    throw new Error(
+      `converge exceeded the sandbox output cap (converge output too large): ${runId}`,
+    );
   if (exitCode !== 0) throw new Error(`converge failed (exit ${exitCode})`);
   return stdout.toString().trim() || leafWorkspaceRef(runId);
 }
 
 /** Best-effort worktree cleanup; swallows errors so it never masks a verdict. */
 export async function cleanupWorkspace(transport: SandboxTransport, runId: string): Promise<void> {
-  try { await transport.exec(buildCleanupScript(runId), { timeout: 60 }); } catch { /* ignore */ }
+  try {
+    await transport.exec(buildCleanupScript(runId), { timeout: 60 });
+  } catch {
+    /* ignore */
+  }
 }
 
 /** Stage every edit in the leaf worktree and print the resulting unified diff (vs the pinned base). */
@@ -76,18 +89,24 @@ export function buildDiffCaptureScript(runId: string): string {
     `LEAF=${sq(LEAF)}`,
     `git -C "$LEAF" add -A`,
     `git -C "$LEAF" diff --cached`,
-  ].join("\n");
+  ].join('\n');
 }
 
 /** Run the diff-capture script in the pod; return the patch (possibly empty). Throws on non-zero exit. */
-export async function captureWorkspaceDiff(transport: SandboxTransport, runId: string): Promise<string> {
-  const { stdout, exitCode, truncated } = await transport.exec(buildDiffCaptureScript(runId), { timeout: 120 });
-  if (truncated) throw new Error(`diff capture exceeded the sandbox output cap (diff too large): ${runId}`);
+export async function captureWorkspaceDiff(
+  transport: SandboxTransport,
+  runId: string,
+): Promise<string> {
+  const { stdout, exitCode, truncated } = await transport.exec(buildDiffCaptureScript(runId), {
+    timeout: 120,
+  });
+  if (truncated)
+    throw new Error(`diff capture exceeded the sandbox output cap (diff too large): ${runId}`);
   if (exitCode !== 0) throw new Error(`diff capture failed (exit ${exitCode})`);
   const patch = stdout.toString();
   // A unified diff must end with a newline. `git diff` emits one, but some exec transports strip
   // the trailing newline from captured stdout — and a patch that ends mid-line is rejected by
   // `git apply` / GNU patch ("patch unexpectedly ends in middle of line"), so the captured
   // model_patch fails to apply during offline evaluation. Restore it for a non-empty patch.
-  return patch && !patch.endsWith("\n") ? patch + "\n" : patch;
+  return patch && !patch.endsWith('\n') ? patch + '\n' : patch;
 }

@@ -61,8 +61,8 @@ set, existing pi-fork dist @ submodule `7acc67a`.
 - **Bare transport baseline:** `kubectl exec -i $POD -- bash -c 'hostname'` →
   `sandbox-77f89448f6-h8249`.
 - **Agent turn:** EXIT 0. Assistant reply:
-  *"Created `proof.txt` in the current directory. The hostname is
-  **sandbox-77f89448f6-h8249**."* `SESSION_ID=019ed6b2-8d97-7e78-9489-4792b4fe720d`.
+  _"Created `proof.txt` in the current directory. The hostname is
+  **sandbox-77f89448f6-h8249**."_ `SESSION_ID=019ed6b2-8d97-7e78-9489-4792b4fe720d`.
 - **(a) file written in the pod:** `kubectl exec $POD -- cat /workspace/proof.txt`
   → `sandbox-77f89448f6-h8249` (the pod's hostname).
 - **(b) head clean:** `HEAD_CLEAN` for `harness/proof.txt`, repo-root `proof.txt`,
@@ -133,14 +133,14 @@ Suite is skipped without the gate (`pnpm test` → 47 passed | 6 skipped).
 - **Claim 3 — env injection:** bash op `echo MARKER=$M3_SMOKE` with
   `env={M3_SMOKE:"works-42"}` → captured **`MARKER=works-42`**, exit 0.
 - **Claim 4 — find ignore-list + gitignored directories:** `glob('*.ts',
-  ignore=['**/node_modules/**','**/.git/**'])` → **`["top.ts","src/keep.ts"]`**.
+ignore=['**/node_modules/**','**/.git/**'])` → **`["top.ts","src/keep.ts"]`**.
   Excluded: `node_modules/pkg/skip.ts`, `.git/cfg.ts` (ignore list), and
-  **`dist/bundle.ts`** — the gitignored *directory* `dist/` is pruned by rg even
+  **`dist/bundle.ts`** — the gitignored _directory_ `dist/` is pruned by rg even
   though `-g '*.ts'` matches inside it (`.gitignore` honoured for dirs).
 - **Claim 4b — file-level gitignore nuance (verified):** in an isolated
   `/workspace/ovr` with `.gitignore` = `a.ts`, `glob('*.ts', ignore=[])` →
-  **`["a.ts","keep2.ts"]`**. The individually-gitignored *file* `a.ts` **is
-  re-included** — a positive `-g <pattern>` whitelist-overrides a *file-level*
+  **`["a.ts","keep2.ts"]`**. The individually-gitignored _file_ `a.ts` **is
+  re-included** — a positive `-g <pattern>` whitelist-overrides a _file-level_
   ignore (minor divergence from Pi's `fd`; see design D5). Net: directory-level
   gitignore parity; only individually-ignored files matching the glob can leak.
 - **Claim 5 — close:** `fastExec.close()` non-throwing; the persistent

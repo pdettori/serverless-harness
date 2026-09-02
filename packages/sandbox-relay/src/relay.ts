@@ -1,11 +1,11 @@
-import type { RecordStore, SandboxRecord } from "@sh/harness";
-import type { ExecEvent, ServerFrame, WorkerFrame } from "@sh/k8s-sandbox";
+import type { RecordStore, SandboxRecord } from '@sh/harness';
+import type { ExecEvent, ServerFrame, WorkerFrame } from '@sh/k8s-sandbox';
 
 export interface AttachStream {
   metadata?: { get: (k: string) => string[] };
-  on(event: "data", cb: (f: WorkerFrame) => void): unknown;
-  on(event: "end", cb: () => void): unknown;
-  on(event: "error", cb: (e: Error) => void): unknown;
+  on(event: 'data', cb: (f: WorkerFrame) => void): unknown;
+  on(event: 'end', cb: () => void): unknown;
+  on(event: 'error', cb: (e: Error) => void): unknown;
   write(f: ServerFrame): void;
   end(): void;
 }
@@ -36,8 +36,8 @@ export interface Relay {
 }
 
 function bearer(md?: { get: (k: string) => string[] }): string | undefined {
-  const v = md?.get("authorization")?.[0];
-  return v?.startsWith("Bearer ") ? v.slice(7) : undefined;
+  const v = md?.get('authorization')?.[0];
+  return v?.startsWith('Bearer ') ? v.slice(7) : undefined;
 }
 
 export function createRelay(deps: RelayDeps): Relay {
@@ -45,7 +45,7 @@ export function createRelay(deps: RelayDeps): Relay {
 
   function onAttach(stream: AttachStream): void {
     let sandboxId: string | undefined;
-    stream.on("data", (frame: WorkerFrame) => {
+    stream.on('data', (frame: WorkerFrame) => {
       if (frame.hello && !sandboxId) {
         const id = frame.hello.sandboxId;
         if (!deps.validateToken(bearer(stream.metadata), id)) {
@@ -73,9 +73,9 @@ export function createRelay(deps: RelayDeps): Relay {
           // select-sandbox still leases against its own opts.cap. Wiring
           // capacityMax into leasing decisions is a later slice.
           capacityMax: frame.hello.capacityMax,
-          transport: "grpc",
+          transport: 'grpc',
         };
-        void deps.records.put(rec).catch((e) => console.error("presence put failed", e));
+        void deps.records.put(rec).catch((e) => console.error('presence put failed', e));
         return;
       }
       // chunk/end/error frames are dispatched to the per-reqId sink registered by routeExec
@@ -91,15 +91,17 @@ export function createRelay(deps: RelayDeps): Relay {
         const parked = sessions.get(sandboxId);
         if (parked) {
           for (const [reqId, sink] of parked.sinks) {
-            sink({ error: { reqId, message: "worker disconnected" } } as ExecEvent);
+            sink({ error: { reqId, message: 'worker disconnected' } } as ExecEvent);
           }
         }
         sessions.delete(sandboxId);
-        void deps.records.remove(sandboxId).catch((e) => console.error("presence remove failed", e));
+        void deps.records
+          .remove(sandboxId)
+          .catch((e) => console.error('presence remove failed', e));
       }
     };
-    stream.on("end", teardown);
-    stream.on("error", teardown);
+    stream.on('end', teardown);
+    stream.on('error', teardown);
   }
 
   async function* routeExec(

@@ -28,12 +28,12 @@ leave the working tree dirty with machine-local timings after any `pnpm -r test`
 writes its own table to the gitignored `experiments/.results/` and compares only the columns
 that reproduce anywhere:
 
-| Column | Compared? | Why |
-|---|---|---|
-| `N`, backend/checkpoint entries, ratio | yes | deterministic — identical on CI and a dev box |
-| `backend bytes` | no | environment-sensitive (measured +4 bytes on CI) |
-| `checkpoint bytes` | no | same class as `backend bytes` |
-| `backend ms`, `checkpoint ms` | no | wall-clock; varies run to run |
+| Column                                 | Compared? | Why                                             |
+| -------------------------------------- | --------- | ----------------------------------------------- |
+| `N`, backend/checkpoint entries, ratio | yes       | deterministic — identical on CI and a dev box   |
+| `backend bytes`                        | no        | environment-sensitive (measured +4 bytes on CI) |
+| `checkpoint bytes`                     | no        | same class as `backend bytes`                   |
+| `backend ms`, `checkpoint ms`          | no        | wall-clock; varies run to run                   |
 
 So a change that moves the read counts fails E2 instead of silently rewriting the recorded
 result. When the move is legitimate, refresh the baseline deliberately and commit it:

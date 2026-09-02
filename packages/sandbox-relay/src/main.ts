@@ -5,7 +5,7 @@ import {
   type ServerWritableStream,
   type ServerUnaryCall,
   type sendUnaryData,
-} from "@grpc/grpc-js";
+} from '@grpc/grpc-js';
 import {
   SandboxWorkerService,
   SandboxExecService,
@@ -17,9 +17,9 @@ import {
   type ExecEvent,
   type AbortRequest,
   type AbortResponse,
-} from "@sh/k8s-sandbox";
-import { RedisRecordStore } from "@sh/harness";
-import { createRelay, type RelayDeps, type AttachStream } from "./relay.js";
+} from '@sh/k8s-sandbox';
+import { RedisRecordStore } from '@sh/harness';
+import { createRelay, type RelayDeps, type AttachStream } from './relay.js';
 
 export function buildServer(deps: RelayDeps): { server: Server } {
   const relay = createRelay(deps);
@@ -30,7 +30,8 @@ export function buildServer(deps: RelayDeps): { server: Server } {
     // Metadata.get() returns MetadataValue[] (string | Buffer). The relay only
     // ever reads a bearer token (always sent as a string by well-behaved
     // clients), so the cast is safe here without widening relay.ts's contract.
-    attach: (call: ServerDuplexStream<WorkerFrame, ServerFrame>) => relay.onAttach(call as unknown as AttachStream),
+    attach: (call: ServerDuplexStream<WorkerFrame, ServerFrame>) =>
+      relay.onAttach(call as unknown as AttachStream),
   };
   server.addService(SandboxWorkerService, workerImpl);
 
@@ -50,26 +51,36 @@ export function buildServer(deps: RelayDeps): { server: Server } {
       const req = call.request;
       const e = req.exec;
       if (!e) {
-        call.destroy(new Error("ExecRequest missing exec field"));
+        call.destroy(new Error('ExecRequest missing exec field'));
         return;
       }
       // Registered synchronously (before the loop's first await) so a
       // cancellation that races the very first event is never missed.
       const onCancelled = () => relay.routeAbort(req.sandboxId, e.reqId);
-      call.on("cancelled", onCancelled);
+      call.on('cancelled', onCancelled);
 
       try {
-        for await (const ev of relay.routeExec(req.sandboxId, e.reqId, e.command, e.stdin, e.timeoutS, e.streaming)) {
+        for await (const ev of relay.routeExec(
+          req.sandboxId,
+          e.reqId,
+          e.command,
+          e.stdin,
+          e.timeoutS,
+          e.streaming,
+        )) {
           call.write(ev);
         }
         call.end();
       } catch (err) {
         call.destroy(err as Error);
       } finally {
-        call.removeListener("cancelled", onCancelled);
+        call.removeListener('cancelled', onCancelled);
       }
     },
-    abort: (call: ServerUnaryCall<AbortRequest, AbortResponse>, cb: sendUnaryData<AbortResponse>) => {
+    abort: (
+      call: ServerUnaryCall<AbortRequest, AbortResponse>,
+      cb: sendUnaryData<AbortResponse>,
+    ) => {
       relay.routeAbort(call.request.sandboxId, call.request.reqId);
       cb(null, {});
     },
@@ -106,7 +117,9 @@ export async function startRelay(
   const { server } = buildServer(deps);
   const addr = `0.0.0.0:${opts.port ?? Number(process.env.SH_RELAY_PORT ?? 8443)}`;
   const port = await new Promise<number>((resolve, reject) =>
-    server.bindAsync(addr, ServerCredentials.createInsecure(), (err, p) => (err ? reject(err) : resolve(p))),
+    server.bindAsync(addr, ServerCredentials.createInsecure(), (err, p) =>
+      err ? reject(err) : resolve(p),
+    ),
   );
   return { port, shutdown: () => new Promise((r) => server.tryShutdown(() => r())) };
 }

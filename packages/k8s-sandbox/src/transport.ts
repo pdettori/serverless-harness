@@ -73,4 +73,4 @@ export interface SandboxTransport {
 export const DEFAULT_OUTPUT_CAP = 8 * 1024 * 1024; // 8 MiB
 
 /** Appended to returned stdout when the cap trips, so Pi sees the truncation. */
-export const OUTPUT_TRUNCATED_MARKER = "\n[output truncated]";
+export const OUTPUT_TRUNCATED_MARKER = '\n[output truncated]';

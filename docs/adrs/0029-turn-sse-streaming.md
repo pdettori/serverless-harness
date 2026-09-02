@@ -21,7 +21,7 @@ the non-streaming response must stay byte-for-byte identical.
 
 We will add streaming as a **representation of `/turn` selected by content negotiation**
 (`Accept: text/event-stream`), **not** a new `/turn/stream` route. Both modes run the **same**
-`executeTurn` core (the shared turn engine ADR-0028 extracted); streaming adds only an event *sink*,
+`executeTurn` core (the shared turn engine ADR-0028 extracted); streaming adds only an event _sink_,
 not a second engine. The sink is a new Pi extension factory `sseExtension(onEvent)` in
 `harness/src/turn-stream.ts` — the same shape as `flushExtension` — that translates Pi session events
 into a neutral `TurnStreamFrame` union. `executeTurn` gains two **optional, additive** inputs,
@@ -52,4 +52,4 @@ activator) and, crucially, **validated** by a gated smoke that asserts inter-fra
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

@@ -10,15 +10,15 @@
 
 The zero-trust credential plane (Phase 2, `Z`-prefix) is being reframed around **Rosso Cortex /
 AuthBridge** as the concrete injection **and** control mechanism, for a single-tenant PoC. AuthBridge is
-a Go HTTP plugin pipeline that can run credential injection (`token-broker`/`token-exchange`) *and*
+a Go HTTP plugin pipeline that can run credential injection (`token-broker`/`token-exchange`) _and_
 control plugins (`SPARC` grounding, `IBAC` intent) on the same egress hop. Adopting it forces a question
 the earlier specs did not settle uniformly: **where does AuthBridge physically sit?**
 
 Two harness egress hops need it, and they differ:
 
 - **harness → LLM** — one fixed destination, one shared single-tenant provider key. Z3 (inference
-  injector) had specified a **shared reverse-proxy pod** but explicitly *rejected* AuthBridge in favor of
-  a plain Go injector — a choice made when only *credential injection* was in scope. Once **control
+  injector) had specified a **shared reverse-proxy pod** but explicitly _rejected_ AuthBridge in favor of
+  a plain Go injector — a choice made when only _credential injection_ was in scope. Once **control
   plugins (SPARC/IBAC) are also wanted on this hop**, a plain injector is insufficient and AuthBridge is
   justified — which reopens the placement question.
 - **sandbox → external API** — arbitrary destinations; Z5 (generalized credentialed egress) already
@@ -27,8 +27,8 @@ Two harness egress hops need it, and they differ:
   own outbound calls.
 
 The forces: the harness is serverless/scale-to-zero (Knative); Kubernetes `NetworkPolicy` selects
-*pods*, not containers; AuthBridge's in-memory `abph_` placeholder-swap is single-process only; kagenti's
-target mesh is Istio **ambient** (L7 policy at a shared *waypoint*, not per-pod sidecars); and per-caller
+_pods_, not containers; AuthBridge's in-memory `abph_` placeholder-swap is single-process only; kagenti's
+target mesh is Istio **ambient** (L7 policy at a shared _waypoint_, not per-pod sidecars); and per-caller
 identity attribution depends on the deferred Z1 identity spine.
 
 ## Decision
@@ -43,7 +43,7 @@ gateway holds no key and is not bound by the single-process `abph_` limitation.
 ### Alternatives considered
 
 - **AuthBridge #1 as a per-harness sidecar** (`envoy-sidecar`/co-located) — rejected for the shared role:
-  a `NetworkPolicy` cannot stop the *harness pod* from egressing when the proxy shares its network
+  a `NetworkPolicy` cannot stop the _harness pod_ from egressing when the proxy shares its network
   namespace, so the enforceable "harness pod has zero public egress" boundary (Z2 L3) is lost; it also
   scales a proxy with every scale-to-zero replica and diverges from the ambient/waypoint target shape.
   (It is simpler — loopback, no harness↔gateway mTLS, local session context — and remains a valid
@@ -57,8 +57,8 @@ gateway holds no key and is not bound by the single-process `abph_` limitation.
 ## Consequences
 
 - Positive: the harness pod can be locked to **zero public egress** (default-deny except → the gateway
-  `Service`), giving an enforceable "no key *and* can't phone home" boundary (Z2); a single shared audit
-  and policy chokepoint for all harness→LLM traffic; alignment with the kagenti Istio-ambient *waypoint*
+  `Service`), giving an enforceable "no key _and_ can't phone home" boundary (Z2); a single shared audit
+  and policy chokepoint for all harness→LLM traffic; alignment with the kagenti Istio-ambient _waypoint_
   production shape; the sandbox gate works identically whether the sandbox is in-cluster or BYO; because
   injection is via the stateless `token-broker`, the shared gateway can scale horizontally and no workload
   ever holds the real key (it lives only in `static-broker`).
@@ -74,4 +74,4 @@ gateway holds no key and is not bound by the single-process `abph_` limitation.
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

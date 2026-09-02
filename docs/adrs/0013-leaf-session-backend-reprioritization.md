@@ -27,4 +27,4 @@ We will treat the harness's core role as an excellent leaf-session backend invok
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

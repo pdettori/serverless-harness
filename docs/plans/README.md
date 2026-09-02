@@ -6,12 +6,12 @@ README is gitignored (see the repo `.gitignore`).
 
 ## Why plans aren't committed
 
-A plan answers *how, in what order*. The moment the code merges, the code becomes the source
-of truth for *how* — the plan is now a stale, lower-fidelity copy. The durable value of our
-docs is the ***why***: the decisions and rejected alternatives. Those live in:
+A plan answers _how, in what order_. The moment the code merges, the code becomes the source
+of truth for _how_ — the plan is now a stale, lower-fidelity copy. The durable value of our
+docs is the _**why**_: the decisions and rejected alternatives. Those live in:
 
-- **[`../specs/`](../specs/)** — dated design docs (*what & why*, in depth).
-- **[`../adrs/`](../adrs/)** — permanent decision records (*one decision + consequences*).
+- **[`../specs/`](../specs/)** — dated design docs (_what & why_, in depth).
+- **[`../adrs/`](../adrs/)** — permanent decision records (_one decision + consequences_).
 
 So a plan's whole life is: write it → execute it → **delete it**. Committing it would just
 create a maintenance burden that goes stale and misleads.
@@ -27,4 +27,4 @@ New plans authored via the writing-plans workflow land here by convention.
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

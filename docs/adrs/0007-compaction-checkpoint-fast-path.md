@@ -26,4 +26,4 @@ We will treat Pi's native `compaction` entry as the checkpoint and add an additi
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

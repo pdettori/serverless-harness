@@ -1,0 +1,12 @@
+{
+  "name": "serverless-harness",
+  "private": true,
+  "description": "Workspace root. Holds only repo-wide tooling -- runtime code lives in harness/, packages/* and experiments/.",
+  "scripts": {
+    "fmt": "prettier --write .",
+    "fmt:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "3.9.6"
+  }
+}

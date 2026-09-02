@@ -61,15 +61,15 @@ creates a real Route per Knative Service (`oc get ksvc serverless-harness -o jso
 
 ## What it installs
 
-| Component | How |
-|-----------|-----|
-| Knative Serving (+ Kourier) | **Red Hat OpenShift Serverless Operator** (OLM Subscription in `openshift-serverless`) + a `KnativeServing` CR in `knative-serving`. Kourier is bundled. |
-| Knative config | Autoscaler tuning + the `podspec-persistent-volume-claim`/`-write`/`-securitycontext` feature flags are set in the **`KnativeServing` CR spec** (the operator reverts direct `config-*` ConfigMap patches). |
-| Redis | Lightweight in-repo Deployment (`redis:7-alpine`), runs under `restricted-v2`. |
-| Sandbox | Pre-baked image ([`sandbox.Dockerfile`](sandbox.Dockerfile), `USER 65532`), pulled from GHCR (`ghcr.io/rossoctl/serverless-harness-sandbox:latest`, republished by `build.yaml` on every push to `main`; override with `--sandbox-image`). |
-| Sandbox `/workspace` PVC | `ReadWriteOnce` (Sandbox CR `volumeClaimTemplates`), cluster-default StorageClass. |
-| Harness | Knative Service applied via the [`overlays/ocp`](overlays/ocp) kustomize overlay; SA granted the `nonroot-v2` SCC. |
-| Ingress | Auto-created OpenShift Route. |
+| Component                   | How                                                                                                                                                                                                                                        |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Knative Serving (+ Kourier) | **Red Hat OpenShift Serverless Operator** (OLM Subscription in `openshift-serverless`) + a `KnativeServing` CR in `knative-serving`. Kourier is bundled.                                                                                   |
+| Knative config              | Autoscaler tuning + the `podspec-persistent-volume-claim`/`-write`/`-securitycontext` feature flags are set in the **`KnativeServing` CR spec** (the operator reverts direct `config-*` ConfigMap patches).                                |
+| Redis                       | Lightweight in-repo Deployment (`redis:7-alpine`), runs under `restricted-v2`.                                                                                                                                                             |
+| Sandbox                     | Pre-baked image ([`sandbox.Dockerfile`](sandbox.Dockerfile), `USER 65532`), pulled from GHCR (`ghcr.io/rossoctl/serverless-harness-sandbox:latest`, republished by `build.yaml` on every push to `main`; override with `--sandbox-image`). |
+| Sandbox `/workspace` PVC    | `ReadWriteOnce` (Sandbox CR `volumeClaimTemplates`), cluster-default StorageClass.                                                                                                                                                         |
+| Harness                     | Knative Service applied via the [`overlays/ocp`](overlays/ocp) kustomize overlay; SA granted the `nonroot-v2` SCC.                                                                                                                         |
+| Ingress                     | Auto-created OpenShift Route.                                                                                                                                                                                                              |
 
 Manifests are shared with Kind via the `overlays/ocp` overlay — OpenShift tweaks
 are kustomize patches, not forked YAMLs.
@@ -99,7 +99,7 @@ To use a different model, edit `service.yaml` before running the setup script:
 
 ```yaml
 - name: SH_MODEL
-  value: "claude-sonnet-4-6"   # or claude-opus-4-6, claude-haiku-4-5, etc.
+  value: 'claude-sonnet-4-6' # or claude-opus-4-6, claude-haiku-4-5, etc.
 ```
 
 Or patch the running Knative Service after deployment:
@@ -110,11 +110,11 @@ oc set env ksvc/serverless-harness SH_MODEL=claude-sonnet-4-6
 
 This triggers an automatic revision rollout. Available model IDs:
 
-| Model | ID | Notes |
-|-------|----|-------|
-| Haiku 4.5 | `claude-haiku-4-5` | Default — fast, low cost |
-| Sonnet 4.6 | `claude-sonnet-4-6` | Balanced |
-| Opus 4.6 | `claude-opus-4-6` | Most capable |
+| Model      | ID                  | Notes                    |
+| ---------- | ------------------- | ------------------------ |
+| Haiku 4.5  | `claude-haiku-4-5`  | Default — fast, low cost |
+| Sonnet 4.6 | `claude-sonnet-4-6` | Balanced                 |
+| Opus 4.6   | `claude-opus-4-6`   | Most capable             |
 
 When using a gateway (LiteLLM, etc.), the model ID must match what the gateway
 accepts — consult your gateway's model routing configuration.
@@ -131,15 +131,15 @@ protocol with `SH_MODEL_API`:
 
 ```yaml
 - name: SH_MODEL
-  value: "ibm-granite/granite-4.1-8b"
+  value: 'ibm-granite/granite-4.1-8b'
 - name: SH_MODEL_CUSTOM
-  value: "1"
+  value: '1'
 - name: SH_MODEL_API
-  value: "openai-completions"
+  value: 'openai-completions'
 - name: SH_MODEL_BASE_URL
-  value: "https://<host>/granite-4-1-8b/v1"
+  value: 'https://<host>/granite-4-1-8b/v1'
 - name: OPENAI_API_KEY
-  value: "<key>"                            # standard Bearer auth (default)
+  value: '<key>' # standard Bearer auth (default)
 ```
 
 For custom-header auth (e.g. IBM RITS's `RITS_API_KEY`), keep the secret in a `secretKeyRef`
@@ -147,9 +147,9 @@ env and reference it from `SH_MODEL_HEADERS` via `${VAR}` (the default Bearer is
 
 ```yaml
 - name: SH_MODEL_AUTH
-  value: "custom-header"
+  value: 'custom-header'
 - name: SH_MODEL_HEADERS
-  value: '{"RITS_API_KEY":"${RITS_API_KEY}"}'   # RITS_API_KEY from a secretKeyRef env
+  value: '{"RITS_API_KEY":"${RITS_API_KEY}"}' # RITS_API_KEY from a secretKeyRef env
 ```
 
 > Tool-calling is a per-endpoint capability: only routes with the vLLM tool-call parser
@@ -170,7 +170,7 @@ control on both harness egress hops — see [`README-authbridge.md`](README-auth
 
 See [`SMOKE.md`](SMOKE.md#smoke-test-on-openshift) for details. Claims that assert
 on the **LLM `/turn` response** require the harness to reach its configured
-Anthropic endpoint *from the cluster*; health, scale-to-zero/-up, Redis session
+Anthropic endpoint _from the cluster_; health, scale-to-zero/-up, Redis session
 recall, and the 404 path do not.
 
 ## Connecting a worker
@@ -221,7 +221,7 @@ and verifying the async-leaf path itself on OpenShift is a further step.
 - **SCC.** The published harness image declares no `USER` (defaults to root), so it
   runs as an explicit non-root UID (65532) and the script grants the harness
   ServiceAccount the `nonroot-v2` SCC (`oc adm policy add-scc-to-user nonroot-v2 -z
-  serverless-harness`). The sandbox image sets `USER 65532` itself and needs no grant.
+serverless-harness`). The sandbox image sets `USER 65532` itself and needs no grant.
 
 ## Image delivery
 
@@ -246,13 +246,13 @@ on every push to `main`, so OpenShift pulls them directly — no in-cluster buil
 
 ## Troubleshooting
 
-| Symptom | Cause / fix |
-|---------|-------------|
-| `ksvc` never Ready, pod `CreateContainerConfigError: container has runAsNonRoot and image will run as root` | The `nonroot-v2` SCC grant didn't apply. Re-run the script, or `oc adm policy add-scc-to-user nonroot-v2 -z serverless-harness -n <ns>`. |
-| `ksvc` never Ready, pod `CrashLoopBackOff` with `ERR_MODULE_NOT_FOUND` | The harness image is broken/stale. Use a newer `--image` (the fix shipped in the image build; see the repo history). |
-| Sandbox `/workspace` PVC stuck `Pending` | No (default) StorageClass. Set one, or ensure a provisioner is installed. |
-| `oc apply -k overlays/ocp` fails with a load-restrictor / "not in or below" error | The overlay references shared base YAMLs one level up. Render with `oc kustomize --load-restrictor LoadRestrictionsNone deploy/knative/overlays/ocp \| oc apply -f -` — `setup-ocp.sh` does this for you. |
-| `/turn` returns `"Connection error"` | The harness can't reach its configured Anthropic endpoint from the cluster (egress/gateway reachability). `/health` and session creation still work. |
+| Symptom                                                                                                     | Cause / fix                                                                                                                                                                                               |
+| ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ksvc` never Ready, pod `CreateContainerConfigError: container has runAsNonRoot and image will run as root` | The `nonroot-v2` SCC grant didn't apply. Re-run the script, or `oc adm policy add-scc-to-user nonroot-v2 -z serverless-harness -n <ns>`.                                                                  |
+| `ksvc` never Ready, pod `CrashLoopBackOff` with `ERR_MODULE_NOT_FOUND`                                      | The harness image is broken/stale. Use a newer `--image` (the fix shipped in the image build; see the repo history).                                                                                      |
+| Sandbox `/workspace` PVC stuck `Pending`                                                                    | No (default) StorageClass. Set one, or ensure a provisioner is installed.                                                                                                                                 |
+| `oc apply -k overlays/ocp` fails with a load-restrictor / "not in or below" error                           | The overlay references shared base YAMLs one level up. Render with `oc kustomize --load-restrictor LoadRestrictionsNone deploy/knative/overlays/ocp \| oc apply -f -` — `setup-ocp.sh` does this for you. |
+| `/turn` returns `"Connection error"`                                                                        | The harness can't reach its configured Anthropic endpoint from the cluster (egress/gateway reachability). `/health` and session creation still work.                                                      |
 
 ## Cleanup
 

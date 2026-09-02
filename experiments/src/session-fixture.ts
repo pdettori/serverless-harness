@@ -1,6 +1,6 @@
-import { SessionManager, type FileEntry } from "@earendil-works/pi-coding-agent";
-import { RedisSessionBackend } from "@sh/session-backend";
-import { BufferedRedisBackend } from "@sh/harness/buffered-redis-backend";
+import { SessionManager, type FileEntry } from '@earendil-works/pi-coding-agent';
+import { RedisSessionBackend } from '@sh/session-backend';
+import { BufferedRedisBackend } from '@sh/harness/buffered-redis-backend';
 
 export interface CompactedFixture {
   sessionId: string;
@@ -27,21 +27,21 @@ export async function buildCompactedSession(
 
   const ids: string[] = [];
   for (let i = 0; i < opts.n; i++) {
-    const role = i % 2 === 0 ? "user" : "assistant";
+    const role = i % 2 === 0 ? 'user' : 'assistant';
     const id = sm.appendMessage({ role, content: `m${i}` } as never);
     ids.push(id);
   }
 
   // Keep the last `tailKept` messages: firstKept = the message at index n - tailKept.
   const firstKeptId = ids[Math.max(0, opts.n - tailKept)];
-  sm.appendCompaction("summary of earlier turns", firstKeptId, 1234);
+  sm.appendCompaction('summary of earlier turns', firstKeptId, 1234);
   await backend.flush();
 
   const resumeFromPosition = await store.positionOfId(sessionId, firstKeptId);
   if (resumeFromPosition == null) {
     throw new Error(`fixture: positionOfId returned null for firstKeptId ${firstKeptId}`);
   }
-  sm.appendCustomEntry("checkpoint", { resumeFromPosition });
+  sm.appendCustomEntry('checkpoint', { resumeFromPosition });
   await backend.flush();
 
   const full = await store.read(sessionId);

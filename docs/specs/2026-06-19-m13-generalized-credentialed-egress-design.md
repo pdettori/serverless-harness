@@ -13,13 +13,13 @@ Sibling / specializes: [M10 — MCP via Code-Mode in the Sandbox](2026-06-18-m10
 Builds on: M1 (Redis session backend), M2 (`K8sSandboxClient`), M3 (persistent channel), M4 (Knative wrapper), M10 (MCP code-mode + credential/identity model §5, placeholder-swap §5.3)
 
 > **Relationship to M10.** M10 is frozen and approved. This design does not reopen it; it
-> *generalizes the credential mechanism M10 already adopted* — the **placeholder-swap** pattern
+> _generalizes the credential mechanism M10 already adopted_ — the **placeholder-swap** pattern
 > (M10 §5.3) — to all HTTP egress. The selector, the resolvers, the audit producer, and the
 > budget machinery are shared. Only the **interception point** differs: M10's in-mesh waypoint
 > for in-mesh MCP backends; a **forward proxy** for external hosts.
 
 > **Changelog 2.0 (supersedes v1.0).** v1.0 chose an in-mesh front-door + host-based injection
-> (model sends no auth; proxy adds it) explicitly to *avoid* TLS interception, at the cost of
+> (model sends no auth; proxy adds it) explicitly to _avoid_ TLS interception, at the cost of
 > per-host mesh config, a generic egress helper, per-API wrappers for correctness, and an
 > env-injection escape hatch for foreign binaries. v2.0 **pivots to AuthBridge's own
 > placeholder-swap pattern over a forward proxy**: the sandbox/tools hold only inert
@@ -50,7 +50,7 @@ enforces a cap. The sandbox, the prompt, and the log never see a real secret.
 
 ### Worked example (the shape of "done")
 
-A user prompts: *"review the PR at https://github.com/kagenti/kagenti/pull/1990"* — and knows
+A user prompts: _"review the PR at https://github.com/kagenti/kagenti/pull/1990"_ — and knows
 nothing about proxies, placeholders, or credentials.
 
 1. The model maps intent → GitHub and writes a sandbox script the natural way, e.g.
@@ -61,7 +61,7 @@ nothing about proxies, placeholders, or credentials.
    session → `subject = <user>`, host-policy → the user's stored GitHub grant, **overwrites** the
    header with the real token, originates real TLS to api.github.com, appends one audit entry,
    counts it.
-3. GitHub sees the call **as that user**. The script filters/summarizes the diff *in code* and
+3. GitHub sees the call **as that user**. The script filters/summarizes the diff _in code_ and
    prints only the review-relevant slice → one `tool_result`. A 3000-line PR never floods
    context — the filter-in-code token win, preserved.
 
@@ -77,16 +77,16 @@ nothing about proxies, placeholders, or credentials.
 - **Generalized audit + budget:** per-call `egress-broker` log entries (full L7); hard
   per-session egress-call cap; soft turn-boundary budget widened to count them.
 - **Recording** the per-user external-credential-store + linking/consent shape (§4) as a hard
-  identity-plane dependency this milestone *consumes*, mirroring M10 §5.
+  identity-plane dependency this milestone _consumes_, mirroring M10 §5.
 
 ### Out of scope (later milestones / separate tracks)
 
 - **The per-user external-credential store + onboarding/consent build itself** — M7–M9
   identity-plane work. This design records its required shape; it does not build it.
 - **Optional progressive-disclosure wrappers.** Native tools are first-class (§5); pre-baked
-  per-API wrappers are a *later, optional* token-optimization for very large API surfaces, not
+  per-API wrappers are a _later, optional_ token-optimization for very large API surfaces, not
   required for correctness. Not built here.
-- **Request-signing APIs (AWS SigV4 and similar).** Where the secret *signs* the request, a
+- **Request-signing APIs (AWS SigV4 and similar).** Where the secret _signs_ the request, a
   post-hoc header swap is impossible; these stay an env-inject-real-key escape hatch (§5.3),
   deferred.
 - **Per-team / per-session host rosters.** Static per environment; deferred.
@@ -97,18 +97,18 @@ nothing about proxies, placeholders, or credentials.
 
 ## 2. Key decisions
 
-| # | Decision | Choice |
-|---|----------|--------|
-| E1 | Unification | **One credential mechanism across all egress; MCP is one interception case.** Shared selector, resolvers, placeholder-swap, audit producer, and budget. Interception differs only by locality: in-mesh waypoint (MCP/internal, M10) vs. forward proxy (external). |
-| E2 | Credential presentation | **Placeholder-swap (AuthBridge-native).** The sandbox/tool holds only an **inert placeholder**; the proxy overwrites it with the real resolved credential at egress. Tools use their native auth mechanism unchanged. |
-| E3 | External interception | **Forward proxy (`HTTPS_PROXY`) + baked CA** in the sandbox trust store. TLS interception is accepted and is the enabling mechanism. The CA is a **trust anchor, not a secret** (the proxy's private key never leaves the proxy). |
-| E4 | Egress allowlist | **Enforced at the proxy.** It forwards only to allowlisted hosts; the host roster is the allowlist and the exfil boundary. "curl to anywhere" is structurally impossible. |
-| E5 | Non-OAuth scoping | **Per-user stored credentials. No shared-workload fallback.** Non-mintable destinations (GitHub PAT/App, third-party keys) resolve to the user's own pre-linked grant, keyed by bound subject. |
-| E6 | Credential resolver | **Two resolvers, one selector.** `(subject ⊕ destination)` resolves via **mint (RFC 8693)** for OAuth backends (M10 path) or **fetch-stored-grant** for everything else. The host-policy entry declares which, and which request field carries the credential. |
-| E7 | Model interface | **Native tools, first-class.** `gh`/`curl`/SDKs work unmodified using placeholder creds from env/config — the model writes the code a human would. Wrappers + a generic helper drop to **optional** token-optimization, not required for correctness or steering. The filter-in-code token win is preserved by code-mode regardless. |
-| E8 | Escape hatch | **Only request-signing schemes** (AWS SigV4 etc.), where the secret signs the request and cannot be swapped post-hoc, remain an env-inject-real-key escape hatch. Bearer/OAuth/header APIs (incl. GitHub) are first-class. |
-| E9 | Security boundary | **The forward proxy is the sole egress + enforcement point** — allowlist, resolve, overwrite, audit, cap. Sandbox code is fully bypass-capable and enforces nothing. |
-| E10 | Home | **New sibling milestone (this doc).** Keeps M10 frozen; records the new identity-plane dependency rather than entangling timelines. |
+| #   | Decision                      | Choice                                                                                                                                                                                                                                                                                                                                                                             |
+| --- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| E1  | Unification                   | **One credential mechanism across all egress; MCP is one interception case.** Shared selector, resolvers, placeholder-swap, audit producer, and budget. Interception differs only by locality: in-mesh waypoint (MCP/internal, M10) vs. forward proxy (external).                                                                                                                  |
+| E2  | Credential presentation       | **Placeholder-swap (AuthBridge-native).** The sandbox/tool holds only an **inert placeholder**; the proxy overwrites it with the real resolved credential at egress. Tools use their native auth mechanism unchanged.                                                                                                                                                              |
+| E3  | External interception         | **Forward proxy (`HTTPS_PROXY`) + baked CA** in the sandbox trust store. TLS interception is accepted and is the enabling mechanism. The CA is a **trust anchor, not a secret** (the proxy's private key never leaves the proxy).                                                                                                                                                  |
+| E4  | Egress allowlist              | **Enforced at the proxy.** It forwards only to allowlisted hosts; the host roster is the allowlist and the exfil boundary. "curl to anywhere" is structurally impossible.                                                                                                                                                                                                          |
+| E5  | Non-OAuth scoping             | **Per-user stored credentials. No shared-workload fallback.** Non-mintable destinations (GitHub PAT/App, third-party keys) resolve to the user's own pre-linked grant, keyed by bound subject.                                                                                                                                                                                     |
+| E6  | Credential resolver           | **Two resolvers, one selector.** `(subject ⊕ destination)` resolves via **mint (RFC 8693)** for OAuth backends (M10 path) or **fetch-stored-grant** for everything else. The host-policy entry declares which, and which request field carries the credential.                                                                                                                     |
+| E7  | Model interface               | **Native tools, first-class.** `gh`/`curl`/SDKs work unmodified using placeholder creds from env/config — the model writes the code a human would. Wrappers + a generic helper drop to **optional** token-optimization, not required for correctness or steering. The filter-in-code token win is preserved by code-mode regardless.                                               |
+| E8  | Escape hatch                  | **Only request-signing schemes** (AWS SigV4 etc.), where the secret signs the request and cannot be swapped post-hoc, remain an env-inject-real-key escape hatch. Bearer/OAuth/header APIs (incl. GitHub) are first-class.                                                                                                                                                         |
+| E9  | Security boundary             | **The forward proxy is the sole egress + enforcement point** — allowlist, resolve, overwrite, audit, cap. Sandbox code is fully bypass-capable and enforces nothing.                                                                                                                                                                                                               |
+| E10 | Home                          | **New sibling milestone (this doc).** Keeps M10 frozen; records the new identity-plane dependency rather than entangling timelines.                                                                                                                                                                                                                                                |
 | E11 | Placeholder semantics & exfil | **Placeholders are inert markers** that satisfy client tools. The proxy overwrites with the real credential **only for the matching allowlisted destination**, keyed on `(subject ⊕ destination)`. A placeholder sent anywhere else is never swapped and the host isn't reachable — so a leaked placeholder is worthless and a real credential never leaves its bound destination. |
 
 ---
@@ -151,7 +151,7 @@ writes arbitrary code, nothing in the sandbox can constrain reachability — all
 resolution, overwrite, audit, and cap all live at the proxy.
 
 **MCP stays M10.** In-mesh MCP backends keep M10's in-mesh waypoint interception (mesh mTLS, a
-legitimate terminator — no CA needed there). M13 adds the *forward-proxy* interception for
+legitimate terminator — no CA needed there). M13 adds the _forward-proxy_ interception for
 external hosts. Same brain (selector, resolvers, placeholder-swap, audit, cap), two
 interception points by locality.
 
@@ -165,10 +165,10 @@ Every egress resolves `(bound subject ⊕ destination host) → credential` at t
 host-policy entry for the destination declares the resolver **and** which request field carries
 the credential (e.g. `Authorization` header, bearer):
 
-| Resolver | When | How | Per-user? |
-|---|---|---|---|
-| **Mint (RFC 8693)** | destination speaks OAuth (M10 MCP backends, OIDC APIs) | actor = workload JWT-SVID, subject = `<user>`, audience = backend → fresh scoped token | yes, minted |
-| **Stored grant** | non-exchangeable API (GitHub PAT/App installation, third-party key) | fetch the user's pre-linked credential; refresh if supported | yes, stored |
+| Resolver            | When                                                                | How                                                                                    | Per-user?   |
+| ------------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ----------- |
+| **Mint (RFC 8693)** | destination speaks OAuth (M10 MCP backends, OIDC APIs)              | actor = workload JWT-SVID, subject = `<user>`, audience = backend → fresh scoped token | yes, minted |
+| **Stored grant**    | non-exchangeable API (GitHub PAT/App installation, third-party key) | fetch the user's pre-linked credential; refresh if supported                           | yes, stored |
 
 The minting resolver is M10 §5 verbatim. The stored-grant resolver is the new capability and the
 reason for the identity-plane dependency below.
@@ -193,7 +193,7 @@ milestone **consumes**, does not build, the store):
   egress call returns an **auth error into the script** — **no silent fallback** to a
   workload-only or less-scoped credential.
 - **Interactive vs. unattended are identical at egress.** GitHub login is not part of kagenti's
-  Keycloak login, so even an online, interactive session reads the user's *stored* grant — not a
+  Keycloak login, so even an online, interactive session reads the user's _stored_ grant — not a
   live propagated GitHub token. Unattended (scale-to-zero, user offline) reads the same grant.
   This subsumes M10's live-or-delegated subject sourcing.
 
@@ -214,7 +214,8 @@ milestone **consumes**, does not build, the store):
 
 `subject` and `actor_spiffe_id` are identity references, never secrets. Injection happens
 downstream of the log, at the proxy. The parent's red-team grep (log + harness env + sandbox env
-+ reconstructed prompt) remains the direct test.
+
+- reconstructed prompt) remains the direct test.
 
 ---
 
@@ -226,12 +227,12 @@ no front-door hostname, no endpoint-override, no special convention. Real hostna
 (`api.github.com`) are used directly; `HTTPS_PROXY` routes egress to the broker transparently.
 
 **The filter-in-code token win is preserved regardless.** Code-mode means the model's script
-runs the tool, processes output *in code*, and prints only the relevant slice — so a huge PR
+runs the tool, processes output _in code_, and prints only the relevant slice — so a huge PR
 diff or API response never floods context. This holds whether the script uses `gh`, `curl`, or a
 wrapper; it is a property of running tools inside a script, not of any wrapper.
 
 **Optional wrappers (deferred, not required).** For a very large API surface where even
-*discovering* endpoints costs context, pre-baked `./apis/<service>/…` stubs can be added later as
+_discovering_ endpoints costs context, pre-baked `./apis/<service>/…` stubs can be added later as
 a pure progressive-disclosure optimization. They are **not** needed for correctness or steering
 under v2.0 (native tools already work), and they are **never** a security boundary (§5.1).
 
@@ -271,7 +272,7 @@ common case, GitHub included — never touch it.
 
 ## 6. Observability, budget & failure modes
 
-**Audit (generalize M10 D3).** The proxy is the log *producer* for all egress; full L7 visibility
+**Audit (generalize M10 D3).** The proxy is the log _producer_ for all egress; full L7 visibility
 (it terminates TLS) means per-call entries carry method + path:
 
 ```
@@ -288,7 +289,7 @@ the overwrite is downstream of the log.
 
 **Budget (M10's "lean both," generalized).**
 
-- **Hard cap (proxy):** a high per-session *egress-call* ceiling — kill-switch for a runaway loop
+- **Hard cap (proxy):** a high per-session _egress-call_ ceiling — kill-switch for a runaway loop
   (the model writes a loop making thousands of calls inside one bash run, where no inference
   happens and the turn-boundary budget never sees it). A counter + one comparison on the audit
   path.
@@ -297,7 +298,7 @@ the overwrite is downstream of the log.
 
 **Failure modes:**
 
-- **Hard-cap hit** → the egress call fails *inside the model's script*; the model adapts mid-run.
+- **Hard-cap hit** → the egress call fails _inside the model's script_; the model adapts mid-run.
 - **Single-turn budget burn** → caught at the next turn boundary by the soft budget; pathological
   intra-turn loops caught by the hard cap.
 - **Grant expired / revoked** → the resolver fails at the proxy; an auth error returns into the
@@ -351,7 +352,7 @@ M13 passes when, end to end on a Kind cluster with the sandbox image (baked CA +
 placeholders), the AuthBridge forward proxy, and the M7–M9 identity plane (including the per-user
 external-credential store) deployed:
 
-1. *"review PR 1990"* completes purely by the model running a **native** sandbox script
+1. _"review PR 1990"_ completes purely by the model running a **native** sandbox script
    (`gh`/`curl`); `grep` confirms no real token is present in the harness bundle, sandbox env
    (placeholder only), or prompt.
 2. The real GitHub credential is present **only** at the proxy: red-team grep finds it absent from
@@ -387,4 +388,4 @@ external-credential store) deployed:
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

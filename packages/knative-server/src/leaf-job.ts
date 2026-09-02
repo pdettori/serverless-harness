@@ -1,14 +1,14 @@
 // packages/knative-server/src/leaf-job.ts
-import { RedisWorkQueue } from "@sh/work-queue";
-import { processOne } from "@sh/harness/leaf-job-runner";
-import { runLeaf, leafSessionId, type LeafEnvelope } from "@sh/harness/run-leaf";
-import { RedisResultStore, toResultRecord, writeResult } from "@sh/harness/leaf-result-store";
-import { type TurnConfig } from "@sh/harness/run-turn";
+import { RedisWorkQueue } from '@sh/work-queue';
+import { processOne } from '@sh/harness/leaf-job-runner';
+import { runLeaf, leafSessionId, type LeafEnvelope } from '@sh/harness/run-leaf';
+import { RedisResultStore, toResultRecord, writeResult } from '@sh/harness/leaf-result-store';
+import { type TurnConfig } from '@sh/harness/run-turn';
 
 const MIN_IDLE_MS = 90_000;
 const MAX_ATTEMPTS = 3;
 const CONSUMER_GC_IDLE_MS = 300_000; // 5 min — GC consumers idle longer than this with 0 pending
-const RESULT_TTL_SECONDS = parseInt(process.env.LEAF_RESULT_TTL_SECONDS ?? "86400", 10);
+const RESULT_TTL_SECONDS = parseInt(process.env.LEAF_RESULT_TTL_SECONDS ?? '86400', 10);
 
 function buildConfig(): TurnConfig {
   return {
@@ -32,14 +32,27 @@ async function main(): Promise<void> {
 
   // Startup reap: dead-letter stale PEL entries past maxAttempts so pendingEntriesCount drops
   // and KEDA can scale to zero without waiting for reclaim cycles.
-  const deadLettered = await q.reapDeadLetters(consumerId, { minIdleMs: MIN_IDLE_MS, maxAttempts: MAX_ATTEMPTS });
+  const deadLettered = await q.reapDeadLetters(consumerId, {
+    minIdleMs: MIN_IDLE_MS,
+    maxAttempts: MAX_ATTEMPTS,
+  });
   for (const { entryId, envelope } of deadLettered) {
-    if (envelope && typeof envelope === "object") {
+    if (envelope && typeof envelope === 'object') {
       const env = envelope as LeafEnvelope;
       try {
-        await writeResult(resultStore, leafSessionId(env),
-          toResultRecord({ status: "failed", reason: "error" }, env.sessionId, new Date().toISOString()), RESULT_TTL_SECONDS);
-      } catch { /* best-effort record write */ }
+        await writeResult(
+          resultStore,
+          leafSessionId(env),
+          toResultRecord(
+            { status: 'failed', reason: 'error' },
+            env.sessionId,
+            new Date().toISOString(),
+          ),
+          RESULT_TTL_SECONDS,
+        );
+      } catch {
+        /* best-effort record write */
+      }
     } else {
       console.warn(`reaper: entry ${entryId} dead-lettered with unrecoverable envelope`);
     }
@@ -66,8 +79,8 @@ async function main(): Promise<void> {
       ttlSeconds: RESULT_TTL_SECONDS,
       consumerId,
     });
-    if (outcome === "idle") break;
-    if (outcome === "retry") {
+    if (outcome === 'idle') break;
+    if (outcome === 'retry') {
       // Entry stays pending for another pod to reclaim — do NOT delete our consumer.
       await q.close();
       await resultStore.close();
@@ -83,7 +96,7 @@ async function main(): Promise<void> {
 }
 
 main().catch(async (err) => {
-  console.error("leaf-job error:", err);
+  console.error('leaf-job error:', err);
   try {
     await queue?.close();
   } catch {

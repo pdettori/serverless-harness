@@ -29,7 +29,7 @@ sed -e "s#__IMAGE__#${IMAGE}#g" -e "s#__SANDBOX_ID__#${SANDBOX_ID}#g" \
 oc rollout status deploy/remote-worker -n "$NS" --timeout=120s
 
 echo "==> presence in Redis (worker registered via its live Attach stream)"
-for i in $(seq 1 20); do
+for _ in $(seq 1 20); do
   rec="$(oc exec deploy/redis -n "$NS" -- redis-cli HGET sh:sandbox:records "$SANDBOX_ID" 2>/dev/null || true)"
   [ -n "$rec" ] && { echo "$rec"; break; }
   sleep 1

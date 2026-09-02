@@ -1,16 +1,16 @@
-import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const load = (rel: string) =>
-  JSON.parse(readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8"));
+  JSON.parse(readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8'));
 
-describe("swebench deck", () => {
-  const deck = load("../swebench/deck.json");
-  const bake = load("../swebench/bake-list.json");
+describe('swebench deck', () => {
+  const deck = load('../swebench/deck.json');
+  const bake = load('../swebench/bake-list.json');
 
-  it("has a stable hash shared by deck and bake-list", () => {
-    expect(typeof deck.deckHash).toBe("string");
+  it('has a stable hash shared by deck and bake-list', () => {
+    expect(typeof deck.deckHash).toBe('string');
     expect(deck.deckHash.length).toBeGreaterThan(0);
     expect(bake.deckHash).toBe(deck.deckHash);
   });
@@ -31,46 +31,76 @@ describe("swebench deck", () => {
     }
   });
 
-  it("the bake-list carries no repo or env_key absent from the deck (reverse drift guard)", () => {
+  it('the bake-list carries no repo or env_key absent from the deck (reverse drift guard)', () => {
     const deckRepos = new Set(deck.instances.map((i: any) => i.repo));
     const deckEnvKeys = new Set(deck.instances.map((i: any) => i.env_key));
     for (const repo of bake.repos) {
-      expect(deckRepos.has(repo), `bake-list repo ${repo} not present in the deck (stale entry)`).toBe(true);
+      expect(
+        deckRepos.has(repo),
+        `bake-list repo ${repo} not present in the deck (stale entry)`,
+      ).toBe(true);
     }
     for (const key of bake.envKeys) {
-      expect(deckEnvKeys.has(key), `bake-list env_key ${key} not present in the deck (stale entry)`).toBe(true);
+      expect(
+        deckEnvKeys.has(key),
+        `bake-list env_key ${key} not present in the deck (stale entry)`,
+      ).toBe(true);
     }
     for (const e of bake.envs) {
-      expect(deckEnvKeys.has(e.env_key), `bake-list.envs env_key ${e.env_key} not present in the deck (stale entry)`).toBe(true);
+      expect(
+        deckEnvKeys.has(e.env_key),
+        `bake-list.envs env_key ${e.env_key} not present in the deck (stale entry)`,
+      ).toBe(true);
     }
   });
 
-  it("each instance carries the required normalized fields", () => {
+  it('each instance carries the required normalized fields', () => {
     for (const inst of deck.instances) {
-      for (const f of ["instance_id", "repo", "base_commit", "environment_setup_commit", "version", "env_key", "problem_statement"]) {
+      for (const f of [
+        'instance_id',
+        'repo',
+        'base_commit',
+        'environment_setup_commit',
+        'version',
+        'env_key',
+        'problem_statement',
+      ]) {
         expect(inst[f], `${inst.instance_id} missing ${f}`).toBeTruthy();
       }
       expect(Array.isArray(inst.fail_to_pass)).toBe(true);
       expect(Array.isArray(inst.pass_to_pass)).toBe(true);
       // runtime/bucket may be null (pre-measurement) or populated (post Task 5)
-      expect(["light", "medium", "heavy", null]).toContain(inst.weight_bucket);
+      expect(['light', 'medium', 'heavy', null]).toContain(inst.weight_bucket);
     }
   });
 
-  it("each instance carries a canonical gold-test command and directives (Task 5-gen)", () => {
+  it('each instance carries a canonical gold-test command and directives (Task 5-gen)', () => {
     for (const inst of deck.instances) {
-      expect(typeof inst.test_cmd, `${inst.instance_id} test_cmd should be a string`).toBe("string");
-      expect(inst.test_cmd.length, `${inst.instance_id} test_cmd should be non-empty`).toBeGreaterThan(0);
+      expect(typeof inst.test_cmd, `${inst.instance_id} test_cmd should be a string`).toBe(
+        'string',
+      );
+      expect(
+        inst.test_cmd.length,
+        `${inst.instance_id} test_cmd should be non-empty`,
+      ).toBeGreaterThan(0);
 
-      expect(Array.isArray(inst.test_directives), `${inst.instance_id} test_directives should be an array`).toBe(true);
-      expect(inst.test_directives.length, `${inst.instance_id} test_directives should be non-empty`).toBeGreaterThan(0);
+      expect(
+        Array.isArray(inst.test_directives),
+        `${inst.instance_id} test_directives should be an array`,
+      ).toBe(true);
+      expect(
+        inst.test_directives.length,
+        `${inst.instance_id} test_directives should be non-empty`,
+      ).toBeGreaterThan(0);
       for (const d of inst.test_directives) {
-        expect(typeof d, `${inst.instance_id} test_directives entries should be strings`).toBe("string");
+        expect(typeof d, `${inst.instance_id} test_directives entries should be strings`).toBe(
+          'string',
+        );
       }
     }
   });
 
-  it("every deck env_key has a bake-list.envs entry whose representative_instance_id is a deck instance for that env_key", () => {
+  it('every deck env_key has a bake-list.envs entry whose representative_instance_id is a deck instance for that env_key', () => {
     expect(Array.isArray(bake.envs)).toBe(true);
 
     const instancesByEnvKey = new Map<string, Set<string>>();
@@ -83,7 +113,7 @@ describe("swebench deck", () => {
 
     const envsByKey = new Map<string, any>();
     for (const e of bake.envs) {
-      for (const f of ["env_key", "repo", "representative_instance_id", "instance_image_key"]) {
+      for (const f of ['env_key', 'repo', 'representative_instance_id', 'instance_image_key']) {
         expect(e[f], `bake-list env entry missing ${f}: ${JSON.stringify(e)}`).toBeTruthy();
       }
       envsByKey.set(e.env_key, e);
@@ -105,7 +135,7 @@ describe("swebench deck", () => {
       ).toBe(repoByInstance.get(entry.representative_instance_id));
       // instance_image_key must embed the representative_instance_id; swebench maps "__" -> "_1776_"
       // in image tags (e.g. django__django-11555 -> ...django_1776_django-11555...).
-      const imageId = entry.representative_instance_id.replace(/__/g, "_1776_");
+      const imageId = entry.representative_instance_id.replace(/__/g, '_1776_');
       expect(
         entry.instance_image_key.includes(imageId),
         `instance_image_key ${entry.instance_image_key} does not embed representative id ${imageId}`,

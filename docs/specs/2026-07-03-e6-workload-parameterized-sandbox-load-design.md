@@ -6,7 +6,7 @@ Scope: Hardens the **P3** sandbox sharing-ratio experiment
 ([`2026-07-03-p3-sandbox-sharing-ratio-experiments-design.md`](2026-07-03-p3-sandbox-sharing-ratio-experiments-design.md),
 merged PR #58). Resolves [#62](https://github.com/kagenti/serverless-harness/issues/62) (noise-sensitive
 knee) **and** a deeper validity gap surfaced in review: the E6/E7 leaf workload is a trivial
-`marker.txt` check, so the reported ratio N ≈ 29–48:1 is an optimistic *upper bound*, not a
+`marker.txt` check, so the reported ratio N ≈ 29–48:1 is an optimistic _upper bound_, not a
 representative Archetype-A figure. Builds on the two-tier epic
 ([#49](https://github.com/kagenti/serverless-harness/issues/49)).
 
@@ -30,7 +30,7 @@ P3 measured the harness→sandbox sharing ratio as N ≈ 1/duty, where duty = pe
    make a single rung dip, tripping the break early (observed on OCP: c=4 0.213 < c=2 0.245 → knee=2,
    floor=fail — a noise artifact, not saturation). Compounding it, the harness ksvc is
    `max-scale: 5` + `containerConcurrency: 1`, so **at most 5 leaves ever reach the pinned sandbox
-   concurrently** — any knee above 5 measures the *harness* tier's cap, not the sandbox's.
+   concurrently** — any knee above 5 measures the _harness_ tier's cap, not the sandbox's.
 
 This spec makes the headline output an **N-vs-workload curve** (confound-free, measured at C=1 across
 real Archetype-A leaves of increasing intensity) and fixes the concurrency-sweep confounds so the knee,
@@ -38,13 +38,13 @@ where reported, is the sandbox's and is noise-robust.
 
 ## 2. Decisions locked (brainstorm 2026-07-03)
 
-| # | Decision | Rationale |
-|---|----------|-----------|
-| D1 | **Headline = N-vs-workload curve, measured at C=1.** Report N ≈ 1/duty across a range of workload intensities, each point tagged with the per-leaf sandbox exec count/ms. | The C=1 duty measurement has no concurrency confounds (max-scale/noise are irrelevant at one leaf); the curve answers "what ratio does Archetype A get" honestly, as a range tied to leaf intensity. |
-| D2 | **Real Archetype-A workload variants L0/L1/L2 by review scope.** L0 light (one small file, one finding) → L1 (larger file) → L2 heavy (multi-file / multi-pattern review). Genuine structured code-review leaves over real fixtures, not marker checks. | Review scope is the intensity axis the user chose; it maps directly to how many sandbox tool calls a leaf makes, which is what drives duty. Reuses the canonical Archetype-A code-review shape already in the repo. |
-| D3 | **Fix the concurrency sweep (the original #62 knee):** raise harness `max-scale` for the sweep so the sandbox is the concurrency limiter; warm `min-scale` baseline; multi-sample rungs (median); smooth `detectKnee` to break only on a *sustained* decline. Run the sweep at the **heaviest** variant. | Removes the three knee confounds (harness cap, cold-start, single-dip). The heaviest leaf stresses the sandbox most, so a real knee (if any) is most visible there. |
-| D4 | **Report N always with its workload intensity; knee as a floor with its max-scale bound.** Supersede P3's single-N claim (the light-workload upper bound). | A ratio without a stated workload is misleading; the review that prompted this made exactly that point. |
-| D5 | **No harness/leaf code changes to inject synthetic work.** Intensity comes from the *item* (which file, how many patterns) and the emergent tool calls; measure the *actual* exec count per leaf. | Keeps the FS-free harness and leaf contract untouched; the timing hook already records real sandbox work, so measured (not assumed) intensity anchors each curve point. |
+| #   | Decision                                                                                                                                                                                                                                                                                                 | Rationale                                                                                                                                                                                                           |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | **Headline = N-vs-workload curve, measured at C=1.** Report N ≈ 1/duty across a range of workload intensities, each point tagged with the per-leaf sandbox exec count/ms.                                                                                                                                | The C=1 duty measurement has no concurrency confounds (max-scale/noise are irrelevant at one leaf); the curve answers "what ratio does Archetype A get" honestly, as a range tied to leaf intensity.                |
+| D2  | **Real Archetype-A workload variants L0/L1/L2 by review scope.** L0 light (one small file, one finding) → L1 (larger file) → L2 heavy (multi-file / multi-pattern review). Genuine structured code-review leaves over real fixtures, not marker checks.                                                  | Review scope is the intensity axis the user chose; it maps directly to how many sandbox tool calls a leaf makes, which is what drives duty. Reuses the canonical Archetype-A code-review shape already in the repo. |
+| D3  | **Fix the concurrency sweep (the original #62 knee):** raise harness `max-scale` for the sweep so the sandbox is the concurrency limiter; warm `min-scale` baseline; multi-sample rungs (median); smooth `detectKnee` to break only on a _sustained_ decline. Run the sweep at the **heaviest** variant. | Removes the three knee confounds (harness cap, cold-start, single-dip). The heaviest leaf stresses the sandbox most, so a real knee (if any) is most visible there.                                                 |
+| D4  | **Report N always with its workload intensity; knee as a floor with its max-scale bound.** Supersede P3's single-N claim (the light-workload upper bound).                                                                                                                                               | A ratio without a stated workload is misleading; the review that prompted this made exactly that point.                                                                                                             |
+| D5  | **No harness/leaf code changes to inject synthetic work.** Intensity comes from the _item_ (which file, how many patterns) and the emergent tool calls; measure the _actual_ exec count per leaf.                                                                                                        | Keeps the FS-free harness and leaf contract untouched; the timing hook already records real sandbox work, so measured (not assumed) intensity anchors each curve point.                                             |
 
 ## 3. Workload variants (real Archetype-A code review)
 
@@ -57,11 +57,11 @@ per-branch `marker.txt` scheme for the workload refs; E7's mixed-ref refs stay m
 Three ordered leaf **items** of increasing review scope, each a `LeafItem {item_id, file, pattern}`
 run through the unchanged review prompt:
 
-| Variant | Item | Expected sandbox work |
-|---------|------|-----------------------|
-| **L0** (light) | one small file (`safe.py`), one pattern | converge + ~1 read → lightest duty, highest N |
-| **L1** (medium) | a larger file, one pattern | converge + read + a grep or two |
-| **L2** (heavy) | the larger file, a pattern that induces broader scanning (multi-match / context reads) | converge + several reads/greps → highest duty, lowest N |
+| Variant         | Item                                                                                   | Expected sandbox work                                   |
+| --------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| **L0** (light)  | one small file (`safe.py`), one pattern                                                | converge + ~1 read → lightest duty, highest N           |
+| **L1** (medium) | a larger file, one pattern                                                             | converge + read + a grep or two                         |
+| **L2** (heavy)  | the larger file, a pattern that induces broader scanning (multi-match / context reads) | converge + several reads/greps → highest duty, lowest N |
 
 Intensity is **emergent** (model-driven tool use), so it is **measured, not assumed** (§4): each point
 on the curve is tagged with the leaf's actual exec count. The variants only need to reliably span
@@ -87,7 +87,7 @@ A fresh pod per measurement (drain first, per P3's C=1 fix) keeps the log scoped
   `WorkloadPoint = { label: string; execMs: number; execCount: number; wallMs: number }` and each
   output carries `{ label, execCount, duty, n }`. Pure, unit-tested (monotonicity sanity: heavier
   execMs at equal wall → higher duty → lower N).
-- **Change `detectKnee` to break on a *sustained* decline.** New signature
+- **Change `detectKnee` to break on a _sustained_ decline.** New signature
   `detectKnee(points, degradeX, patience = 2)`: track the running-max throughput; a rung is "healthy"
   if `p95 ≤ degradeX·baseline` **and** its throughput ≥ the running max (i.e. still at or above the best
   seen). Advance the knee on healthy rungs; only **break after `patience` consecutive unhealthy rungs**,
@@ -144,4 +144,4 @@ supersedes the prior single-N claim, framing it explicitly as the L0 (near-empty
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) — brainstorming + spec authoring for the E6 workload-parameterization hardening.*
+_Assisted-By: Claude (Anthropic AI) — brainstorming + spec authoring for the E6 workload-parameterization hardening._

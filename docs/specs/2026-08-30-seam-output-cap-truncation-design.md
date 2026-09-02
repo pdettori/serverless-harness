@@ -15,7 +15,7 @@ guarantee does not hold, and the three ways it fails were filed separately durin
 whole-branch review that closed the epic (#184).
 
 **Truncation has no representation in the seam's return type.** `ExecInPod` resolves
-`{ stdout, exitCode: number | null }`, and `exitCode === null` is overloaded to mean *both*
+`{ stdout, exitCode: number | null }`, and `exitCode === null` is overloaded to mean _both_
 "our cap tripped" and "the process produced no status" (signalled; gRPC `end.exitCode < 0`;
 stream end without an `End` frame). Callers cannot distinguish them, so every consequence
 below is a consequence of one missing bit.
@@ -31,7 +31,7 @@ below is a consequence of one missing bit.
   channel and 20 MiB comes back; the same read through either per-call transport returns
   8 MiB plus `[output truncated]`. Pi can tell the backends apart, which is what the
   guarantee exists to prevent.
-- **#185 — the cap's *enforcement* is not equivalent, and the battery cannot see it.**
+- **#185 — the cap's _enforcement_ is not equivalent, and the battery cannot see it.**
   `GrpcRelayTransport` issues `Abort`, which kills the remote process. `KubectlTransport`
   kills only the local `kubectl` client; the in-pod process stops on EPIPE, if at all. The
   shared battery reduces each mechanism to a `producerStopped()` boolean supplied by that
@@ -52,8 +52,8 @@ change: one behavioural fix, five message fixes, and one new cap.
 **Capping the read path costs more than #180 states.** `pi-fork/.../tools/read.ts:277`
 calls `ops.readFile(absolutePath)` for the **whole file** and only then slices by
 `offset`/`limit`. A cap therefore does not merely truncate one large read — it makes the
-file unreachable *even through the offset/limit paging Pi's own tool description
-advertises* ("Use offset/limit for large files… continue with offset until complete").
+file unreachable _even through the offset/limit paging Pi's own tool description
+advertises_ ("Use offset/limit for large files… continue with offset until complete").
 #180 describes the cost as "partially readable → unreadable"; it is actually "fully
 readable → unreadable by any means short of `bash`". §4.1 accepts that cost with an
 actionable error; §8 records the alternative.
@@ -89,7 +89,12 @@ export interface ExecResult {
 
 export type ExecInPod = (
   command: string,
-  opts?: { stdin?: Buffer; onData?: (chunk: Buffer) => void; signal?: AbortSignal; timeout?: number },
+  opts?: {
+    stdin?: Buffer;
+    onData?: (chunk: Buffer) => void;
+    signal?: AbortSignal;
+    timeout?: number;
+  },
 ) => Promise<ExecResult>;
 ```
 
@@ -103,9 +108,9 @@ battery for every implementation.
 
 Retaining `exitCode: null` on truncation is what makes this **backward compatible**: every
 existing call site that checks `!== 0` keeps failing closed, so there is no flag day and no
-call site *must* change. The flag adds precision on top. And the previously-ambiguous
+call site _must_ change. The flag adds precision on top. And the previously-ambiguous
 combination stays meaningful in its remaining sense — `truncated: false` with
-`exitCode: null` now means, unambiguously, "no exit status, and *not* because of our cap".
+`exitCode: null` now means, unambiguously, "no exit status, and _not_ because of our cap".
 
 ### 3.2 `KubectlTransport`, `GrpcRelayTransport`
 
@@ -120,7 +125,7 @@ for reasons specific to this transport:
 
 - The channel is **multiplexed**. `FrameParser` emits a frame only once both nonce markers
   have arrived, so "stop reading at the cap" would leave unparsed payload that corrupts the
-  *next* command's frames. The parser must reach the frame boundary regardless.
+  _next_ command's frames. The parser must reach the frame boundary regardless.
 - The payload is **base64**. Counting wire bytes caps content at cap × 3/4 ≈ 6 MiB, so the
   trip point would differ from the other two transports — a weaker version of the very
   distinguishability #180 objects to.
@@ -134,14 +139,14 @@ Instead, extend `wrapCommand`'s pipeline so the pod caps its own output:
 
 This is better on four counts:
 
-1. **Exact byte parity.** The cap applies to raw bytes *before* base64 inflation, so the
+1. **Exact byte parity.** The cap applies to raw bytes _before_ base64 inflation, so the
    trip boundary is the same `> cap` as the other transports.
 2. **`PIPESTATUS[0]` still indexes the command**, so the existing exit-code contract is
    untouched. A trip makes it 141 (SIGPIPE); we report `null` per the invariant and never
    read it, so truncation detection does not depend on 141 being distinguishable from a
    command's own internal SIGPIPE.
 3. **It bounds a pre-existing O(n²).** `FrameParser.push` does `this.buf.toString("latin1")`
-   on *every* chunk, so a 20 MiB read allocates ~5.8 GB transiently. Capping the pod's
+   on _every_ chunk, so a 20 MiB read allocates ~5.8 GB transiently. Capping the pod's
    output bounds that buffer. A side benefit, not a goal — but it is why this transport
    should have been capped on performance grounds alone.
 4. No cap-time channel teardown, so no respawn cost and no interaction with the retry path.
@@ -152,7 +157,7 @@ and interpolates `cap + 1` into the pipeline. Without this the conformance batte
 exercise the cap at all — it injects `outputCapBytes: 6` (`conformance.ts:83`).
 
 Client-side, `persistentExecInPod` computes `truncated = frame.stdout.length > cap`, trims
-to `cap`, appends `OUTPUT_TRUNCATED_MARKER`, and **resolves**. It must resolve, *not* route
+to `cap`, appends `OUTPUT_TRUNCATED_MARKER`, and **resolves**. It must resolve, _not_ route
 through the existing `fail` handler: `fail` retries via `deps.fallback`, which
 `extension.ts:52` sets to the now-capped `KubectlTransport`, so a cap trip would re-run the
 command and flood twice before failing anyway.
@@ -161,19 +166,19 @@ command and flood twice before failing anyway.
 GNU `coreutils` (verified: `head (GNU coreutils) 9.5`), and busybox `head` supports `-c`
 regardless. The framed protocol never runs against the remote worker — `run-leaf.ts:475`
 passes `transport: selected?.transport`, and `extension.ts:47-49` uses that single override
-for *both* transports, so when a gRPC record is selected `persistentExecInPod` is not
+for _both_ transports, so when a gRPC record is selected `persistentExecInPod` is not
 constructed at all.
 
 ### 3.4 Call sites
 
-| Site | Change |
-|---|---|
-| `createPodBashOps` | `if (r.truncated) return { exitCode: 137 }` — **#181** |
-| `readFile` | Split the overloaded null branch: `truncated` → size, cap, and the `bash`+`sed` range workaround; bare `null` → "signalled, no exit status" |
-| `readFile` (size) | A truncated buffer cannot reveal the real file size, so on truncation only, `readFile` issues one `stat -c %s` to name it, omitting the size if that also fails. Error path only, so no hot-path cost — and the size is what lets the model pick a sensible range. |
-| `glob` | Same split |
-| `grep-tool.ts:44` | Name truncation instead of `rg failed in pod (exit null)` |
-| `converge.ts:59`, `swebench-setup.ts:67` | Same, for `captureWorkspaceDiff` / `captureSwebenchDiff` — a >8 MiB diff currently reports `diff capture failed (exit null)` |
+| Site                                     | Change                                                                                                                                                                                                                                                             |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `createPodBashOps`                       | `if (r.truncated) return { exitCode: 137 }` — **#181**                                                                                                                                                                                                             |
+| `readFile`                               | Split the overloaded null branch: `truncated` → size, cap, and the `bash`+`sed` range workaround; bare `null` → "signalled, no exit status"                                                                                                                        |
+| `readFile` (size)                        | A truncated buffer cannot reveal the real file size, so on truncation only, `readFile` issues one `stat -c %s` to name it, omitting the size if that also fails. Error path only, so no hot-path cost — and the size is what lets the model pick a sensible range. |
+| `glob`                                   | Same split                                                                                                                                                                                                                                                         |
+| `grep-tool.ts:44`                        | Name truncation instead of `rg failed in pod (exit null)`                                                                                                                                                                                                          |
+| `converge.ts:59`, `swebench-setup.ts:67` | Same, for `captureWorkspaceDiff` / `captureSwebenchDiff` — a >8 MiB diff currently reports `diff capture failed (exit null)`                                                                                                                                       |
 
 **Why 137 rather than a throw.** 137 is 128+9, the conventional SIGKILL status, and the
 command genuinely was killed by signal 9 at the cap — it is not a fabricated code. Pi's
@@ -195,20 +200,20 @@ changes is only that the killing is now reported.
 `runConformance` gains a declared-capability object:
 
 ```ts
-type ProducerStop = "remote-abort" | "local-kill" | "producer-side-cap" | "none";
+type ProducerStop = 'remote-abort' | 'local-kill' | 'producer-side-cap' | 'none';
 
-runConformance("KubectlTransport",    make, { producerStop: "local-kill",        streams: true  })
-runConformance("GrpcRelayTransport",  make, { producerStop: "remote-abort",      streams: true  })
-runConformance("persistentExecInPod", make, { producerStop: "producer-side-cap", streams: false })
+runConformance('KubectlTransport', make, { producerStop: 'local-kill', streams: true });
+runConformance('GrpcRelayTransport', make, { producerStop: 'remote-abort', streams: true });
+runConformance('persistentExecInPod', make, { producerStop: 'producer-side-cap', streams: false });
 ```
 
 - `producerStopped(): boolean` becomes `producerStop(): ProducerStop`. Each factory reports
-  the mechanism it *observed*, and the battery asserts it equals the declared value, instead
+  the mechanism it _observed_, and the battery asserts it equals the declared value, instead
   of accepting `true` from everyone. `"none"` is what a transport that stops nothing reports;
   no transport may declare it, so a regression that deletes the stop becomes a failure rather
   than a silent `true` — **#185**.
 - **Why an enum and not a "was it remote?" boolean.** A boolean would assert `false` for both
-  kubectl paths, which *discards* the existing coverage that `child.kill` is actually called —
+  kubectl paths, which _discards_ the existing coverage that `child.kill` is actually called —
   coverage #184's review found load-bearing (with it deleted, removing `child.kill` still
   passed). The enum keeps every transport pinned to a positive claim about its own mechanism.
 - `"producer-side-cap"` is the persistent channel's honest mechanism: pod-side `head -c`
@@ -224,7 +229,7 @@ runConformance("persistentExecInPod", make, { producerStop: "producer-side-cap",
 **Honest note on the declaration.** Pod-side `head -c` bounds output at the source, and a
 producer that outruns it is stopped by SIGPIPE — the same EPIPE class #185 declines to count
 as "we stopped it". `producer-side-cap` therefore claims only what it delivers: the bytes
-cannot exceed the cap, *not* that a hostile producer ignoring SIGPIPE stops burning CPU. It
+cannot exceed the cap, _not_ that a hostile producer ignoring SIGPIPE stops burning CPU. It
 is deliberately not `remote-abort`, which is reserved for a transport that tells the far side
 to stop and can observe that it did.
 
@@ -273,7 +278,7 @@ lands.
 - **Spec §8** — delete the "Known exception" paragraph in the Poisoned-output-defense
   bullet and both cap-related "Accepted divergences" entries (#181, #185); state the
   `truncated` contract, the invariant, and the per-transport producer-stop mechanism table. The #182
-  default-deadline divergence stays. *Convention note:* the registry says specs are never
+  default-deadline divergence stays. _Convention note:_ the registry says specs are never
   retro-edited, but §8 is the live seam contract and #184 amended it on the same grounds;
   flagging it rather than assuming.
 - **ADR-0024** — a Revisions entry per decision, each with its rejected alternatives (§8).
@@ -289,7 +294,7 @@ plus a test, currently CHANGES_REQUESTED for rejecting `rg`'s exit 1 ("no matche
 ## 8. Alternatives considered and rejected
 
 **#180 — cap the persistent channel at a higher, read-specific limit** (e.g. 64 MiB).
-No realistic regression, still bounds memory. Rejected: a per-transport cap *value* leaves
+No realistic regression, still bounds memory. Rejected: a per-transport cap _value_ leaves
 Pi able to distinguish backends by output volume between 8 and 64 MiB — a weaker form of
 the defect — and the battery would assert a parameter instead of a contract.
 
@@ -302,7 +307,7 @@ the defect — and the battery would assert a parameter instead of a contract.
 the model's tool result (§3.4).
 
 **#181 — patch `pi-fork`'s `bash.ts` to recognize a truncation marker and append output.**
-Best message *and* preserved output. Rejected: spans two repos, needs a fork-side commit and
+Best message _and_ preserved output. Rejected: spans two repos, needs a fork-side commit and
 submodule rebuild, for a wording improvement over a mechanism (137) that already carries
 both facts.
 
@@ -333,4 +338,4 @@ the property it exists to check, which is #185's actual complaint.
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

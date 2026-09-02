@@ -1,7 +1,7 @@
 # Leaf-Session Backend — Executive Overview
 
-**Status:** MVP complete (Phase 1 + Leaf-Session shipped). Zero-trust deferred to Phase 2.  
-**Repo:** `kagenti/serverless-harness` (private)  
+**Status:** MVP complete (Phase 1 + Leaf-Session shipped). Zero-trust deferred to Phase 2.
+**Repo:** `kagenti/serverless-harness` (private)
 **Date:** 2026-06-28
 
 ---
@@ -63,25 +63,25 @@ The leaf-session backend supports three dispatch patterns for running AI agent "
 
 ### Key Components
 
-| Component | Role |
-|-----------|------|
-| **Knative Service** | Scale-to-zero HTTP endpoint; handles sync `/runs` and enqueues async work |
-| **Redis** | Session persistence (durable resume by `sessionId`), work queue (Streams), gate state |
-| **KEDA ScaledJob** | Autoscales worker pods 0→10 based on `lagCount` + `pendingEntriesCount` |
-| **sandbox-0** | Isolated execution pod; harness routes tool calls here via `kubectl exec` (brain/hands split) |
-| **Shared PVC** | Volume-envelope contract — inputs, results, and markers travel as files, not HTTP bodies |
-| **CronJob** | Archetype C scheduler; fires `cron-dispatch` on cron schedule |
+| Component           | Role                                                                                          |
+| ------------------- | --------------------------------------------------------------------------------------------- |
+| **Knative Service** | Scale-to-zero HTTP endpoint; handles sync `/runs` and enqueues async work                     |
+| **Redis**           | Session persistence (durable resume by `sessionId`), work queue (Streams), gate state         |
+| **KEDA ScaledJob**  | Autoscales worker pods 0→10 based on `lagCount` + `pendingEntriesCount`                       |
+| **sandbox-0**       | Isolated execution pod; harness routes tool calls here via `kubectl exec` (brain/hands split) |
+| **Shared PVC**      | Volume-envelope contract — inputs, results, and markers travel as files, not HTTP bodies      |
+| **CronJob**         | Archetype C scheduler; fires `cron-dispatch` on cron schedule                                 |
 
 ### Single Image, Two Entry Points
 
 The Knative Service and leaf-worker are the **same container image** (`serverless-harness`) with different entry points:
 
-| | Knative Service | leaf-worker (KEDA ScaledJob) |
-|---|---|---|
-| **Entry point** | `server.ts` — HTTP server | `leaf-job.ts` — queue drain loop |
-| **Triggered by** | HTTP request (`POST /runs`) | Redis Streams queue depth |
-| **Calls** | `runLeaf()` inline (sync) or enqueues to Redis (async) | `processOne()` → `runLeaf()` |
-| **kubectl exec → sandbox-0** | Yes | Yes |
+|                              | Knative Service                                        | leaf-worker (KEDA ScaledJob)     |
+| ---------------------------- | ------------------------------------------------------ | -------------------------------- |
+| **Entry point**              | `server.ts` — HTTP server                              | `leaf-job.ts` — queue drain loop |
+| **Triggered by**             | HTTP request (`POST /runs`)                            | Redis Streams queue depth        |
+| **Calls**                    | `runLeaf()` inline (sync) or enqueues to Redis (async) | `processOne()` → `runLeaf()`     |
+| **kubectl exec → sandbox-0** | Yes                                                    | Yes                              |
 
 Both paths converge on `runLeaf()`, which uses `K8sSandboxClient` to route all tool execution into sandbox-0. The "brain" (model inference + session logic) runs in whichever pod called `runLeaf()`; the "hands" (actual code/tool execution) always run in sandbox-0.
 
@@ -102,17 +102,18 @@ POST /runs { sessionId, inputsRef, resultRef, async: true }   → async (202 Acc
 
 ### Cluster Footprint at Rest
 
-| Always on | Scales to zero |
-|-----------|----------------|
-| **Redis** (session state + queue) | Knative Service (cold-starts on first request, sub-second) |
-| **sandbox-0** (persistent workspace) | leaf-worker (KEDA, zero when queue empty) |
-| | cron-dispatch (exists only during CronJob fire) |
+| Always on                            | Scales to zero                                             |
+| ------------------------------------ | ---------------------------------------------------------- |
+| **Redis** (session state + queue)    | Knative Service (cold-starts on first request, sub-second) |
+| **sandbox-0** (persistent workspace) | leaf-worker (KEDA, zero when queue empty)                  |
+|                                      | cron-dispatch (exists only during CronJob fire)            |
 
 **2 pods at idle.** All compute (Knative Service, leaf-workers) scales to zero when no work is pending. Even the async enqueue path cold-starts from zero — the Knative activator intercepts the first request, spins up a pod, the pod enqueues and returns 202, then idles back to zero after 30s. sandbox-0 stays up because it holds the persistent working directory (files, packages, git state) that must survive across leaf invocations.
 
 ### Security Posture (PR #16)
 
 All workload pods run hardened:
+
 - Non-root UID 65532, `fsGroup: 65532` for PVC group-write
 - `readOnlyRootFilesystem: true` + `/tmp` emptyDir for scratch
 - `capabilities: { drop: [ALL] }`, seccomp `RuntimeDefault`
@@ -140,6 +141,7 @@ A single demonstration exercising all three archetypes in sequence:
 ### 3.2 MVP Boundary
 
 **What works today (no zero-trust required):**
+
 - All three dispatch archetypes on Kind and OpenShift
 - Scale-to-zero with sub-second cold-start resume
 - Durable sessions surviving pod eviction
@@ -147,6 +149,7 @@ A single demonstration exercising all three archetypes in sequence:
 - Hardened security posture (non-root, read-only rootfs, drop caps)
 
 **Known limitations (deferred to Phase 2):**
+
 - No credential injection — `ANTHROPIC_API_KEY` is a pre-provisioned K8s Secret (trust-the-operator)
 - No egress policy — sandbox can reach any endpoint (no NetworkPolicy enforcement)
 - No per-session identity — all leaves share the service account's SPIFFE identity
@@ -156,16 +159,16 @@ A single demonstration exercising all three archetypes in sequence:
 
 ## Phase 2 Preview (Z-track, design complete)
 
-| Milestone | Adds |
-|-----------|------|
-| Z1 Identity Spine | Per-session SPIFFE SVID via SPIRE |
-| Z2 Harness Lock-Down | Secret-free distroless container, default-deny egress |
-| Z3 Inference Injector | Provider-key chokepoint, mTLS to LLM gateway |
-| Z4 MCP Code-Mode | Model-authored code runs in sandbox, transparent AuthBridge |
-| Z5 Credentialed Egress | Forward proxy + baked CA for sandbox outbound |
-| Z6 Subagents | Isolated child sessions with scoped credentials |
-| Z7 Validation | Red-team + formal verification of the credential plane |
+| Milestone              | Adds                                                        |
+| ---------------------- | ----------------------------------------------------------- |
+| Z1 Identity Spine      | Per-session SPIFFE SVID via SPIRE                           |
+| Z2 Harness Lock-Down   | Secret-free distroless container, default-deny egress       |
+| Z3 Inference Injector  | Provider-key chokepoint, mTLS to LLM gateway                |
+| Z4 MCP Code-Mode       | Model-authored code runs in sandbox, transparent AuthBridge |
+| Z5 Credentialed Egress | Forward proxy + baked CA for sandbox outbound               |
+| Z6 Subagents           | Isolated child sessions with scoped credentials             |
+| Z7 Validation          | Red-team + formal verification of the credential plane      |
 
 ---
 
-*Assisted-By: Claude Code*
+_Assisted-By: Claude Code_

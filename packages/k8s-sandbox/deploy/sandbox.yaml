@@ -4,7 +4,7 @@ metadata:
   name: sandbox-workspace
   namespace: default
 spec:
-  accessModes: ["ReadWriteOnce"]
+  accessModes: ['ReadWriteOnce']
   resources:
     requests:
       storage: 1Gi
@@ -30,7 +30,7 @@ spec:
         - name: sandbox
           image: alpine:3.20
           # Install the tools the Operations rely on, then idle.
-          command: ["/bin/sh", "-c"]
+          command: ['/bin/sh', '-c']
           args:
             - apk add --no-cache bash coreutils findutils ripgrep file >/dev/null 2>&1;
               mkdir -p /workspace;

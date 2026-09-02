@@ -1,4 +1,4 @@
-import { createClient, type RedisClientType } from "redis";
+import { createClient, type RedisClientType } from 'redis';
 
 /** Redis key holding the per-pod lease set (member = leaf id, score = expiry ms). */
 export function leaseKey(pod: string): string {
@@ -39,13 +39,16 @@ export interface LeaseStore {
 export class RedisLeaseStore implements LeaseStore {
   private client: RedisClientType;
   private ready: Promise<void>;
-  constructor(url = process.env.REDIS_URL ?? "redis://127.0.0.1:6379", private now: () => number = Date.now) {
+  constructor(
+    url = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379',
+    private now: () => number = Date.now,
+  ) {
     this.client = createClient({ url }) as RedisClientType;
     this.ready = this.client.connect().then(() => undefined);
   }
   async load(pod: string): Promise<number> {
     await this.ready;
-    await this.client.zRemRangeByScore(leaseKey(pod), "-inf", this.now());
+    await this.client.zRemRangeByScore(leaseKey(pod), '-inf', this.now());
     return this.client.zCard(leaseKey(pod));
   }
   async acquire(pod: string, cap: number, runId: string, ttlMs: number): Promise<boolean> {

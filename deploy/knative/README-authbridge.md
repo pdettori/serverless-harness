@@ -4,7 +4,7 @@ This demo shows **Rosso Cortex / AuthBridge** acting as the zero-trust credentia
 plane on the serverless harness: it does both **credential injection** and
 **action control** on the harness's two HTTP egress hops, and the real credential
 is **never held by any model-influenced workload** — only a placeholder is, and the
-real value is swapped in at the proxy, *after* an allow/deny gate.
+real value is swapped in at the proxy, _after_ an allow/deny gate.
 
 The path is gated behind the **`SH_AUTHBRIDGE`** feature flag (off by default). It
 runs the same way on Kind and OpenShift; only the enable/run entrypoints differ.
@@ -88,14 +88,14 @@ The gate resolves the Route automatically (`oc get ksvc serverless-harness -n de
 
 ## What it installs
 
-| Component | Manifest | Role |
-|-----------|----------|------|
-| **AB1** LLM gateway | [`authbridge/ab1-deployment.yaml`](authbridge/ab1-deployment.yaml) | Shared reverse-proxy `Deployment`+`Service`; Hop-1 gate + key injection |
-| **ibac-stub** | [`ibac-stub.yaml`](ibac-stub.yaml) | Canned allow/deny policy decision (both hops) |
-| tightened egress | [`authbridge/harness-egress-ab1.yaml`](authbridge/harness-egress-ab1.yaml) | `NetworkPolicy` — harness may reach only AB1 (overwrites the base policy) |
-| **AB2** sidecar + config | [`authbridge/ab2-config.yaml`](authbridge/ab2-config.yaml), [`sandbox-pool-ab2.yaml`](sandbox-pool-ab2.yaml) | Per-sandbox forward proxy on loopback `:8081`; Hop-2 gate + token injection |
-| **echo-target** | [`echo-target.yaml`](echo-target.yaml) | External-API stand-in that reflects the `Authorization` it received |
-| secrets | (created by the setup script) | `ab1-llm-cred` (real key), `ab2-egress-cred` (real token); `llm-credentials` repointed to AB1 placeholders |
+| Component                | Manifest                                                                                                     | Role                                                                                                       |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| **AB1** LLM gateway      | [`authbridge/ab1-deployment.yaml`](authbridge/ab1-deployment.yaml)                                           | Shared reverse-proxy `Deployment`+`Service`; Hop-1 gate + key injection                                    |
+| **ibac-stub**            | [`ibac-stub.yaml`](ibac-stub.yaml)                                                                           | Canned allow/deny policy decision (both hops)                                                              |
+| tightened egress         | [`authbridge/harness-egress-ab1.yaml`](authbridge/harness-egress-ab1.yaml)                                   | `NetworkPolicy` — harness may reach only AB1 (overwrites the base policy)                                  |
+| **AB2** sidecar + config | [`authbridge/ab2-config.yaml`](authbridge/ab2-config.yaml), [`sandbox-pool-ab2.yaml`](sandbox-pool-ab2.yaml) | Per-sandbox forward proxy on loopback `:8081`; Hop-2 gate + token injection                                |
+| **echo-target**          | [`echo-target.yaml`](echo-target.yaml)                                                                       | External-API stand-in that reflects the `Authorization` it received                                        |
+| secrets                  | (created by the setup script)                                                                                | `ab1-llm-cred` (real key), `ab2-egress-cred` (real token); `llm-credentials` repointed to AB1 placeholders |
 
 On OpenShift these are wired via [`overlays/ocp-authbridge`](overlays/ocp-authbridge)
 (image remaps + SCC/securityContext patches over the shared manifests); the base,
@@ -106,14 +106,14 @@ non-AuthBridge state is [`overlays/ocp`](overlays/ocp).
 `leaf-smoke.sh` (with `SH_AUTHBRIDGE=1`) proves these before the base leaf claims —
 Hop-2 first, then Hop-1:
 
-| Claim | What it proves | PASS message |
-|-------|----------------|--------------|
-| **H2-secret-free** | sandbox holds only the AB2 placeholder | `sandbox spec env holds only the AB2 placeholder + proxy vars, no real cred` |
-| **H2-inject** | AB2 allow-path injects the real token at the proxy | `echo reflected the real cred (injected at AB2), sandbox never held it` |
-| **H2-deny** | a `tools/call`-shaped request is blocked pre-egress | `denied pre-egress (ibac.no_session or ibac.no_intent ...), no injection` |
-| **H1-secret-free** | harness holds only the AB1 placeholder | `harness env holds only the AB1 placeholder + base URL, no real key` |
-| **H1-allow** | a leaf completes only because AB1 injected the real key | `allow-path leaf completed (real key injected at AB1)` |
-| **H1-deny** | a denylisted call is 403'd at AB1 before injection | `deny-before-inject proven (AB1 returned 403 at ibac, pre-static-inject ...)` |
+| Claim              | What it proves                                          | PASS message                                                                  |
+| ------------------ | ------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| **H2-secret-free** | sandbox holds only the AB2 placeholder                  | `sandbox spec env holds only the AB2 placeholder + proxy vars, no real cred`  |
+| **H2-inject**      | AB2 allow-path injects the real token at the proxy      | `echo reflected the real cred (injected at AB2), sandbox never held it`       |
+| **H2-deny**        | a `tools/call`-shaped request is blocked pre-egress     | `denied pre-egress (ibac.no_session or ibac.no_intent ...), no injection`     |
+| **H1-secret-free** | harness holds only the AB1 placeholder                  | `harness env holds only the AB1 placeholder + base URL, no real key`          |
+| **H1-allow**       | a leaf completes only because AB1 injected the real key | `allow-path leaf completed (real key injected at AB1)`                        |
+| **H1-deny**        | a denylisted call is 403'd at AB1 before injection      | `deny-before-inject proven (AB1 returned 403 at ibac, pre-static-inject ...)` |
 
 ## See it yourself (manual checks)
 
@@ -167,14 +167,14 @@ clusters.)
 
 ## Troubleshooting
 
-| Symptom | Cause / fix |
-|---------|-------------|
+| Symptom                                                                                          | Cause / fix                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Harness can't resolve `authbridge-ab1` / DNS times out; LLM calls fail with `Connection timeout` | The egress `NetworkPolicy` is enforced on **both** Kind (modern kindnet) and OCP (OVN-K), so its DNS rule must cover both CoreDNS backends: `kube-system:53` (Kind) and `openshift-dns:5353` (OCP — OVN-K enforces post-DNAT, so 5353 not 53). Both entries are present in [`authbridge/harness-egress-ab1.yaml`](authbridge/harness-egress-ab1.yaml) — see #102 (OCP) and #126 (Kind). |
-| `leaf-smoke.sh` exits `SKIP` | Set `LEAF_LIVE_SMOKE=1`. |
-| Smoke aborts with an `NS` error | The AuthBridge path requires `NS=default` (AB1 manifests are namespace-pinned). |
-| H2 checks see the old sandbox image / no sidecar | The sandbox controller does not roll pods on CR change; the setup/gate force-`delete pod`s the pool and waits. If stale, `kubectl -n default delete pod -l sh.kagenti.io/sandbox-pool=default`. |
-| `curl` in the sandbox ignores the proxy for `http://` URLs | It honors lowercase `http_proxy` — the pool sets both cases; use lowercase in ad-hoc curls. |
-| sandbox-relay `CrashLoopBackOff` (`ERR_MODULE_NOT_FOUND: tsx`) | Unrelated to AuthBridge; the relay must run from its package dir. Fixed in [`relay-deployment.yaml`](relay-deployment.yaml). |
+| `leaf-smoke.sh` exits `SKIP`                                                                     | Set `LEAF_LIVE_SMOKE=1`.                                                                                                                                                                                                                                                                                                                                                                |
+| Smoke aborts with an `NS` error                                                                  | The AuthBridge path requires `NS=default` (AB1 manifests are namespace-pinned).                                                                                                                                                                                                                                                                                                         |
+| H2 checks see the old sandbox image / no sidecar                                                 | The sandbox controller does not roll pods on CR change; the setup/gate force-`delete pod`s the pool and waits. If stale, `kubectl -n default delete pod -l sh.kagenti.io/sandbox-pool=default`.                                                                                                                                                                                         |
+| `curl` in the sandbox ignores the proxy for `http://` URLs                                       | It honors lowercase `http_proxy` — the pool sets both cases; use lowercase in ad-hoc curls.                                                                                                                                                                                                                                                                                             |
+| sandbox-relay `CrashLoopBackOff` (`ERR_MODULE_NOT_FOUND: tsx`)                                   | Unrelated to AuthBridge; the relay must run from its package dir. Fixed in [`relay-deployment.yaml`](relay-deployment.yaml).                                                                                                                                                                                                                                                            |
 
 ## Cleanup / restore
 

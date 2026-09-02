@@ -26,4 +26,4 @@ We will make the harness perform zero filesystem I/O: move leaf inputs and the r
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

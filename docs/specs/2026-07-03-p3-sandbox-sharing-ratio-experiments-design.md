@@ -8,15 +8,15 @@ pool + routing, [#46](https://github.com/kagenti/serverless-harness/issues/46)) 
 [#47](https://github.com/kagenti/serverless-harness/issues/47)), both merged. Measures the harness→sandbox
 **sharing ratio** on the runc runtime to set the pool's capacity knobs. **Kata/VM isolation and intra-pod
 hardening are split out to a new [P4 (#57)](https://github.com/kagenti/serverless-harness/issues/57)** and are
-*not* in scope here.
+_not_ in scope here.
 
 ---
 
 ## 1. Goal & motivation
 
-P2 delivered the *mechanism* for many leaf harnesses to share a small pool of sandbox pods (N distinct `Sandbox`
+P2 delivered the _mechanism_ for many leaf harnesses to share a small pool of sandbox pods (N distinct `Sandbox`
 CRs, harness-side Redis-lease routing, ref-pinned lazy converge, per-leaf worktrees). It deliberately left the
-**capacity numbers** unmeasured: `KAGENTI_SANDBOX_CAP` defaults to a *soft* 20 and pool size N is a static config
+**capacity numbers** unmeasured: `KAGENTI_SANDBOX_CAP` defaults to a _soft_ 20 and pool size N is a static config
 knob, both tagged "tune empirically in P3."
 
 P3 produces those numbers. It answers, with evidence on a representative cluster:
@@ -39,7 +39,7 @@ The 2026-07-03 brainstorm reversed that dependency and split the phase:
 
 - **The ratio baseline does not need Kata.** Concurrency knee, converge contention, CPU/mem per leaf, and CAP/N
   tuning are all properties of the workload on whatever runtime the pods use. They are measured on **runc** (what
-  we have). Kata only adds a **startup/overhead delta** that P4 measures *on top of* this baseline — so the
+  we have). Kata only adds a **startup/overhead delta** that P4 measures _on top of_ this baseline — so the
   baseline is a prerequisite for the Kata work, not the other way round.
 - **Kata cannot run on the live cluster as-is.** The OCP 4.20.8 cluster is all `m6i.xlarge` — standard EC2 with
   **no `/dev/kvm`** (nested virtualization is not exposed on non-`.metal` instances), so default Kata (QEMU/KVM)
@@ -53,23 +53,23 @@ moves to **P4 (#57)**, gated on the infra spike. §8 hands P4 a clean starting p
 
 These were settled during brainstorming and are not relitigated in planning:
 
-| # | Decision | Rationale |
-|---|----------|-----------|
-| D1 | **Split P3 (experiments) from P4 (Kata/isolation).** P3 measures the ratio on runc; P4 owns VM isolation + intra-pod hardening. | Ratio baseline is runtime-independent and unblocked; Kata is infra-blocked on this cluster. Decouples shippable work from a spike. |
-| D2 | **Ratio meaning: concurrency cap is primary; N is derived.** Measure the per-sandbox concurrency knee (→ `CAP`); compute the provisioning ratio N from the observed per-leaf duty cycle in the **same** run. | One load experiment yields both knobs; avoids a second time-averaged fleet workload. |
-| D3 | **Experiment set: E6 (saturation curve) + E7 (converge contention + mixed-ref correctness) + a light feed-back check.** No standalone fleet/CAP experiment. | E6+E7 yield CAP, N, the bottleneck, and the deferred mixed-ref validation. P2 already proved pool spread / never-over-cap / self-heal, so the feed-back check re-runs that at the derived CAP rather than re-deriving it. |
-| D4 | **Load substrate: in-cluster git-daemon pod** serving a seeded bare repo with multiple refs over `git://`. | Reachable by all pool pods, hermetic (no GitHub egress/auth), repeatable, and the only option that supports mixed-ref converge *across* the pool. `file://` is local to one pod's RWO PVC and cannot be shared. |
-| D5 | **Cluster strategy: develop on Kind, authoritative numbers on OCP.** Iterate drivers on the standing Kind `sh-knative` 3-pod pool; take the reported ratio/CAP on live OCP 4.20. | Kind is fast/deterministic but laptop-bound (absolute leaves/sec unrepresentative); OCP gives representative CPU/mem + real EBS RWO + API-server exec. Mirrors the P2 Kind-integration → gated-OCP-live pattern. |
-| D6 | **Gates: hard correctness gates + reported ratio with a sanity floor.** Correctness (mixed-ref consistency, never-over-cap) fails the build; the ratio/CAP is a reported deliverable guarded by a documented minimum-concurrency floor. | A measurement experiment has no honest binary threshold; the floor still catches a silent capacity collapse in CI. |
+| #   | Decision                                                                                                                                                                                                                                | Rationale                                                                                                                                                                                                                 |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | **Split P3 (experiments) from P4 (Kata/isolation).** P3 measures the ratio on runc; P4 owns VM isolation + intra-pod hardening.                                                                                                         | Ratio baseline is runtime-independent and unblocked; Kata is infra-blocked on this cluster. Decouples shippable work from a spike.                                                                                        |
+| D2  | **Ratio meaning: concurrency cap is primary; N is derived.** Measure the per-sandbox concurrency knee (→ `CAP`); compute the provisioning ratio N from the observed per-leaf duty cycle in the **same** run.                            | One load experiment yields both knobs; avoids a second time-averaged fleet workload.                                                                                                                                      |
+| D3  | **Experiment set: E6 (saturation curve) + E7 (converge contention + mixed-ref correctness) + a light feed-back check.** No standalone fleet/CAP experiment.                                                                             | E6+E7 yield CAP, N, the bottleneck, and the deferred mixed-ref validation. P2 already proved pool spread / never-over-cap / self-heal, so the feed-back check re-runs that at the derived CAP rather than re-deriving it. |
+| D4  | **Load substrate: in-cluster git-daemon pod** serving a seeded bare repo with multiple refs over `git://`.                                                                                                                              | Reachable by all pool pods, hermetic (no GitHub egress/auth), repeatable, and the only option that supports mixed-ref converge _across_ the pool. `file://` is local to one pod's RWO PVC and cannot be shared.           |
+| D5  | **Cluster strategy: develop on Kind, authoritative numbers on OCP.** Iterate drivers on the standing Kind `sh-knative` 3-pod pool; take the reported ratio/CAP on live OCP 4.20.                                                        | Kind is fast/deterministic but laptop-bound (absolute leaves/sec unrepresentative); OCP gives representative CPU/mem + real EBS RWO + API-server exec. Mirrors the P2 Kind-integration → gated-OCP-live pattern.          |
+| D6  | **Gates: hard correctness gates + reported ratio with a sanity floor.** Correctness (mixed-ref consistency, never-over-cap) fails the build; the ratio/CAP is a reported deliverable guarded by a documented minimum-concurrency floor. | A measurement experiment has no honest binary threshold; the floor still catches a silent capacity collapse in CI.                                                                                                        |
 
 ## 4. What is measured (metrics & definitions)
 
-| Metric | Definition | Feeds |
-|--------|------------|-------|
-| **Concurrency knee** | The concurrent-leaf count `C*` beyond which aggregate throughput (leaves/sec) stops rising and/or per-leaf p95 latency crosses a documented degradation multiple of the `C=1` baseline. | Recommended **`KAGENTI_SANDBOX_CAP`** (`≈ C*`, with a safety margin below the hard-degradation point). |
-| **Per-leaf duty cycle** `d` | Sandbox-busy time (sum of exec durations attributable to a leaf: converge + worktree + tool ops) ÷ leaf wall-clock. | **Provisioning ratio** `N_harness : N_sandbox ≈ 1/d` at the knee; guides pool size N for an expected fleet. |
-| **Converge wait** | Time a leaf's `git fetch` spends blocked on the per-pod `flock` vs. executing, as concurrency rises. | Whether the object-store lock (fixable) or CPU/exec (a real ceiling) caps E6. |
-| **Sandbox pod CPU/mem** | `kubectl top pod` (and/or cgroup readings) for the sandbox pod at each concurrency level. | Confirms the knee's physical cause; sizing guidance for sandbox pod resources. |
+| Metric                      | Definition                                                                                                                                                                              | Feeds                                                                                                       |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **Concurrency knee**        | The concurrent-leaf count `C*` beyond which aggregate throughput (leaves/sec) stops rising and/or per-leaf p95 latency crosses a documented degradation multiple of the `C=1` baseline. | Recommended **`KAGENTI_SANDBOX_CAP`** (`≈ C*`, with a safety margin below the hard-degradation point).      |
+| **Per-leaf duty cycle** `d` | Sandbox-busy time (sum of exec durations attributable to a leaf: converge + worktree + tool ops) ÷ leaf wall-clock.                                                                     | **Provisioning ratio** `N_harness : N_sandbox ≈ 1/d` at the knee; guides pool size N for an expected fleet. |
+| **Converge wait**           | Time a leaf's `git fetch` spends blocked on the per-pod `flock` vs. executing, as concurrency rises.                                                                                    | Whether the object-store lock (fixable) or CPU/exec (a real ceiling) caps E6.                               |
+| **Sandbox pod CPU/mem**     | `kubectl top pod` (and/or cgroup readings) for the sandbox pod at each concurrency level.                                                                                               | Confirms the knee's physical cause; sizing guidance for sandbox pod resources.                              |
 
 **The "~20:1" hypothesis** is an output to confirm or refine, never an input. The deliverable is the measured
 curve + a recommended CAP + a derived N, recorded with the raw numbers.
@@ -164,14 +164,14 @@ P3 records the isolation starting point so P4 (#57) opens cleanly:
 
 ## 9. Failure modes & risks
 
-| Event | Behavior / mitigation |
-|-------|-----------------------|
-| Knee is above the largest ladder step | Report "no knee observed below `C_max`"; extend `E6_LADDER` and re-run. CAP recommendation is then a floor, not the true ceiling — noted explicitly in RESULTS. |
-| Kind resource limits dominate the curve | Expected; that is why the *authoritative* run is on OCP (D5). Kind results are reported as shape/relative only. |
-| git-daemon becomes the bottleneck instead of the sandbox | Detected by E7 (converge wait would rise with git-daemon load, not pod concurrency); seed refs locally and keep the daemon read-only/cheap; note if observed. |
-| Duty-cycle attribution is noisy | Report N as a range with the measured duty-cycle spread rather than a single figure; the CAP (primary) does not depend on it. |
+| Event                                                                           | Behavior / mitigation                                                                                                                                                  |
+| ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Knee is above the largest ladder step                                           | Report "no knee observed below `C_max`"; extend `E6_LADDER` and re-run. CAP recommendation is then a floor, not the true ceiling — noted explicitly in RESULTS.        |
+| Kind resource limits dominate the curve                                         | Expected; that is why the _authoritative_ run is on OCP (D5). Kind results are reported as shape/relative only.                                                        |
+| git-daemon becomes the bottleneck instead of the sandbox                        | Detected by E7 (converge wait would rise with git-daemon load, not pod concurrency); seed refs locally and keep the daemon read-only/cheap; note if observed.          |
+| Duty-cycle attribution is noisy                                                 | Report N as a range with the measured duty-cycle spread rather than a single figure; the CAP (primary) does not depend on it.                                          |
 | Model/network latency inflates leaf wall-clock and deflates apparent duty cycle | Use the small fixed Archetype-A leaf and `claude-haiku-4-5`; report duty cycle from exec-time accounting, not just wall-clock, so provider latency does not distort N. |
-| `llm-credentials` drift on OCP | Re-provision api-key-only before the authoritative run (P0′ lesson). |
+| `llm-credentials` drift on OCP                                                  | Re-provision api-key-only before the authoritative run (P0′ lesson).                                                                                                   |
 
 ## 10. Testing
 
@@ -212,4 +212,4 @@ P3 records the isolation starting point so P4 (#57) opens cleanly:
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) — brainstorming + spec authoring for P3.*
+_Assisted-By: Claude (Anthropic AI) — brainstorming + spec authoring for P3._

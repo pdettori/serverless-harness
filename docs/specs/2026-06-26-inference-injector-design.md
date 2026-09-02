@@ -13,13 +13,13 @@ harness lock-down (this date's sibling) depends on. Refines parent §3.1 from a 
 **separate shared gateway pod** (the NetworkPolicy-granularity reason, harness-lockdown H6).
 Parent design: [Zero-Trust, Multi-Agent Extensions](../../../docs/research/2026-06-18-zero-trust-multiagent-harness-extension.md) — §2.2 the harness-holds-no-key claim, §3.1 inference broker, §4.1 log invariants, §2.3 portable-core/kagenti-binding split.
 Depends on / pairs with: [Harness Lock-Down Design](2026-06-26-harness-lockdown-design.md) — H4 (key not in harness; non-secret base URL), H5 (only the injector has public egress), H6 (separate pod), §8 (the injector is the high-value target this spec must own).
-Sibling: [M13 — Generalized Credentialed Egress](2026-06-19-m13-generalized-credentialed-egress-design.md) — the **sandbox**'s egress plane. This injector is deliberately *not* that: no baked CA, no placeholder-swap, no allowlist-per-host policy.
+Sibling: [M13 — Generalized Credentialed Egress](2026-06-19-m13-generalized-credentialed-egress-design.md) — the **sandbox**'s egress plane. This injector is deliberately _not_ that: no baked CA, no placeholder-swap, no allowlist-per-host policy.
 
 > **Why this is light.** The harness explicitly points its provider base URL at the injector, so
 > there is **no deception and no TLS interception** (contrast M13's sandbox forward proxy + baked
 > CA). The injector is a path-preserving host+auth rewrite for a small static set of providers —
 > not a policy engine. The zero-trust property it delivers ("the harness holds no key") comes from
-> *where the key lives*, not from elaborate request mediation.
+> _where the key lives_, not from elaborate request mediation.
 
 ---
 
@@ -65,7 +65,7 @@ non-model-influenced component — so the harness lock-down's default-deny egres
 ### 2.1 What the injector is
 
 **Trusted code that is NOT influenced by model output.** It does not build prompts, parse model
-output, or run model-authored code. It transits an inference request whose *body* originated in the
+output, or run model-authored code. It transits an inference request whose _body_ originated in the
 harness (and ultimately reflects model/context content), but it treats that body as **opaque
 bytes** — it neither inspects nor logs it. Its only inputs it acts on are the routing header and the
 peer identity.
@@ -75,24 +75,26 @@ peer identity.
 The harness lock-down (§8) names the injector the high-value target by design — concentration is the
 cost of the clean boundary:
 
-| Asset | Exposure |
-|---|---|
-| **Provider keys** (all providers) | At rest in the injector pod's Secret mounts; the single rotation/audit point. |
-| **Public internet egress** | The only component allowed to reach the provider hosts on `:443`. |
-| **Prompt bodies in transit** | It transits every inference request — same visibility the provider already has. Retains **none** of it (§7, §8). |
+| Asset                             | Exposure                                                                                                         |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **Provider keys** (all providers) | At rest in the injector pod's Secret mounts; the single rotation/audit point.                                    |
+| **Public internet egress**        | The only component allowed to reach the provider hosts on `:443`.                                                |
+| **Prompt bodies in transit**      | It transits every inference request — same visibility the provider already has. Retains **none** of it (§7, §8). |
 
 ### 2.3 What it defends — and what it does not
 
 **Defends (structurally):**
+
 - The key never enters the harness, so it can never reach the durable log (parent §4.1). Achieved by
-  *where the key lives*, mTLS-gated access, and the injector always overwriting client auth.
+  _where the key lives_, mTLS-gated access, and the injector always overwriting client auth.
 - Exfil to arbitrary hosts from the harness path: the injector forwards only to the static provider
   upstreams (its own egress allowlist); the harness pod has no other public route (lock-down H5).
 
 **Does NOT defend (honest residue):**
+
 - **A live-compromised harness can use the injector** — it holds a valid mTLS identity, so it can
-  ask the injector to proxy provider calls while it is alive. The injector hides the *raw key*, not
-  *use* of it. `x-sh-session` is attribution, **not** an authorization control.
+  ask the injector to proxy provider calls while it is alive. The injector hides the _raw key_, not
+  _use_ of it. `x-sh-session` is attribution, **not** an authorization control.
 - **A compromised injector is game over** for keys — it is the concentration point. Mitigations:
   trusted code, minimal surface, no body retention, mTLS-gated ingress, least-privilege, rotation.
 
@@ -115,19 +117,19 @@ cost of the clean boundary:
 
 ## 3. Key decisions
 
-| # | Decision | Choice |
-|---|----------|--------|
-| I1 | Form | **Minimal purpose-built reverse proxy** (e.g. Go `httputil.ReverseProxy`). Portable core, no mesh dependency; owns streaming + audit. (Envoy and AuthBridge-reuse considered and rejected as heavier for this job.) |
-| I2 | Topology | **One shared, long-lived gateway Deployment** (separate pod, parent option (b)); stateless in v1 → multi-replica trivially; not scale-to-zero (stable egress point). |
-| I3 | Provider breadth | **Multi-provider via a static provider table.** Each entry: upstream host, auth scheme (location + name + format), key Secret ref. |
-| I4 | Provider selection | **Per-request header `x-sh-provider`.** The harness knows its provider (`SH_MODEL_PROVIDER`) and sets the header; unknown value → `400`. |
-| I5 | Credential placement | **Static K8s Secret(s) mounted only to the injector pod.** Never in the harness. SPIRE-bound fetch is the documented upgrade (§13). |
-| I6 | Credential handling | **Strip then set.** The injector removes any client-supplied auth (`Authorization`, `x-api-key`, `x-goog-api-key`, version headers it owns) and sets the real credential, so the harness cannot influence or smuggle it. |
-| I7 | Harness↔injector transport | **mTLS in v1.** Mutually authenticated; injector authorizes known harness SPIFFE identities. kagenti binding: Istio ambient + SPIRE. NetworkPolicy is defense-in-depth, not the sole control. |
-| I8 | Provider TLS | **Injector originates fresh TLS** to the real provider. **No baked CA, no interception** — the harness explicitly targets the injector, so there is no deception (contrast M13). |
-| I9 | Body handling | **Opaque, streaming, path-preserving.** Bodies and request paths pass through unmodified; the injector mutates only headers + upstream host. No body parse, no body log. |
-| I10 | Budget | **None in v1.** Turn-boundary voter (M5/M6) keeps it. Hard per-session cap is the upgrade (§13). |
-| I11 | Audit | **Metadata only:** session, provider, model id (from the `x-sh-model` header, so the body stays opaque), request/response sizes, status, timestamp. Never key, never body. |
+| #   | Decision                   | Choice                                                                                                                                                                                                                   |
+| --- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| I1  | Form                       | **Minimal purpose-built reverse proxy** (e.g. Go `httputil.ReverseProxy`). Portable core, no mesh dependency; owns streaming + audit. (Envoy and AuthBridge-reuse considered and rejected as heavier for this job.)      |
+| I2  | Topology                   | **One shared, long-lived gateway Deployment** (separate pod, parent option (b)); stateless in v1 → multi-replica trivially; not scale-to-zero (stable egress point).                                                     |
+| I3  | Provider breadth           | **Multi-provider via a static provider table.** Each entry: upstream host, auth scheme (location + name + format), key Secret ref.                                                                                       |
+| I4  | Provider selection         | **Per-request header `x-sh-provider`.** The harness knows its provider (`SH_MODEL_PROVIDER`) and sets the header; unknown value → `400`.                                                                                 |
+| I5  | Credential placement       | **Static K8s Secret(s) mounted only to the injector pod.** Never in the harness. SPIRE-bound fetch is the documented upgrade (§13).                                                                                      |
+| I6  | Credential handling        | **Strip then set.** The injector removes any client-supplied auth (`Authorization`, `x-api-key`, `x-goog-api-key`, version headers it owns) and sets the real credential, so the harness cannot influence or smuggle it. |
+| I7  | Harness↔injector transport | **mTLS in v1.** Mutually authenticated; injector authorizes known harness SPIFFE identities. kagenti binding: Istio ambient + SPIRE. NetworkPolicy is defense-in-depth, not the sole control.                            |
+| I8  | Provider TLS               | **Injector originates fresh TLS** to the real provider. **No baked CA, no interception** — the harness explicitly targets the injector, so there is no deception (contrast M13).                                         |
+| I9  | Body handling              | **Opaque, streaming, path-preserving.** Bodies and request paths pass through unmodified; the injector mutates only headers + upstream host. No body parse, no body log.                                                 |
+| I10 | Budget                     | **None in v1.** Turn-boundary voter (M5/M6) keeps it. Hard per-session cap is the upgrade (§13).                                                                                                                         |
+| I11 | Audit                      | **Metadata only:** session, provider, model id (from the `x-sh-model` header, so the body stays opaque), request/response sizes, status, timestamp. Never key, never body.                                               |
 
 ---
 
@@ -164,7 +166,7 @@ gemini:    { host: generativelanguage.googleapis.com, auth: {loc: header, name: 
   The table, not code branches, encodes the difference.
 - **`extra`** carries non-secret required headers (e.g. `anthropic-version`).
 - Keys are **mounted, not embedded**: each `secret` ref is a K8s Secret mounted to the injector pod
-  only; the table holds the *reference*, never the value.
+  only; the table holds the _reference_, never the value.
 
 ---
 
@@ -175,10 +177,10 @@ gemini:    { host: generativelanguage.googleapis.com, auth: {loc: header, name: 
   principals (SPIRE-issued). **Portable core:** the contract is "mTLS + identity-based authz"; a
   non-kagenti cluster supplies its own mutual-TLS mechanism.
 - **NetworkPolicy (defense-in-depth):** only harness pods may reach the injector; the injector's
-  egress is allowed only to the provider upstream hosts. mTLS authorizes *who*; NetworkPolicy bounds
-  *reachability* — both, not either.
+  egress is allowed only to the provider upstream hosts. mTLS authorizes _who_; NetworkPolicy bounds
+  _reachability_ — both, not either.
 - **`x-sh-session` is attribution, not authorization.** It feeds audit (and the future budget cap).
-  A valid-mTLS harness is trusted to *use* inference; the session header does not gate that (§2.3
+  A valid-mTLS harness is trusted to _use_ inference; the session header does not gate that (§2.3
   residue).
 
 ---
@@ -308,4 +310,4 @@ The injector passes when, on a Kind cluster with the locked-down harness deploym
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

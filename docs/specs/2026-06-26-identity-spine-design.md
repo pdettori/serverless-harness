@@ -15,9 +15,9 @@ Parent design: [Zero-Trust, Multi-Agent Extensions](../../../docs/research/2026-
 Consumed by: [Z2 Harness Lock-Down](2026-06-26-harness-lockdown-design.md) (harness SPIFFE id for mTLS to the injector; `pods/exec`-only RBAC), [Z3 Inference Injector](2026-06-26-inference-injector-design.md) (mTLS peer authz), [Z4 MCP code-mode](2026-06-18-m10-mcp-code-mode-design.md) + [Z5 Generalized Egress](2026-06-19-m13-generalized-credentialed-egress-design.md) (per-user `(actor SVID ⊕ subject)` resolution).
 
 > **The one-sentence thesis.** Per-user isolation in a shared namespace, under scale-to-zero,
-> reduces to: *a trusted orchestrator mints a per-session SPIFFE identity with the user in the
+> reduces to: _a trusted orchestrator mints a per-session SPIFFE identity with the user in the
 > attested path, derived from a durable binding it alone can write, and reconstructs it on every
-> wake* — and everything else (harness, sandbox) is built untrusted around that.
+> wake_ — and everything else (harness, sandbox) is built untrusted around that.
 
 ---
 
@@ -27,7 +27,7 @@ Consumed by: [Z2 Harness Lock-Down](2026-06-26-harness-lockdown-design.md) (harn
 
 Give every session a **per-session, mesh-verifiable identity bound to its human user**, such that
 the egress planes (Z3 inference, Z5 sandbox) can resolve credentials per-user **without** any
-workload being able to assert or spoof *who it is* — including when **many users share one
+workload being able to assert or spoof _who it is_ — including when **many users share one
 namespace** and when sessions **scale to zero** between turns.
 
 ### In scope
@@ -36,7 +36,7 @@ namespace** and when sessions **scale to zero** between turns.
 - The **per-session identity model**: SPIFFE id with the user in the attested path; why
   per-namespace identity is insufficient — §3.
 - The portable **`CredentialInjector` interface** + the **kagenti binding** (SPIRE + Istio ambient
-  + waypoint + AuthBridge) — §4.
+  - waypoint + AuthBridge) — §4.
 - The **orchestrator**: responsibilities, lifecycle, and the integrity invariant that only it can
   mint identity — §5.
 - The **authoritative binding store**, integrity-protected and **separate from the model-influenced
@@ -47,7 +47,7 @@ namespace** and when sessions **scale to zero** between turns.
 ### Out of scope (Z5 / separate)
 
 - **The per-user external-credential store** (linking/consent/rotation/revocation of GitHub PATs,
-  OAuth grants, etc.). Z1 issues *identity*; Z5 resolves *credentials* keyed by that identity. Z1
+  OAuth grants, etc.). Z1 issues _identity_; Z5 resolves _credentials_ keyed by that identity. Z1
   records the dependency's shape (§12) but does not build it.
 - **The egress proxies themselves** — the inference injector (Z3) and the sandbox waypoint/forward
   proxy (Z5). Z1 defines the interface they implement.
@@ -62,15 +62,15 @@ namespace** and when sessions **scale to zero** between turns.
 Per-user isolation requires a control tier **above** both the brain and the hands. The identity
 plane introduces it explicitly:
 
-| Tier | Component | Trust | `pods/create`? | Mints identity? | Holds secrets? |
-|---|---|---|---|---|---|
-| **Control** | **Orchestrator** | trusted; **not** model-influenced | **yes (sole)** | **yes (sole)** | no |
-| **Brain** | Harness | semi-trusted (untrusted *data*) | **no** | no | no (Z2) |
-| **Hands** | Sandbox | untrusted (model code) | no | no | no (Z5; uses, never reads) |
+| Tier        | Component        | Trust                             | `pods/create`? | Mints identity? | Holds secrets?             |
+| ----------- | ---------------- | --------------------------------- | -------------- | --------------- | -------------------------- |
+| **Control** | **Orchestrator** | trusted; **not** model-influenced | **yes (sole)** | **yes (sole)**  | no                         |
+| **Brain**   | Harness          | semi-trusted (untrusted _data_)   | **no**         | no              | no (Z2)                    |
+| **Hands**   | Sandbox          | untrusted (model code)            | no             | no              | no (Z5; uses, never reads) |
 
 The orchestrator is the new element. It is shared, long-lived control-plane infrastructure (in
 kagenti: the operator extended with a **Session controller**), not a per-session pod and **not**
-scale-to-zero. It provisions *identity*; it never touches per-user secrets, which keeps it out of
+scale-to-zero. It provisions _identity_; it never touches per-user secrets, which keeps it out of
 the credential blast radius even though it is the identity-side crown jewel (§9).
 
 ---
@@ -132,20 +132,20 @@ interface CredentialInjector:
 
 The interface does not depend on SPIRE, Envoy, or Keycloak — a non-kagenti cluster can implement it
 with a minimal secret-holding sidecar behind the same contract. This is what keeps serverless-harness
-portable (parent §2.3) and what makes Z3 (provider key) and Z5 (per-user egress) two *implementations*
+portable (parent §2.3) and what makes Z3 (provider key) and Z5 (per-user egress) two _implementations_
 of one idea rather than two designs.
 
 ### 4.2 kagenti reference binding
 
-| Concern | Binding |
-|---|---|
-| Identity issuance | **SPIRE** issues per-session SVIDs (§3.3); `spiffe-helper` delivers them in-pod. |
-| Transport identity | **Istio ambient ztunnel** — L4 mTLS, verified `source.principal` per pod. |
+| Concern            | Binding                                                                                                                                                                                                                                    |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Identity issuance  | **SPIRE** issues per-session SVIDs (§3.3); `spiffe-helper` delivers them in-pod.                                                                                                                                                           |
+| Transport identity | **Istio ambient ztunnel** — L4 mTLS, verified `source.principal` per pod.                                                                                                                                                                  |
 | L7 injection point | **waypoint** (Envoy) — the only place headers/credentials are set. ztunnel (L4) cannot inject. **One shared waypoint per namespace** serves many per-session identities; it keys on `source.principal`, so it does **not** churn per user. |
-| Resolution | **AuthBridge** ext-proc reads the verified identity → `(actor SVID ⊕ subject)` → mint (RFC 8693) or fetch stored grant (Z5) → inject. |
+| Resolution         | **AuthBridge** ext-proc reads the verified identity → `(actor SVID ⊕ subject)` → mint (RFC 8693) or fetch stored grant (Z5) → inject.                                                                                                      |
 
-The harness path (Z3) is the *trivial* implementation: identity gates mTLS to the injector; the
-credential is a non-per-user provider key. The sandbox path (Z5) is the *full* implementation:
+The harness path (Z3) is the _trivial_ implementation: identity gates mTLS to the injector; the
+credential is a non-per-user provider key. The sandbox path (Z5) is the _full_ implementation:
 identity → user → that user's grant.
 
 ---
@@ -157,9 +157,9 @@ identity → user → that user's grant.
 - **Create:** authenticate the user (or accept the gateway/Keycloak assertion) → allocate
   `session-id` → write the **authoritative `session-id → user` binding** (§6) → mint the per-session
   SPIRE registration with the user in the attested path → provision the identity-bearing sandbox pod.
-  *This is the one point a live user identity is required.*
+  _This is the one point a live user identity is required._
 - **Wake:** receive the wake signal for `session-id` → read the binding from the durable store →
-  reconstruct the SPIRE entry + sandbox pod with the correct identity → hand the harness a *reference*
+  reconstruct the SPIRE entry + sandbox pod with the correct identity → hand the harness a _reference_
   to connect to. **No live user re-auth** — wake is unattended (§7).
 - **Idle (scale-to-zero):** tear down the sandbox pod and reap the SPIRE entry; **keep** the binding.
 - **End / GC:** delete binding + entry; TTL-reap abandoned sessions.
@@ -193,11 +193,11 @@ If these share one harness-writable structure, a compromised harness could rewri
 
 - The binding lives in an **orchestrator-owned, integrity-protected store** (Redis ACL-scoped key / a
   Session CR / Keycloak) that the **harness cannot write**.
-- The log may still *reference* identity for **audit** (§4.1 holds for audit), but it is **not
+- The log may still _reference_ identity for **audit** (§4.1 holds for audit), but it is **not
   authoritative** for resolution.
 
 This sharpens parent §4.1 ("identity referenced by SPIFFE string only"): a SPIFFE string in the log is
-fine *as audit*, but the **resolution-authoritative** binding is orchestrator-owned and write-isolated
+fine _as audit_, but the **resolution-authoritative** binding is orchestrator-owned and write-isolated
 from the log.
 
 ---
@@ -222,7 +222,7 @@ Two properties make this clean:
 - **No credential is ever cached in-pod** — resolution fetches the grant fresh at egress every time,
   so teardown loses nothing credential-related.
 - **Stored-grant resolution (Z5 §4.2) means the user may be offline** at wake. Scale-to-zero is the
-  *payoff case* for choosing stored grants over live user tokens: a session can act as Alice while
+  _payoff case_ for choosing stored grants over live user tokens: a session can act as Alice while
   Alice is offline. A live-token design would break here.
 
 A long-idle wake may find the stored grant expired/revoked → egress returns a clean auth error (Z5:
@@ -232,31 +232,31 @@ A long-idle wake may find the stored grant expired/revoked → egress returns a 
 
 ## 8. Key decisions
 
-| # | Decision | Choice |
-|---|----------|--------|
-| ID1 | Identity granularity | **Per-session**, finer than namespace/SA. The namespace is not the isolation boundary (§3.2). |
-| ID2 | User binding | **User in the attested SVID path**, set by the orchestrator at mint time; the resolver reads it — no asserted header (§3.1). |
-| ID3 | Issuance | **SPIRE per-pod registration** (kagenti-native; `spiffe-helper` already present); per-session SA as fallback (§3.3). |
-| ID4 | Interface | **Abstract `CredentialInjector`** (`identity → egress injection`); kagenti binding = SPIRE + ambient + waypoint + AuthBridge (§4). Z3 and Z5 are implementations. |
-| ID5 | Minting authority | **Orchestrator only** creates session pods and SPIRE entries; harness has no `pods/create` (§5.2). |
-| ID6 | Binding store | **Orchestrator-owned, integrity-protected, separate from the harness-writable log** (§6). |
-| ID7 | Scale-to-zero | **Reconstruct identity on wake from the durable binding; reap on idle.** No per-session mesh state while sleeping (§7). |
-| ID8 | Live user auth | **At session creation only.** Wake is unattended, trusting the durable binding + stored grant (§7). |
-| ID9 | Harness reframing | Harness gets a SPIFFE id but **no egress waypoint** (parent M7 reframed; Z2 §2.4). The per-user egress plane is the sandbox's (Z5). |
+| #   | Decision             | Choice                                                                                                                                                            |
+| --- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ID1 | Identity granularity | **Per-session**, finer than namespace/SA. The namespace is not the isolation boundary (§3.2).                                                                     |
+| ID2 | User binding         | **User in the attested SVID path**, set by the orchestrator at mint time; the resolver reads it — no asserted header (§3.1).                                      |
+| ID3 | Issuance             | **SPIRE per-pod registration** (kagenti-native; `spiffe-helper` already present); per-session SA as fallback (§3.3).                                              |
+| ID4 | Interface            | **Abstract `CredentialInjector`** (`identity → egress injection`); kagenti binding = SPIRE + ambient + waypoint + AuthBridge (§4). Z3 and Z5 are implementations. |
+| ID5 | Minting authority    | **Orchestrator only** creates session pods and SPIRE entries; harness has no `pods/create` (§5.2).                                                                |
+| ID6 | Binding store        | **Orchestrator-owned, integrity-protected, separate from the harness-writable log** (§6).                                                                         |
+| ID7 | Scale-to-zero        | **Reconstruct identity on wake from the durable binding; reap on idle.** No per-session mesh state while sleeping (§7).                                           |
+| ID8 | Live user auth       | **At session creation only.** Wake is unattended, trusting the durable binding + stored grant (§7).                                                               |
+| ID9 | Harness reframing    | Harness gets a SPIFFE id but **no egress waypoint** (parent M7 reframed; Z2 §2.4). The per-user egress plane is the sandbox's (Z5).                               |
 
 ---
 
 ## 9. Threat model & blast radius (honest)
 
 - **The orchestrator is the identity-side crown jewel.** If compromised, it can mint an SVID bound to
-  *any* user and drive egress to **use** that user's stored grant — i.e. impersonate any user. It
+  _any_ user and drive egress to **use** that user's stored grant — i.e. impersonate any user. It
   never holds the raw secrets (those stay in the cred store, injected at the waypoint), but it can
   cause their use. This mirrors the injector's role on the provider-key side (Z3): the trust core is
   two small, non-model-influenced concentration points.
 - **Mitigations:** minimal non-model-influenced surface; strong RBAC; an **audit trail of every
   identity-minting action** (who minted `…/user/alice/session/X`, from which authenticated request);
-  and ideally **separation of duties** — the component that *authenticates the user* distinct from the
-  one that *mints entries*, so neither alone can impersonate.
+  and ideally **separation of duties** — the component that _authenticates the user_ distinct from the
+  one that _mints entries_, so neither alone can impersonate.
 - **The fatal anti-pattern (explicitly forbidden):** shared namespace SA + a `subject` header for
   per-user routing → any session spoofs any user → cross-user credential theft (§3.2).
 - **Spoofing the SVID:** a workload cannot obtain another session's SVID without compromising SPIRE or
@@ -325,4 +325,4 @@ resolver, in **one shared namespace**:
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

@@ -27,4 +27,4 @@ We will extend AuthBridge's placeholder-swap to all HTTP egress: the sandbox hol
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

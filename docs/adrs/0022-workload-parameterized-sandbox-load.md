@@ -26,4 +26,4 @@ We will make the headline output an N-vs-workload curve measured confound-free a
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

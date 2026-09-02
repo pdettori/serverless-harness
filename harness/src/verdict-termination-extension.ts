@@ -1,5 +1,5 @@
-import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import type { VerdictCapture } from "./submit-verdict-tool.js";
+import type { ExtensionAPI, ExtensionFactory } from '@earendil-works/pi-coding-agent';
+import type { VerdictCapture } from './submit-verdict-tool.js';
 
 export interface TurnCounter {
   turns: number;
@@ -37,16 +37,17 @@ export function verdictTerminationExtension(
   // Treat a missing OR non-positive maxTurns as "use the default" — a nullish-coalesce alone would
   // let an explicit 0 (or negative) through, which then fails the `> 0` guard below and silently
   // DISABLES the cap (unbounded), the opposite of what a caller passing 0 would expect.
-  const maxTurns = typeof opts.maxTurns === "number" && opts.maxTurns > 0 ? opts.maxTurns : DEFAULT_MAX_TURNS;
+  const maxTurns =
+    typeof opts.maxTurns === 'number' && opts.maxTurns > 0 ? opts.maxTurns : DEFAULT_MAX_TURNS;
   return (pi: ExtensionAPI) => {
-    pi.on("turn_start", () => {
+    pi.on('turn_start', () => {
       counter.turns += 1;
     });
-    pi.on("tool_call", (event) => {
+    pi.on('tool_call', (event) => {
       if (capture.verdict) {
-        return { block: true, reason: "Verdict already submitted for this item — task complete." };
+        return { block: true, reason: 'Verdict already submitted for this item — task complete.' };
       }
-      if (typeof maxTurns === "number" && maxTurns > 0 && counter.turns > maxTurns) {
+      if (typeof maxTurns === 'number' && maxTurns > 0 && counter.turns > maxTurns) {
         return {
           block: true,
           reason: `Turn limit (${maxTurns}) reached without a submitted verdict — stopping.`,

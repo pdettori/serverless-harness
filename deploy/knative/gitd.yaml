@@ -18,7 +18,7 @@ spec:
       containers:
         - name: gitd
           image: alpine/git:2.45.2
-          command: ["/bin/sh", "-c"]
+          command: ['/bin/sh', '-c']
           args:
             - |
               set -eu
@@ -59,12 +59,12 @@ spec:
                 --base-path=/srv/git --listen=0.0.0.0 --port=9418 /srv/git
           env:
             - name: GITD_REFS
-              value: "16"
+              value: '16'
           ports:
             - containerPort: 9418
           resources:
-            requests: { memory: "32Mi", cpu: "25m" }
-            limits: { memory: "128Mi" }
+            requests: { memory: '32Mi', cpu: '25m' }
+            limits: { memory: '128Mi' }
       # No securityContext override: the OCP overlay's non-root SCC applies namespace-wide;
       # git-daemon and git init run fine as an arbitrary non-root UID against /srv/git + /tmp.
 ---

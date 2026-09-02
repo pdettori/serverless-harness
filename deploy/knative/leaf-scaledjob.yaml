@@ -25,11 +25,11 @@ spec:
             image: dev.local/serverless-harness:local
             imagePullPolicy: IfNotPresent
             workingDir: /app/packages/knative-server
-            command: ["node", "--import", "tsx", "src/leaf-job.ts"]
+            command: ['node', '--import', 'tsx', 'src/leaf-job.ts']
             securityContext:
               allowPrivilegeEscalation: false
               readOnlyRootFilesystem: true
-              capabilities: { drop: ["ALL"] }
+              capabilities: { drop: ['ALL'] }
             # Baseline bounds so a runaway leaf (e.g. large LLM context) can't OOM the node;
             # maxReplicaCount caps pod count, these cap per-pod usage. Tune to observed workloads.
             resources:
@@ -39,16 +39,16 @@ spec:
               - name: HOME
                 value: /tmp
               - name: REDIS_URL
-                value: "redis://redis.default.svc:6379"
+                value: 'redis://redis.default.svc:6379'
               - name: SH_MODEL
-                value: "claude-haiku-4-5"
+                value: 'claude-haiku-4-5'
               # Lease from the shared sandbox pool (least-loaded, Redis-backed) instead
               # of pinning one pod — otherwise all maxReplicaCount workers collide on
               # sandbox-0. The harness discovers Running pool pods by this label.
               - name: KAGENTI_SANDBOX_POOL_SELECTOR
-                value: "sh.kagenti.io/sandbox-pool=default"
+                value: 'sh.kagenti.io/sandbox-pool=default'
               - name: KAGENTI_SANDBOX_NAMESPACE
-                value: "default"
+                value: 'default'
               # Soft per-pod lease ADMISSION cap (back-pressure) — NOT a resource limit:
               # up to CAP leaves may hold a lease on one pool pod at once. With P pods this
               # sets target concurrency P*CAP; workers beyond that hit
@@ -57,17 +57,19 @@ spec:
               # high (e.g. 1000) so the lease cap — not the pod — bounds concurrency
               # (e6-saturation.sh does exactly this, on the sync path).
               - name: KAGENTI_SANDBOX_CAP
-                value: "3"
+                value: '3'
               - name: KAGENTI_SANDBOX_LEASE_TTL_MS
-                value: "60000"
+                value: '60000'
               - name: LEAF_RESULT_TTL_SECONDS
-                value: "86400"
+                value: '86400'
               - name: ANTHROPIC_API_KEY
                 valueFrom: { secretKeyRef: { name: llm-credentials, key: api-key } }
               - name: ANTHROPIC_BASE_URL
-                valueFrom: { secretKeyRef: { name: llm-credentials, key: base-url, optional: true } }
+                valueFrom:
+                  { secretKeyRef: { name: llm-credentials, key: base-url, optional: true } }
               - name: ANTHROPIC_AUTH_TOKEN
-                valueFrom: { secretKeyRef: { name: llm-credentials, key: auth-token, optional: true } }
+                valueFrom:
+                  { secretKeyRef: { name: llm-credentials, key: auth-token, optional: true } }
             volumeMounts:
               - name: tmp
                 mountPath: /tmp
@@ -98,11 +100,11 @@ spec:
         address: redis.default.svc:6379
         stream: leaf-queue
         consumerGroup: leaf-workers
-        lagCount: "1"
-        activationLagCount: "0"
+        lagCount: '1'
+        activationLagCount: '0'
     - type: redis-streams
       metadata:
         address: redis.default.svc:6379
         stream: leaf-queue
         consumerGroup: leaf-workers
-        pendingEntriesCount: "1"
+        pendingEntriesCount: '1'

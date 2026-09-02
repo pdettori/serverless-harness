@@ -34,4 +34,4 @@ agent with a continuation prompt derived from the decision.
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

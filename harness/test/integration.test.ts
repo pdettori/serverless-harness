@@ -1,9 +1,9 @@
-import { describe, it, expect, afterAll } from "vitest";
-import { SessionManager, type FileEntry } from "@earendil-works/pi-coding-agent";
-import { RedisSessionBackend } from "@sh/session-backend";
-import { BufferedRedisBackend } from "../src/buffered-redis-backend";
+import { describe, it, expect, afterAll } from 'vitest';
+import { SessionManager, type FileEntry } from '@earendil-works/pi-coding-agent';
+import { RedisSessionBackend } from '@sh/session-backend';
+import { BufferedRedisBackend } from '../src/buffered-redis-backend';
 
-const REDIS = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
+const REDIS = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
 const store = new RedisSessionBackend<FileEntry>(REDIS);
 let createdSid: string | undefined;
 
@@ -12,17 +12,17 @@ afterAll(async () => {
   await store.close();
 });
 
-describe("SessionManager + Redis (parity / mobility / recovery)", () => {
-  it("a completed turn survives process death and a fresh instance resumes it", async () => {
+describe('SessionManager + Redis (parity / mobility / recovery)', () => {
+  it('a completed turn survives process death and a fresh instance resumes it', async () => {
     const backend = new BufferedRedisBackend(store);
 
     // Drive a "turn": user -> assistant -> checkpoint -> user.
     const sm = SessionManager.create(process.cwd(), undefined, undefined, backend);
     createdSid = sm.getSessionId();
-    sm.appendMessage({ role: "user", content: "hello" } as never);
-    sm.appendMessage({ role: "assistant", content: "hi there" } as never);
-    sm.appendCustomEntry("checkpoint", { ctx: "reconstructed" });
-    sm.appendMessage({ role: "user", content: "again" } as never);
+    sm.appendMessage({ role: 'user', content: 'hello' } as never);
+    sm.appendMessage({ role: 'assistant', content: 'hi there' } as never);
+    sm.appendCustomEntry('checkpoint', { ctx: 'reconstructed' });
+    sm.appendMessage({ role: 'user', content: 'again' } as never);
 
     // Durability barrier (what the harness calls at turn_end).
     await backend.flush();
@@ -40,6 +40,6 @@ describe("SessionManager + Redis (parity / mobility / recovery)", () => {
 
     // Checkpoint is recoverable through the decorator.
     const cp = await backend.latestCheckpoint(createdSid);
-    expect((cp as { customType?: string })?.customType).toBe("checkpoint");
+    expect((cp as { customType?: string })?.customType).toBe('checkpoint');
   });
 });

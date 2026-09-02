@@ -1,13 +1,19 @@
-import type { SandboxTransport } from "@sh/k8s-sandbox";
+import type { SandboxTransport } from '@sh/k8s-sandbox';
 
-function sq(s: string): string { return `'${s.replace(/'/g, `'\\''`)}'`; }
+function sq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
 
 /** env_dir = env_key with a trailing ":latest" tag stripped (dots kept). */
 export function envDirFromKey(envKey: string): string {
-  return envKey.endsWith(":latest") ? envKey.slice(0, -":latest".length) : envKey;
+  return envKey.endsWith(':latest') ? envKey.slice(0, -':latest'.length) : envKey;
 }
-export function swebenchCheckoutDir(runId: string): string { return `/workspace/co-${runId}`; }
-export function swebenchVenvDir(runId: string): string { return `/workspace/venv-${runId}`; }
+export function swebenchCheckoutDir(runId: string): string {
+  return `/workspace/co-${runId}`;
+}
+export function swebenchVenvDir(runId: string): string {
+  return `/workspace/venv-${runId}`;
+}
 
 /**
  * SWE-bench per-leaf provisioning inside the shared pool pod (mirrors the merged
@@ -16,7 +22,12 @@ export function swebenchVenvDir(runId: string): string { return `/workspace/venv
  * /workspace EBS), checks out base_commit, layers a per-leaf system-site venv over the baked conda
  * env, and editable-installs the repo (build-iso fallback). Prints the checkout dir on stdout.
  */
-export function buildSwebenchSetupScript(a: { repoUrl: string; baseCommit: string; envKey: string; runId: string }): string {
+export function buildSwebenchSetupScript(a: {
+  repoUrl: string;
+  baseCommit: string;
+  envKey: string;
+  runId: string;
+}): string {
   const CO = swebenchCheckoutDir(a.runId);
   const VENV = swebenchVenvDir(a.runId);
   const ENV_PY = `/opt/miniconda3/envs/${envDirFromKey(a.envKey)}/bin/python`;
@@ -31,19 +42,26 @@ export function buildSwebenchSetupScript(a: { repoUrl: string; baseCommit: strin
     `HOME=/workspace "$VENV/bin/pip" install -e "$CO" --no-build-isolation --no-cache-dir >&2 \\`,
     `  || HOME=/workspace "$VENV/bin/pip" install -e "$CO" --no-cache-dir >&2`,
     `printf '%s' "$CO"`,
-  ].join("\n");
+  ].join('\n');
 }
 
 export function buildSwebenchDiffScript(runId: string): string {
   const CO = swebenchCheckoutDir(runId);
-  return [`set -eu`, `git -C ${sq(CO)} add -A`, `git -C ${sq(CO)} diff --cached`].join("\n");
+  return [`set -eu`, `git -C ${sq(CO)} add -A`, `git -C ${sq(CO)} diff --cached`].join('\n');
 }
 export function buildSwebenchCleanupScript(runId: string): string {
-  return [`set -u`, `rm -rf ${sq(swebenchCheckoutDir(runId))} ${sq(swebenchVenvDir(runId))}`].join("\n");
+  return [`set -u`, `rm -rf ${sq(swebenchCheckoutDir(runId))} ${sq(swebenchVenvDir(runId))}`].join(
+    '\n',
+  );
 }
 
-export function buildSwebenchSolvePrompt(problemStatement: string, checkoutDir: string, venvPython: string): string {
-  let end = checkoutDir.length; while (end > 0 && checkoutDir.charCodeAt(end - 1) === 47) end--;
+export function buildSwebenchSolvePrompt(
+  problemStatement: string,
+  checkoutDir: string,
+  venvPython: string,
+): string {
+  let end = checkoutDir.length;
+  while (end > 0 && checkoutDir.charCodeAt(end - 1) === 47) end--;
   const root = checkoutDir.slice(0, end);
   return [
     `You are fixing a software issue in a checked-out Python repository.`,
@@ -57,27 +75,40 @@ export function buildSwebenchSolvePrompt(problemStatement: string, checkoutDir: 
     ``,
     `Implement a fix by editing files under ${root}. When you are confident the fix is complete,`,
     `stop — do not ask questions and do not call any reporting tool.`,
-  ].join("\n");
+  ].join('\n');
 }
 
 export async function setupSwebenchWorkspace(
-  t: SandboxTransport, a: { repoUrl: string; baseCommit: string; envKey: string; runId: string },
+  t: SandboxTransport,
+  a: { repoUrl: string; baseCommit: string; envKey: string; runId: string },
 ): Promise<string> {
-  const { stdout, exitCode, truncated } = await t.exec(buildSwebenchSetupScript(a), { timeout: 900 });
+  const { stdout, exitCode, truncated } = await t.exec(buildSwebenchSetupScript(a), {
+    timeout: 900,
+  });
   if (truncated) {
-    throw new Error(`swebench setup exceeded the sandbox output cap (setup output too large): ${a.runId}`);
+    throw new Error(
+      `swebench setup exceeded the sandbox output cap (setup output too large): ${a.runId}`,
+    );
   }
   if (exitCode !== 0) throw new Error(`swebench setup failed (exit ${exitCode})`);
   return stdout.toString().trim() || swebenchCheckoutDir(a.runId);
 }
 export async function captureSwebenchDiff(t: SandboxTransport, runId: string): Promise<string> {
-  const { stdout, exitCode, truncated } = await t.exec(buildSwebenchDiffScript(runId), { timeout: 120 });
+  const { stdout, exitCode, truncated } = await t.exec(buildSwebenchDiffScript(runId), {
+    timeout: 120,
+  });
   if (truncated) {
-    throw new Error(`swebench diff capture exceeded the sandbox output cap (diff too large): ${runId}`);
+    throw new Error(
+      `swebench diff capture exceeded the sandbox output cap (diff too large): ${runId}`,
+    );
   }
   if (exitCode !== 0) throw new Error(`swebench diff capture failed (exit ${exitCode})`);
   return stdout.toString();
 }
 export async function cleanupSwebench(t: SandboxTransport, runId: string): Promise<void> {
-  try { await t.exec(buildSwebenchCleanupScript(runId), { timeout: 60 }); } catch { /* ignore */ }
+  try {
+    await t.exec(buildSwebenchCleanupScript(runId), { timeout: 60 });
+  } catch {
+    /* ignore */
+  }
 }

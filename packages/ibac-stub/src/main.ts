@@ -1,6 +1,6 @@
-import { fileURLToPath } from "node:url";
-import { startServer } from "./server.js";
-import type { DenyRules } from "./decide.js";
+import { fileURLToPath } from 'node:url';
+import { startServer } from './server.js';
+import type { DenyRules } from './decide.js';
 
 // Comma-separated env var → trimmed, non-empty entries. `undefined` (unset) yields `undefined` so
 // decide()'s `?? []` default applies, rather than an explicit empty array either way — the
@@ -10,7 +10,7 @@ function listFromEnv(name: string, env: NodeJS.ProcessEnv = process.env): string
   const raw = env[name];
   if (raw === undefined) return undefined;
   const entries = raw
-    .split(",")
+    .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
   return entries.length > 0 ? entries : undefined;
@@ -18,9 +18,9 @@ function listFromEnv(name: string, env: NodeJS.ProcessEnv = process.env): string
 
 export function rulesFromEnv(env: NodeJS.ProcessEnv = process.env): DenyRules {
   return {
-    denyTools: listFromEnv("IBAC_STUB_DENY_TOOLS", env),
-    denyUrlSubstrings: listFromEnv("IBAC_STUB_DENY_URLS", env),
-    denyArgMarkers: listFromEnv("IBAC_STUB_DENY_ARG_MARKERS", env),
+    denyTools: listFromEnv('IBAC_STUB_DENY_TOOLS', env),
+    denyUrlSubstrings: listFromEnv('IBAC_STUB_DENY_URLS', env),
+    denyArgMarkers: listFromEnv('IBAC_STUB_DENY_ARG_MARKERS', env),
   };
 }
 

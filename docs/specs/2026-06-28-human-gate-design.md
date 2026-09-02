@@ -18,7 +18,7 @@ multi-tenancy & per-user identity (Z1), credential plane (Z3/Z5), event-driven g
 
 > **One-line finding.** The gate is not new machinery — it is **a structured-output terminal plus a
 > decision-seeded continuation**, both of which the substrate already does. A leaf reaching a gate
-> ends a turn *well-formed* and parks (its session log is durable, the pod scales to zero); an
+> ends a turn _well-formed_ and parks (its session log is durable, the pod scales to zero); an
 > external approver writes a decision file and re-invokes the same `sessionId`; `runLeaf` resumes
 > from the log, applies the decision, and continues with full context. No always-on component, no Pi
 > internals dependency, no change to any existing path.
@@ -61,13 +61,13 @@ multi-tenancy & per-user identity (Z1), credential plane (Z3/Z5), event-driven g
 
 ### Design decisions (resolved with the stakeholder)
 
-| # | Decision | Choice | Rationale |
-|---|----------|--------|-----------|
-| B1 | Who decides **where** a gate happens | **Agent-declared** via a tool; **decision + resume external** (charter-aligned "Option C") | Builds the novel single-session pause/resume primitive while decision authority and re-invocation stay external (G1/G2). |
-| B2 | How the agent **continues** after a decision | **Continuation prompt** (not tool-result injection) | Turn ends well-formed (no dangling tool call); reuses the proven seed-prompt + M5 resume path; survives mid-park crashes; no Pi-internals dependency. |
-| B3 | **Decision transport** + resume trigger | **`decisionRef` file** on the volume; resume = **re-invoke `POST /runs` by `sessionId`** (sync or `async:true`) | Symmetric with `inputsRef`/`resultRef`; keeps decision content off the HTTP channel (G3); no harness-side watcher (preserves scale-to-zero + G1/G2). |
-| B4 | **Timeout** of a parked gate | **None in the harness**; park indefinitely | Charter §8.3 ("sleep indefinitely"); a timer/sweeper would reintroduce an always-on component. Deadlines are the orchestrator's concern (re-invoke with `abort`). |
-| B5 | **Decision actions** | `approve` \| `reject` \| `abort` | Matches archetype B's approve / reject→loop / abort. |
+| #   | Decision                                     | Choice                                                                                                          | Rationale                                                                                                                                                         |
+| --- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| B1  | Who decides **where** a gate happens         | **Agent-declared** via a tool; **decision + resume external** (charter-aligned "Option C")                      | Builds the novel single-session pause/resume primitive while decision authority and re-invocation stay external (G1/G2).                                          |
+| B2  | How the agent **continues** after a decision | **Continuation prompt** (not tool-result injection)                                                             | Turn ends well-formed (no dangling tool call); reuses the proven seed-prompt + M5 resume path; survives mid-park crashes; no Pi-internals dependency.             |
+| B3  | **Decision transport** + resume trigger      | **`decisionRef` file** on the volume; resume = **re-invoke `POST /runs` by `sessionId`** (sync or `async:true`) | Symmetric with `inputsRef`/`resultRef`; keeps decision content off the HTTP channel (G3); no harness-side watcher (preserves scale-to-zero + G1/G2).              |
+| B4  | **Timeout** of a parked gate                 | **None in the harness**; park indefinitely                                                                      | Charter §8.3 ("sleep indefinitely"); a timer/sweeper would reintroduce an always-on component. Deadlines are the orchestrator's concern (re-invoke with `abort`). |
+| B5  | **Decision actions**                         | `approve` \| `reject` \| `abort`                                                                                | Matches archetype B's approve / reject→loop / abort.                                                                                                              |
 
 ---
 
@@ -88,8 +88,8 @@ On call the harness:
    agent can retry, exactly like `submit_verdict`).
 2. Appends a durable **gate-request** custom entry: `{ gateId, summary, proposed_action }`, where
    `gateId` = the count of prior gate-request entries in this session (0, 1, 2, …).
-3. Returns a **benign synchronous result**: *"Approval requested; the session will pause and resume
-   with the human decision."* — so the assistant turn ends **well-formed** (no dangling `tool_use`;
+3. Returns a **benign synchronous result**: _"Approval requested; the session will pause and resume
+   with the human decision."_ — so the assistant turn ends **well-formed** (no dangling `tool_use`;
    this is what makes resume robust, B2).
 
 The tool sets a capture flag (`gateRequested`, with the new `gateId`) that `runLeaf` inspects after
@@ -211,7 +211,7 @@ A front-end runs on **every** invocation (fresh or resume), before the agent loo
 ```
 
 **`gateId` is the idempotency spine.** A session may pass several gates; the marker advertises the
-*current* `gateId` and the decision file must echo it. A resume applies a decision **only** when its
+_current_ `gateId` and the decision file must echo it. A resume applies a decision **only** when its
 `gateId` matches the pending gate, so:
 
 - a **stale/replayed** decision (answering an already-consumed gate) is **ignored** (branch (b));
@@ -238,29 +238,29 @@ flushed through `BufferedRedisBackend`. If the pod crashes after the decision is
 a verdict, the reclaim/re-invoke finds the gate already decided (no pending gate), takes branch (c),
 **re-derives the same continuation prompt** from the durable gate-decision entry, and re-runs — the
 decision is never recorded twice and the re-run is idempotent (overwrites to the same verdict). The
-gate-decision entry is the idempotency guard that prevents a *second* decision from being recorded
+gate-decision entry is the idempotency guard that prevents a _second_ decision from being recorded
 for a consumed `gateId`.
 
 ---
 
 ## 4. Async integration (`classifyOutcome` + KEDA)
 
-**Two marker kinds, two writers.** The async substrate already has a *terminal* done-marker at
+**Two marker kinds, two writers.** The async substrate already has a _terminal_ done-marker at
 `<resultRef>.status` written by the **queue runner** (via `classifyOutcome.marker`), absent in sync
-mode (the HTTP response conveys the terminal status). The gate adds a distinct *non-terminal* **gate
+mode (the HTTP response conveys the terminal status). The gate adds a distinct _non-terminal_ **gate
 marker** at `gateRef` (`<resultRef>.gate`) that carries the session-derived summary — so **`runLeaf`
 writes it directly, in both sync and async modes** (the queue runner only has the `LeafResult`, not
 the summary). `classifyOutcome` therefore returns **no terminal marker** for `paused` (runLeaf
 already wrote the gate marker); it only decides the ack:
 
-| `runLeaf` outcome | gate marker (`gateRef`, by `runLeaf`) | terminal marker (`<resultRef>.status`, by runner/async) | queue action | rationale |
-|---|---|---|---|---|
-| `done` | — | `done` | **XACK** | success (unchanged) |
-| **`paused`** | **`awaiting_approval`** (written by `runLeaf`) | — (none; not terminal) | **XACK** | parked; resume is a *new* invocation, not a redelivery |
-| **`aborted`** | — | **`aborted`** | **XACK** | terminal by human decision |
-| `failed: bad_inputs \| no_verdict \| invalid_verdict` | — | `failed` | **XACK** | deterministic (unchanged) |
-| `failed: error` | — | none | **no ack → reclaim** | transient (unchanged) |
-| process **crash** | — | none | **no ack → reclaim → gate-7 resume** | unchanged |
+| `runLeaf` outcome                                     | gate marker (`gateRef`, by `runLeaf`)          | terminal marker (`<resultRef>.status`, by runner/async) | queue action                         | rationale                                              |
+| ----------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------ |
+| `done`                                                | —                                              | `done`                                                  | **XACK**                             | success (unchanged)                                    |
+| **`paused`**                                          | **`awaiting_approval`** (written by `runLeaf`) | — (none; not terminal)                                  | **XACK**                             | parked; resume is a _new_ invocation, not a redelivery |
+| **`aborted`**                                         | —                                              | **`aborted`**                                           | **XACK**                             | terminal by human decision                             |
+| `failed: bad_inputs \| no_verdict \| invalid_verdict` | —                                              | `failed`                                                | **XACK**                             | deterministic (unchanged)                              |
+| `failed: error`                                       | —                                              | none                                                    | **no ack → reclaim**                 | transient (unchanged)                                  |
+| process **crash**                                     | —                                              | none                                                    | **no ack → reclaim → gate-7 resume** | unchanged                                              |
 
 So `classifyOutcome`'s new branches are: `paused` → `{ ack: true, marker: null }`; `aborted` →
 `{ ack: true, marker: { status: "aborted" } }`. The resume invocation is an ordinary sync POST or
@@ -275,7 +275,7 @@ async enqueue with the same `sessionId` + `decisionRef`. On the async path it `X
 > secondary convenience path (async §3.4).
 
 > **Marker overwrite across gates.** A second gate in the same session overwrites the
-> `awaiting_approval` gate marker with the new `gateId`. The orchestrator detects a *new* gate by the
+> `awaiting_approval` gate marker with the new `gateId`. The orchestrator detects a _new_ gate by the
 > changed `gateId` (and, if it wants history, can snapshot markers — its concern, G3).
 
 ---
@@ -298,8 +298,8 @@ async enqueue with the same `sessionId` + `decisionRef`. On the async path it `X
 - **`decisionRef` missing/garbled on resume:** treated as "no decision" → branch (b) → stays
   `paused` (no agent run). Safe no-op; the approver re-writes and re-invokes.
 - **Timeout:** **none in the harness** (B4). A parked session waits indefinitely; the orchestrator
-  enforces deadlines by re-invoking with `abort`. *(Non-precluding future: an envelope `gateTTL` +
-  a KEDA-cron sweeper that writes `aborted` markers — not built; see §7.)*
+  enforces deadlines by re-invoking with `abort`. _(Non-precluding future: an envelope `gateTTL` +
+  a KEDA-cron sweeper that writes `aborted` markers — not built; see §7.)_
 - **Re-entrancy preserved:** the gate adds no caller-identity assumption, so a child leaf could
   itself gate. Non-precluding, untested (consistent with MVP §2.5).
 
@@ -311,19 +311,19 @@ double-resume.
 
 ## 6. Components
 
-| # | Unit | Responsibility | Lives in | New / reuse |
-|---|---|---|---|---|
-| 1 | `request_approval` tool | validate → append gate-request entry → benign result; set capture flag | `harness/src/request-approval-tool.ts` | ⭐ new |
-| 2 | gate types + validation | `GateRequest`, `Decision`, `validateDecision`, `gateId` derivation | `harness/src/gate.ts` | ⭐ new |
-| 3 | gate marker I/O | atomic write/read of the `awaiting_approval` gate marker; `deriveGateRef` (`<resultRef>.gate`) | `harness/src/gate-marker.ts` (mirrors `done-marker.ts`) | ⭐ new |
-| 4 | resume state machine | pending-gate detection, decision application, continuation seeding, abort, **gate-marker write on park** | extend `harness/src/run-leaf.ts` | ⭐ new front-end; loop reused |
-| 5 | `LeafResult` + envelope additions | `paused`/`aborted`; `gateRef`/`decisionRef` | extend `harness/src/run-leaf.ts` | ⭐ new fields |
-| 6 | `classifyOutcome` | `paused`→`{ack:true, marker:null}` (gate marker already written by `runLeaf`); `aborted`→`{ack:true, marker:aborted}` | extend `harness/src/classify-outcome.ts` | ⭐ new branches |
-| 7 | server handlers | serialize `paused`/`aborted` on sync `200`; `decisionRef`/`gateRef` through `isLeafEnvelope`; status endpoint reports `awaiting_approval` from the gate marker | `packages/knative-server/src/server.ts` | ♻️ minimal |
-| 8 | leaf-job runner | unchanged loop; new outcomes ack via `classifyOutcome` | `harness/src/leaf-job-runner.ts` | ♻️ unchanged |
-| 9 | session durability / resume | gate entries through `BufferedRedisBackend`; `openFromCheckpoint` | M1/M5 | ♻️ reuse |
-| 10 | live gate smoke | `GATE_LIVE_SMOKE=1` end-to-end on Kind | `deploy/knative/leaf-gate-smoke.sh` | ⭐ new |
-| 11 | fixture gating prompt | a prompt that requests approval once before verdict | test fixtures | ⭐ new (small) |
+| #   | Unit                              | Responsibility                                                                                                                                                 | Lives in                                                | New / reuse                   |
+| --- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- | ----------------------------- |
+| 1   | `request_approval` tool           | validate → append gate-request entry → benign result; set capture flag                                                                                         | `harness/src/request-approval-tool.ts`                  | ⭐ new                        |
+| 2   | gate types + validation           | `GateRequest`, `Decision`, `validateDecision`, `gateId` derivation                                                                                             | `harness/src/gate.ts`                                   | ⭐ new                        |
+| 3   | gate marker I/O                   | atomic write/read of the `awaiting_approval` gate marker; `deriveGateRef` (`<resultRef>.gate`)                                                                 | `harness/src/gate-marker.ts` (mirrors `done-marker.ts`) | ⭐ new                        |
+| 4   | resume state machine              | pending-gate detection, decision application, continuation seeding, abort, **gate-marker write on park**                                                       | extend `harness/src/run-leaf.ts`                        | ⭐ new front-end; loop reused |
+| 5   | `LeafResult` + envelope additions | `paused`/`aborted`; `gateRef`/`decisionRef`                                                                                                                    | extend `harness/src/run-leaf.ts`                        | ⭐ new fields                 |
+| 6   | `classifyOutcome`                 | `paused`→`{ack:true, marker:null}` (gate marker already written by `runLeaf`); `aborted`→`{ack:true, marker:aborted}`                                          | extend `harness/src/classify-outcome.ts`                | ⭐ new branches               |
+| 7   | server handlers                   | serialize `paused`/`aborted` on sync `200`; `decisionRef`/`gateRef` through `isLeafEnvelope`; status endpoint reports `awaiting_approval` from the gate marker | `packages/knative-server/src/server.ts`                 | ♻️ minimal                    |
+| 8   | leaf-job runner                   | unchanged loop; new outcomes ack via `classifyOutcome`                                                                                                         | `harness/src/leaf-job-runner.ts`                        | ♻️ unchanged                  |
+| 9   | session durability / resume       | gate entries through `BufferedRedisBackend`; `openFromCheckpoint`                                                                                              | M1/M5                                                   | ♻️ reuse                      |
+| 10  | live gate smoke                   | `GATE_LIVE_SMOKE=1` end-to-end on Kind                                                                                                                         | `deploy/knative/leaf-gate-smoke.sh`                     | ⭐ new                        |
+| 11  | fixture gating prompt             | a prompt that requests approval once before verdict                                                                                                            | test fixtures                                           | ⭐ new (small)                |
 
 ---
 
@@ -331,15 +331,15 @@ double-resume.
 
 ### 7.1 Unit (vitest, fast — pure / injected fakes)
 
-| Unit | Coverage |
-|---|---|
-| `request_approval` tool | valid args → gate-request entry with correct `gateId` + benign result; invalid (empty `summary`/`proposed_action`) → tool error, no entry. |
-| gate types | `validateDecision` accepts `approve`/`reject`/`abort` + optional feedback; rejects bad action / missing `gateId`. |
-| gate marker I/O | atomic temp+rename for the `awaiting_approval` gate marker; `deriveGateRef` default (`<resultRef>.gate`) + override. |
+| Unit                                                 | Coverage                                                                                                                                                                                                                                                                                                                                                                |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `request_approval` tool                              | valid args → gate-request entry with correct `gateId` + benign result; invalid (empty `summary`/`proposed_action`) → tool error, no entry.                                                                                                                                                                                                                              |
+| gate types                                           | `validateDecision` accepts `approve`/`reject`/`abort` + optional feedback; rejects bad action / missing `gateId`.                                                                                                                                                                                                                                                       |
+| gate marker I/O                                      | atomic temp+rename for the `awaiting_approval` gate marker; `deriveGateRef` default (`<resultRef>.gate`) + override.                                                                                                                                                                                                                                                    |
 | resume state machine (injected store / loop / clock) | pending-gate detection; **approve**→durable gate-decision entry + continuation seed + run + gate-marker on a follow-on gate; **reject**→feedback seed + run; **abort**→aborted (terminal), **no** agent run; **gateId mismatch**→ignored (stays paused); **duplicate decision**→no-op continuation (no second seed); **no decisionRef**→paused; **fresh**→initial seed. |
-| `classifyOutcome` | `paused`→`{ack:true, marker:null}`; `aborted`→`{ack:true, marker:aborted}`; existing rows unchanged (regression). |
-| multi-gate sequence | gate#0 → approve → gate#1 → approve → verdict, single `sessionId`, correct `gateId` progression. |
-| server | `paused`/`aborted` serialize correctly on sync `200`; `decisionRef` passes through `isLeafEnvelope`; async-omitted path unchanged (regression). |
+| `classifyOutcome`                                    | `paused`→`{ack:true, marker:null}`; `aborted`→`{ack:true, marker:aborted}`; existing rows unchanged (regression).                                                                                                                                                                                                                                                       |
+| multi-gate sequence                                  | gate#0 → approve → gate#1 → approve → verdict, single `sessionId`, correct `gateId` progression.                                                                                                                                                                                                                                                                        |
+| server                                               | `paused`/`aborted` serialize correctly on sync `200`; `decisionRef` passes through `isLeafEnvelope`; async-omitted path unchanged (regression).                                                                                                                                                                                                                         |
 
 Redis-backed assertions are **gated** like existing `redis-backend` tests (skip when no `REDIS_URL`).
 
@@ -350,7 +350,7 @@ On the Kind `sh-knative` cluster (async path already deployed: KEDA + `ScaledJob
 **The controller runs this live gate directly — never a subagent.**
 
 1. **Pause:** dispatch a gated leaf → `awaiting_approval` marker appears on `/work` with `gateId:0`
-   + summary; **no** `result_ref`; session parked.
+   - summary; **no** `result_ref`; session parked.
 2. **Scale-to-zero while parked:** with the gate pending and no other work, leaf-job pods reach
    **zero** (KEDA acked the parked entry).
 3. **Resume-approve:** write `decisionRef {gateId:0, approve}` → re-invoke same `sessionId` → leaf
@@ -378,7 +378,7 @@ On the Kind `sh-knative` cluster (async path already deployed: KEDA + `ScaledJob
   `ScaledJob`, `submit_verdict`, or the heartbeat/dead-letter machinery — all **unchanged**.
 - A new container image — the gate reuses the harness image and existing entrypoints.
 
-**Substrate-agnostic seam:** the gate *contract* (gate tool → `awaiting_approval` marker → external
+**Substrate-agnostic seam:** the gate _contract_ (gate tool → `awaiting_approval` marker → external
 `decisionRef` → re-invoke-by-`sessionId` → continuation) depends only on `runLeaf`'s durable session
 log + the marker convention, **not** on KEDA or Knative. A KEDA-less or always-on deployment drives
 the identical contract.
@@ -404,4 +404,4 @@ the identical contract.
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

@@ -9,15 +9,15 @@ injected via flags — no forked per-cluster YAMLs.
 
 ## When to use this vs. setup-kind.sh / setup-ocp.sh
 
-| | `setup-kind.sh` | `setup-k8s.sh` (this) | `setup-ocp.sh` |
-|---|---|---|---|
-| Target | local Kind (single node) | any real/vanilla K8s cluster | OpenShift 4.x |
-| Knative install | raw manifests | raw manifests | OLM operator (OpenShift Serverless) |
-| KEDA install | raw manifests | raw manifests (`--with-keda`) | OLM operator (`--with-keda`) |
-| Images | builds locally + `kind load` | **prebuilt refs** (`--image`); optional in-cluster build via `setup-shipwright-build.sh` | prebuilt refs / built-in `oc new-build` |
-| Namespace | `default` | `--namespace` | `--namespace` |
-| StorageClass | cluster default | `--storage-class` (default: cluster default) | cluster default |
-| Ingress | Kourier port-forward | port-forward or `--ingress nodeport` | auto-created Route |
+|                 | `setup-kind.sh`              | `setup-k8s.sh` (this)                                                                    | `setup-ocp.sh`                          |
+| --------------- | ---------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------- |
+| Target          | local Kind (single node)     | any real/vanilla K8s cluster                                                             | OpenShift 4.x                           |
+| Knative install | raw manifests                | raw manifests                                                                            | OLM operator (OpenShift Serverless)     |
+| KEDA install    | raw manifests                | raw manifests (`--with-keda`)                                                            | OLM operator (`--with-keda`)            |
+| Images          | builds locally + `kind load` | **prebuilt refs** (`--image`); optional in-cluster build via `setup-shipwright-build.sh` | prebuilt refs / built-in `oc new-build` |
+| Namespace       | `default`                    | `--namespace`                                                                            | `--namespace`                           |
+| StorageClass    | cluster default              | `--storage-class` (default: cluster default)                                             | cluster default                         |
+| Ingress         | Kourier port-forward         | port-forward or `--ingress nodeport`                                                     | auto-created Route                      |
 
 Use `setup-kind.sh` for local dev, `setup-ocp.sh` on OpenShift (where OLM manages the
 operators and Routes are automatic), and **`setup-k8s.sh` for any other Kubernetes** —
@@ -109,8 +109,8 @@ harness code for testing/experimentation. Whatever you pick, pass the resulting 
   the cluster that can push to your registry (`--strategy`, default `buildah`; use an
   insecure-registry variant like `buildah-insecure-direct` for a plain-HTTP in-cluster
   registry — see [Shipwright's sample strategies](https://github.com/shipwright-io/build/tree/main/samples/buildstrategy)).
-  Note: an in-cluster registry referenced by ClusterIP/`.svc` must be reachable *and
-  trusted* by the node container runtime (e.g. listed as an insecure mirror in the node's
+  Note: an in-cluster registry referenced by ClusterIP/`.svc` must be reachable _and
+  trusted_ by the node container runtime (e.g. listed as an insecure mirror in the node's
   registry config) for the kubelet to pull the image back — this is a cluster-level setting,
   not something either script manages.
 
@@ -174,14 +174,14 @@ scope for this generic script.
 
 ## What it installs
 
-| Component | How |
-|-----------|-----|
+| Component                 | How                                                                       |
+| ------------------------- | ------------------------------------------------------------------------- |
 | Knative Serving + Kourier | raw manifests + config patches (autoscaler, PVC/securityContext features) |
-| KEDA (optional) | raw manifest (`--with-keda`) |
-| agent-sandbox controller | `kubectl apply --server-side` (v0.5.0) |
-| Redis | in-repo Deployment (`redis.yaml`) |
-| Sandbox pool | `sandbox-pool.yaml`, namespaced + storageClass injected |
-| Harness | Knative Service (`service.yaml`) + SA/RBAC |
+| KEDA (optional)           | raw manifest (`--with-keda`)                                              |
+| agent-sandbox controller  | `kubectl apply --server-side` (v0.5.0)                                    |
+| Redis                     | in-repo Deployment (`redis.yaml`)                                         |
+| Sandbox pool              | `sandbox-pool.yaml`, namespaced + storageClass injected                   |
+| Harness                   | Knative Service (`service.yaml`) + SA/RBAC                                |
 
 ## Cleanup
 

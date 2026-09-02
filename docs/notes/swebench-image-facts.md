@@ -17,7 +17,7 @@ probes.
 ### Evidence
 
 **Source (`swebench/harness/docker_build.py`, `build_env_images()` /
-`build_instance_image()`):** env images are *always built locally* from a
+`build_instance_image()`):** env images are _always built locally_ from a
 generated Dockerfile (`env_dockerfile` → `get_dockerfile_env`), never pulled.
 Only the instance image build path checks `test_spec.is_remote_image`
 (true when a `namespace` is passed to `make_test_spec`) and, if so, does
@@ -49,10 +49,10 @@ Task 3 **cannot** pull a shared per-env image directly (it does not exist on
 the registry). Two ways to still get the shared conda env into the baked
 sandbox image; **recommended: option (a)**:
 
-- **(a) Recommended — pull one representative *instance* image per env-key
+- **(a) Recommended — pull one representative _instance_ image per env-key
   group, then extract the conda env from it.** Because `env_image_key` is
   empirically stable across every instance that shares the same `(repo,
-  version)` (see §3 empirical check — the *content* of the shared `testbed`
+version)` (see §3 empirical check — the _content_ of the shared `testbed`
   conda env is identical across those instances even though only
   instance-level artifacts are published), pulling **any single** already-published
   instance image for a given env-key group and running `conda-pack` on its
@@ -78,16 +78,16 @@ env image locally built with this exact key."
 All templates come from `swebench.harness.test_spec.test_spec.TestSpec`
 properties (`swebench/harness/test_spec/test_spec.py`).
 
-| Image level | Template | Published on Docker Hub? | Notes |
-|---|---|---|---|
-| Base | `sweb.base.{ext}.{arch}[.{hash10}]:{tag}` | No | `{hash10}` only present if `docker_specs != {}`. |
-| Env | `sweb.env.{ext}.{arch}.{hash22}:{tag}` | **No** (verdict §1) | `{hash22}` = first 22 hex chars of `sha256(str(env_script_list) [+ str(docker_specs)])`. No namespace ever prepended. |
-| Instance | `{namespace}/sweb.eval.{arch}.{instance_id_lower}:{tag}` (namespace only when `namespace is not None`) | **Yes** | Default `namespace="swebench"` (see `swebench/harness/run_evaluation.py:285`). `instance_id` is lower-cased and every `__` is replaced with `_1776_` (SWE-bench's escape for the org/repo separator, since Docker repo names disallow `__`). |
+| Image level | Template                                                                                               | Published on Docker Hub? | Notes                                                                                                                                                                                                                                        |
+| ----------- | ------------------------------------------------------------------------------------------------------ | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Base        | `sweb.base.{ext}.{arch}[.{hash10}]:{tag}`                                                              | No                       | `{hash10}` only present if `docker_specs != {}`.                                                                                                                                                                                             |
+| Env         | `sweb.env.{ext}.{arch}.{hash22}:{tag}`                                                                 | **No** (verdict §1)      | `{hash22}` = first 22 hex chars of `sha256(str(env_script_list) [+ str(docker_specs)])`. No namespace ever prepended.                                                                                                                        |
+| Instance    | `{namespace}/sweb.eval.{arch}.{instance_id_lower}:{tag}` (namespace only when `namespace is not None`) | **Yes**                  | Default `namespace="swebench"` (see `swebench/harness/run_evaluation.py:285`). `instance_id` is lower-cased and every `__` is replaced with `_1776_` (SWE-bench's escape for the org/repo separator, since Docker repo names disallow `__`). |
 
 - **Tag:** `latest` (the `LATEST` constant; `env_image_tag`/`instance_image_tag` default to it and nothing else is published for Verified).
 - **Registry/namespace confirmed:** `docker.io/swebench/...` (default `namespace="swebench"` in `run_evaluation.py`). No alternate namespace found in the harness source for the public Verified images.
 - **Arch coverage confirmed:** the one instance image probed (`swebench/sweb.eval.x86_64.django_1776_django-10097:latest`) is a **single-arch `manifest.v2` (not a manifest list)**: `skopeo inspect` reports `"Architecture": "amd64"`, `"Os": "linux"`. The parallel `arm64` instance tag for the same instance does **not** exist on the registry (`skopeo inspect --raw` → access denied). **No arm64 variants exist for any repo on the public registry** for SWE-bench Verified — this is x86_64/amd64-only across the board, not a per-repo exception.
-- Note the harness's Dockerfile templates (`_DOCKERFILE_BASE_PY`, etc.) **do** support building `arm64` locally (they template `--platform={platform}` and pick `conda_arch = "aarch64"` when `arch == "arm64"` — see `swebench/harness/dockerfiles/__init__.py:67-69`), so an arm64 build is *possible* in principle via local build, but nothing arm64 is ever published. **This drives Task 3 to be x86_64-only / OCP-only (or explicit QEMU emulation) for baked images sourced from the public registry.**
+- Note the harness's Dockerfile templates (`_DOCKERFILE_BASE_PY`, etc.) **do** support building `arm64` locally (they template `--platform={platform}` and pick `conda_arch = "aarch64"` when `arch == "arm64"` — see `swebench/harness/dockerfiles/__init__.py:67-69`), so an arm64 build is _possible_ in principle via local build, but nothing arm64 is ever published. **This drives Task 3 to be x86_64-only / OCP-only (or explicit QEMU emulation) for baked images sourced from the public registry.**
 
 ## 3. The pinned `swebench` symbol for the env-key derivation
 
@@ -97,7 +97,7 @@ properties (`swebench/harness/test_spec/test_spec.py`).
 
 This is **not** the raw `MAP_REPO_VERSION_TO_SPECS` constant. That constant
 (`swebench.harness.constants.MAP_REPO_VERSION_TO_SPECS[repo][version]`) is an
-*input* to key derivation (via `docker_specs = specs.get("docker_specs", {})`
+_input_ to key derivation (via `docker_specs = specs.get("docker_specs", {})`
 and the env/eval/repo script generators), not the key itself.
 
 ```python
@@ -133,21 +133,21 @@ inst = next(r for r in ds if r["repo"] == "django/django")   # picks django__dja
 ts = make_test_spec(inst, namespace="swebench", arch="x86_64")
 ```
 
-| Field | Value |
-|---|---|
-| `instance_id` | `django__django-10097` |
-| `repo` | `django/django` |
-| `version` | `2.2` |
-| `ts.base_image_key` | `sweb.base.py.x86_64:latest` |
-| `ts.env_image_key` | `sweb.env.py.x86_64.56a3bf2c8561bd901139b0:latest` |
-| `ts.instance_image_key` | `swebench/sweb.eval.x86_64.django_1776_django-10097:latest` |
-| `ts.is_remote_image` | `True` (because `namespace="swebench"` was passed) |
-| arm64 equivalents | `sweb.env.py.arm64.56a3bf2c8561bd901139b0:latest` / `swebench/sweb.eval.arm64.django_1776_django-10097:latest` — **neither is published** (§2) |
+| Field                   | Value                                                                                                                                          |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `instance_id`           | `django__django-10097`                                                                                                                         |
+| `repo`                  | `django/django`                                                                                                                                |
+| `version`               | `2.2`                                                                                                                                          |
+| `ts.base_image_key`     | `sweb.base.py.x86_64:latest`                                                                                                                   |
+| `ts.env_image_key`      | `sweb.env.py.x86_64.56a3bf2c8561bd901139b0:latest`                                                                                             |
+| `ts.instance_image_key` | `swebench/sweb.eval.x86_64.django_1776_django-10097:latest`                                                                                    |
+| `ts.is_remote_image`    | `True` (because `namespace="swebench"` was passed)                                                                                             |
+| arm64 equivalents       | `sweb.env.py.arm64.56a3bf2c8561bd901139b0:latest` / `swebench/sweb.eval.arm64.django_1776_django-10097:latest` — **neither is published** (§2) |
 
 **Empirical stability check (why option (a) in §1 works):** sampled every
 instance (up to 8 per group) in several `(repo, version)` groups from Verified
 and computed `env_image_key` for each — every instance within a group
-produced the *identical* `env_image_key`:
+produced the _identical_ `env_image_key`:
 
 ```
 astropy/astropy 5.0: n=4  sampled=4 distinct_env_keys=1
@@ -178,17 +178,17 @@ images are x86_64-only per §2):
 docker pull --platform linux/amd64 docker.io/swebench/sweb.eval.x86_64.django_1776_django-10097:latest
 ```
 
-| Fact | Value |
-|---|---|
-| Conda base install prefix | `/opt/miniconda3` |
-| Conda binary | `/opt/miniconda3/condabin/conda`, version `23.11.0` (matches harness default `DEFAULT_DOCKER_SPECS["conda_version"] = "py311_23.11.0-2"`) |
-| Conda env name inside the image | `testbed` (hardcoded as `env_name = "testbed"` in `make_test_spec`, universal across all repos/languages, not per-repo) |
-| Env prefix | `/opt/miniconda3/envs/testbed` (confirmed via `python -c "import sys;print(sys.prefix)"` run inside the container) |
-| Repo checkout dir | `/testbed` (`repo_directory = f"/{env_name}"`) |
+| Fact                              | Value                                                                                                                                                                                                          |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Conda base install prefix         | `/opt/miniconda3`                                                                                                                                                                                              |
+| Conda binary                      | `/opt/miniconda3/condabin/conda`, version `23.11.0` (matches harness default `DEFAULT_DOCKER_SPECS["conda_version"] = "py311_23.11.0-2"`)                                                                      |
+| Conda env name inside the image   | `testbed` (hardcoded as `env_name = "testbed"` in `make_test_spec`, universal across all repos/languages, not per-repo)                                                                                        |
+| Env prefix                        | `/opt/miniconda3/envs/testbed` (confirmed via `python -c "import sys;print(sys.prefix)"` run inside the container)                                                                                             |
+| Repo checkout dir                 | `/testbed` (`repo_directory = f"/{env_name}"`)                                                                                                                                                                 |
 | Miniconda installer arch template | `x86_64` → `Miniconda3-{conda_version}-Linux-x86_64.sh`; `arm64` → `...Linux-aarch64.sh` (`swebench/harness/dockerfiles/__init__.py:67-69`) — only the x86_64 path is ever exercised by published images (§2). |
 
 **Relocation method: `conda-pack` / `conda-unpack`. Verified working
-end-to-end** (packed the `testbed` env, unpacked it to a *different* prefix in
+end-to-end** (packed the `testbed` env, unpacked it to a _different_ prefix in
 the same container, and confirmed the relocated interpreter reports the new
 prefix and still imports the project):
 
@@ -229,11 +229,11 @@ is what keeps the "drift guard" in Task 2/3 meaningful.
 
 ## 5. Arch coverage summary table
 
-| Artifact | x86_64 / amd64 | arm64 |
-|---|---|---|
-| Published instance images (`swebench/sweb.eval.*`) | Yes (confirmed pullable, single-arch manifest) | **No** (confirmed absent via `skopeo inspect --raw` — access denied) |
-| Published env images (`sweb.env.*`) | **No** (none published at all, any arch — §1) | **No** |
-| Harness's local Dockerfile *templates* | Supported | Supported in the template (`conda_arch="aarch64"`), but never exercised for published Verified images |
+| Artifact                                           | x86_64 / amd64                                 | arm64                                                                                                 |
+| -------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Published instance images (`swebench/sweb.eval.*`) | Yes (confirmed pullable, single-arch manifest) | **No** (confirmed absent via `skopeo inspect --raw` — access denied)                                  |
+| Published env images (`sweb.env.*`)                | **No** (none published at all, any arch — §1)  | **No**                                                                                                |
+| Harness's local Dockerfile _templates_             | Supported                                      | Supported in the template (`conda_arch="aarch64"`), but never exercised for published Verified images |
 
 **Consequence:** any Task 3 pipeline that sources from the public registry is
 inherently x86_64-only. On arm64 dev hosts (e.g. this Mac), all
@@ -255,7 +255,7 @@ registry/namespace (§2), granularity verdict + Task-3 consequence (§1), exact
 
 - Granularity verdict is backed by both static source analysis
   (`docker_build.py`) and a live negative registry probe (`skopeo inspect
-  --raw` → access denied for the env-image guess and for an arm64 instance
+--raw` → access denied for the env-image guess and for an arm64 instance
   tag), not just one or the other.
 - The pinned symbol (`TestSpec.env_image_key` via `make_test_spec`) was
   exercised against the real `SWE-bench_Verified` dataset (not a synthetic
@@ -273,10 +273,10 @@ registry/namespace (§2), granularity verdict + Task-3 consequence (§1), exact
 - The conda relocation recipe was run to completion inside the actual
   published image (not simulated): `conda-pack` produced a real 103MB
   tarball, `conda-unpack` rewrote paths, and both `sys.prefix` and `import
-  django` were checked post-relocation.
+django` were checked post-relocation.
 - No values were fabricated; the one thing NOT independently re-verified is
   whether `MAP_REPO_VERSION_TO_SPECS` values are byte-identical to what
-  built the *currently published* Docker Hub images (the registry images
+  built the _currently published_ Docker Hub images (the registry images
   could predate the installed `swebench==4.1.0`'s constants) — Task 2/3
   should treat a computed `env_image_key` mismatch against a real pull as
   the drift signal it's designed to catch, not assume perpetual agreement.

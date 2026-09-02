@@ -43,10 +43,10 @@ export function deterministicView(rows: E2Row[]): E2Deterministic[] {
  */
 export function parseE2Table(markdown: string): E2Row[] {
   const rows: E2Row[] = [];
-  for (const line of markdown.split("\n")) {
+  for (const line of markdown.split('\n')) {
     const trimmed = line.trim();
-    if (!trimmed.startsWith("|")) continue;
-    const cells = trimmed.slice(1, trimmed.endsWith("|") ? -1 : undefined).split("|");
+    if (!trimmed.startsWith('|')) continue;
+    const cells = trimmed.slice(1, trimmed.endsWith('|') ? -1 : undefined).split('|');
     if (cells.length !== 8) continue; // header, separator, and other tables
     const nums = cells.map((c) => Number(c.trim()));
     if (nums.some((v) => !Number.isFinite(v))) continue; // header/separator row
@@ -72,21 +72,21 @@ export function parseE2Table(markdown: string): E2Row[] {
     });
   }
   if (rows.length === 0) {
-    throw new Error("no E2 table found: expected the 8-column table buildResultsMarkdown emits");
+    throw new Error('no E2 table found: expected the 8-column table buildResultsMarkdown emits');
   }
   return rows;
 }
 
 export function buildResultsMarkdown(rows: E2Row[]): string {
   const header =
-    "| N (session len) | backend entries | checkpoint entries | ratio (b/c) | backend bytes | checkpoint bytes | backend ms* | checkpoint ms* |\n" +
-    "|---|---|---|---|---|---|---|---|";
+    '| N (session len) | backend entries | checkpoint entries | ratio (b/c) | backend bytes | checkpoint bytes | backend ms* | checkpoint ms* |\n' +
+    '|---|---|---|---|---|---|---|---|';
   const body = rows
     .map(
       (r) =>
         `| ${r.n} | ${r.backendEntries} | ${r.checkpointEntries} | ${r.ratioEntries.toFixed(1)} | ${r.backendBytes} | ${r.checkpointBytes} | ${r.backendMs.toFixed(1)} | ${r.checkpointMs.toFixed(1)} |`,
     )
-    .join("\n");
+    .join('\n');
   return `# M6 Experiment Results
 
 ## E2 — local reconstruction cost (openFromCheckpoint vs openFromBackend)

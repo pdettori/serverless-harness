@@ -27,4 +27,4 @@ We will add a `persistentExecInPod` transport — a single long-lived `kubectl e
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

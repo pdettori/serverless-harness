@@ -27,4 +27,4 @@ We will extract a reusable `runTurn()` from `cli.ts` and wrap it in a new `@sh/k
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

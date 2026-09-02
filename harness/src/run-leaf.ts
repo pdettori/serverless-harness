@@ -5,22 +5,50 @@ import {
   SessionManager,
   SettingsManager,
   type FileEntry,
-} from "@earendil-works/pi-coding-agent";
-import { RedisSessionBackend } from "@sh/session-backend";
-import { k8sSandboxExtension, KubectlTransport } from "@sh/k8s-sandbox";
-import { selectPoolSandbox, SandboxPoolSaturatedError, type SelectedSandbox } from "./select-sandbox.js";
-import { convergeWorkspace, cleanupWorkspace, captureWorkspaceDiff } from "./converge.js";
-import { setupSwebenchWorkspace, captureSwebenchDiff, cleanupSwebench, swebenchVenvDir, buildSwebenchSolvePrompt } from "./swebench-setup.js";
-import { executeTurn, resolveModelSelection, requireModel, applyModelGateway, sumBranchUsage, type TurnConfig, type TurnResult } from "./run-turn.js";
-import { BufferedRedisBackend } from "./buffered-redis-backend.js";
-import { flushExtension } from "./flush-extension.js";
-import { checkpointExtension } from "./checkpoint-extension.js";
-import { submitVerdictExtension, VERDICT_ENTRY_TYPE, type VerdictCapture } from "./submit-verdict-tool.js";
-import { verdictTerminationExtension } from "./verdict-termination-extension.js";
-import { validateVerdict, type Verdict } from "./verdict.js";
-import type { GateCapture } from "./request-approval-tool.js";
-import { computeGateState, decideSeed, validateDecision, type Decision, GATE_DECISION_ENTRY_TYPE } from "./gate.js";
-import { requestApprovalExtension } from "./request-approval-tool.js";
+} from '@earendil-works/pi-coding-agent';
+import { RedisSessionBackend } from '@sh/session-backend';
+import { k8sSandboxExtension, KubectlTransport } from '@sh/k8s-sandbox';
+import {
+  selectPoolSandbox,
+  SandboxPoolSaturatedError,
+  type SelectedSandbox,
+} from './select-sandbox.js';
+import { convergeWorkspace, cleanupWorkspace, captureWorkspaceDiff } from './converge.js';
+import {
+  setupSwebenchWorkspace,
+  captureSwebenchDiff,
+  cleanupSwebench,
+  swebenchVenvDir,
+  buildSwebenchSolvePrompt,
+} from './swebench-setup.js';
+import {
+  executeTurn,
+  resolveModelSelection,
+  requireModel,
+  applyModelGateway,
+  sumBranchUsage,
+  type TurnConfig,
+  type TurnResult,
+} from './run-turn.js';
+import { BufferedRedisBackend } from './buffered-redis-backend.js';
+import { flushExtension } from './flush-extension.js';
+import { checkpointExtension } from './checkpoint-extension.js';
+import {
+  submitVerdictExtension,
+  VERDICT_ENTRY_TYPE,
+  type VerdictCapture,
+} from './submit-verdict-tool.js';
+import { verdictTerminationExtension } from './verdict-termination-extension.js';
+import { validateVerdict, type Verdict } from './verdict.js';
+import type { GateCapture } from './request-approval-tool.js';
+import {
+  computeGateState,
+  decideSeed,
+  validateDecision,
+  type Decision,
+  GATE_DECISION_ENTRY_TYPE,
+} from './gate.js';
+import { requestApprovalExtension } from './request-approval-tool.js';
 
 /**
  * Recover a verdict from a persisted `verdict` custom session entry (written by
@@ -30,7 +58,7 @@ import { requestApprovalExtension } from "./request-approval-tool.js";
  */
 export function verdictFromCustomEntry(entry: unknown): Verdict | null {
   const e = entry as { type?: string; customType?: string; data?: unknown } | null;
-  if (!e || e.type !== "custom" || e.customType !== VERDICT_ENTRY_TYPE) return null;
+  if (!e || e.type !== 'custom' || e.customType !== VERDICT_ENTRY_TYPE) return null;
   const r = validateVerdict(e.data);
   return r.ok ? r.value : null;
 }
@@ -42,7 +70,7 @@ export function verdictFromCustomEntry(entry: unknown): Verdict | null {
  * so a retry/resume of the same envelope id maps to the same session.
  */
 export function toSessionId(sessionId: string): string {
-  const cleaned = sessionId.replace(/[^A-Za-z0-9._-]/g, "-");
+  const cleaned = sessionId.replace(/[^A-Za-z0-9._-]/g, '-');
   // Trim leading/trailing non-alphanumerics with a linear scan instead of a `^…+|…+$` trim regex,
   // which CodeQL flags as polynomial (js/polynomial-redos) on inputs with many separators.
   const isAlnum = (c: number) =>
@@ -51,29 +79,34 @@ export function toSessionId(sessionId: string): string {
   let end = cleaned.length;
   while (start < end && !isAlnum(cleaned.charCodeAt(start))) start++;
   while (end > start && !isAlnum(cleaned.charCodeAt(end - 1))) end--;
-  return cleaned.slice(start, end) || "leaf";
+  return cleaned.slice(start, end) || 'leaf';
 }
 
-export interface LeafItem { item_id: string; file: string; pattern: string; require_approval?: boolean }
+export interface LeafItem {
+  item_id: string;
+  file: string;
+  pattern: string;
+  require_approval?: boolean;
+}
 
 export interface LeafEnvelope {
   sessionId: string;
   /** Pool selected by the workload-facing control plane; falls back to the process default. */
   sandboxPoolSelector?: string;
-  item: LeafItem;             // inputs inline (was inputsRef)
-  decision?: Decision;        // resume/approve only (was decisionRef)
+  item: LeafItem; // inputs inline (was inputsRef)
+  decision?: Decision; // resume/approve only (was decisionRef)
   model?: string;
   provider?: string;
-  workspaceRef?: string;      // derived from the worktree in P2 when repoUrl+ref are given
-  repoUrl?: string;           // P2: git remote to converge the sandbox repo copy from
-  ref?: string;               // P2: commit/branch/tag the leaf's worktree is pinned to
+  workspaceRef?: string; // derived from the worktree in P2 when repoUrl+ref are given
+  repoUrl?: string; // P2: git remote to converge the sandbox repo copy from
+  ref?: string; // P2: commit/branch/tag the leaf's worktree is pinned to
   maxTurns?: number;
-  async?: boolean;            // when true, the HTTP layer enqueues instead of running inline
-  tenant?: string;            // namespaces the session id
-  kind?: "converge" | "solve" | "prompt"; // absent/"converge" => existing behavior; "solve" => runSolveLeaf
-  problemStatement?: string;   // required when kind === "solve": the task the agent must implement
-  prompt?: string;             // required when kind === "prompt": the free-form prompt to run
-  env_key?: string;            // swebench solve: triggers the contained swebench-setup path (Plan C)
+  async?: boolean; // when true, the HTTP layer enqueues instead of running inline
+  tenant?: string; // namespaces the session id
+  kind?: 'converge' | 'solve' | 'prompt'; // absent/"converge" => existing behavior; "solve" => runSolveLeaf
+  problemStatement?: string; // required when kind === "solve": the task the agent must implement
+  prompt?: string; // required when kind === "prompt": the free-form prompt to run
+  env_key?: string; // swebench solve: triggers the contained swebench-setup path (Plan C)
 }
 
 /** Apply a request-scoped pool selector without mutating the process-wide environment. */
@@ -89,19 +122,29 @@ export function leafSessionId(env: { sessionId: string; tenant?: string }): stri
 
 /** True when a solve envelope carries a non-empty env_key, triggering the contained swebench path. */
 export function isSwebenchEnvelope(env: { kind?: string; env_key?: string }): boolean {
-  return env.kind === "solve" && typeof env.env_key === "string" && env.env_key.length > 0;
+  return env.kind === 'solve' && typeof env.env_key === 'string' && env.env_key.length > 0;
 }
 
 // Cumulative token usage for a solve leaf (summed across all agent turns), for run cost pricing.
-export type LeafUsage = { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+export type LeafUsage = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total: number;
+};
 
 export type LeafResult =
-  | { status: "done"; verdict: Verdict }
-  | { status: "paused"; gateId: number; gate: { summary: string; proposed_action: string } }
-  | { status: "aborted" }
-  | { status: "solved"; patch: string; usage?: LeafUsage }
-  | { status: "responded"; text: string; usage?: LeafUsage }
-  | { status: "failed"; reason: "no_verdict" | "invalid_verdict" | "bad_inputs" | "error" | "saturated"; message?: string };
+  | { status: 'done'; verdict: Verdict }
+  | { status: 'paused'; gateId: number; gate: { summary: string; proposed_action: string } }
+  | { status: 'aborted' }
+  | { status: 'solved'; patch: string; usage?: LeafUsage }
+  | { status: 'responded'; text: string; usage?: LeafUsage }
+  | {
+      status: 'failed';
+      reason: 'no_verdict' | 'invalid_verdict' | 'bad_inputs' | 'error' | 'saturated';
+      message?: string;
+    };
 
 /**
  * Strip trailing "/" from a workspace root with a linear scan.
@@ -146,7 +189,7 @@ export function buildLeafPrompt(item: LeafItem, workspaceRef?: string): string {
       `Report by calling the submit_verdict tool exactly once with item_id="${item.item_id}". Do not do anything else.`,
     );
   }
-  return lines.join("\n");
+  return lines.join('\n');
 }
 
 export function buildSolvePrompt(problemStatement: string, workspaceRef: string): string {
@@ -164,7 +207,7 @@ export function buildSolvePrompt(problemStatement: string, workspaceRef: string)
     ``,
     `Implement a fix by editing files under ${root}. When you are confident the fix is complete,`,
     `stop — do not ask questions and do not call any reporting tool.`,
-  ].join("\n");
+  ].join('\n');
 }
 
 export type LeafCapture = VerdictCapture & GateCapture;
@@ -184,10 +227,19 @@ export type ProduceSolve = (
 ) => Promise<void>;
 
 export function validateItem(o: unknown): LeafItem | null {
-  if (typeof o !== "object" || o === null) return null;
+  if (typeof o !== 'object' || o === null) return null;
   const x = o as Record<string, unknown>;
-  if (typeof x.item_id === "string" && typeof x.file === "string" && typeof x.pattern === "string") {
-    return { item_id: x.item_id, file: x.file, pattern: x.pattern, require_approval: x.require_approval === true };
+  if (
+    typeof x.item_id === 'string' &&
+    typeof x.file === 'string' &&
+    typeof x.pattern === 'string'
+  ) {
+    return {
+      item_id: x.item_id,
+      file: x.file,
+      pattern: x.pattern,
+      require_approval: x.require_approval === true,
+    };
   }
   return null;
 }
@@ -195,12 +247,16 @@ export function validateItem(o: unknown): LeafItem | null {
 export async function runLeaf(
   env: LeafEnvelope,
   config?: TurnConfig,
-  deps?: { produceVerdict?: ProduceVerdict; produceSolve?: ProduceSolve; executeTurn?: typeof executeTurn },
+  deps?: {
+    produceVerdict?: ProduceVerdict;
+    produceSolve?: ProduceSolve;
+    executeTurn?: typeof executeTurn;
+  },
 ): Promise<LeafResult> {
-  if (env.kind === "solve") return runSolveLeaf(env, config, deps);
-  if (env.kind === "prompt") return runPromptLeaf(env, config, deps);
+  if (env.kind === 'solve') return runSolveLeaf(env, config, deps);
+  if (env.kind === 'prompt') return runPromptLeaf(env, config, deps);
   const item = validateItem(env.item);
-  if (!item) return { status: "failed", reason: "bad_inputs" };
+  if (!item) return { status: 'failed', reason: 'bad_inputs' };
 
   const capture: LeafCapture = {};
   const produce = deps?.produceVerdict ?? realProduceVerdict;
@@ -211,25 +267,29 @@ export async function runLeaf(
     // 503 Retry-After on it (spec §4.3), and classifyOutcome keeps it retryable for the async
     // path (drains as leases free). Every other throw is a generic "error".
     if (err instanceof SandboxPoolSaturatedError) {
-      return { status: "failed", reason: "saturated", message: err.message };
+      return { status: 'failed', reason: 'saturated', message: err.message };
     }
-    return { status: "failed", reason: "error", message: err instanceof Error ? err.message : String(err) };
+    return {
+      status: 'failed',
+      reason: 'error',
+      message: err instanceof Error ? err.message : String(err),
+    };
   }
 
   // Gate outcomes take precedence over verdict handling.
-  if (capture.aborted) return { status: "aborted" };
+  if (capture.aborted) return { status: 'aborted' };
   if (capture.gate) {
     return {
-      status: "paused",
+      status: 'paused',
       gateId: capture.gate.gateId,
       gate: { summary: capture.gate.summary, proposed_action: capture.gate.proposed_action },
     };
   }
 
-  if (!capture.verdict) return { status: "failed", reason: "no_verdict" };
+  if (!capture.verdict) return { status: 'failed', reason: 'no_verdict' };
   const v = validateVerdict(capture.verdict);
-  if (!v.ok) return { status: "failed", reason: "invalid_verdict", message: v.error };
-  return { status: "done", verdict: v.value };
+  if (!v.ok) return { status: 'failed', reason: 'invalid_verdict', message: v.error };
+  return { status: 'done', verdict: v.value };
 }
 
 export async function runSolveLeaf(
@@ -237,16 +297,22 @@ export async function runSolveLeaf(
   config?: TurnConfig,
   deps?: { produceSolve?: ProduceSolve },
 ): Promise<LeafResult> {
-  if (!env.problemStatement || !env.repoUrl || !env.ref) return { status: "failed", reason: "bad_inputs" };
+  if (!env.problemStatement || !env.repoUrl || !env.ref)
+    return { status: 'failed', reason: 'bad_inputs' };
   const capture: SolveCapture = {};
   const produce = deps?.produceSolve ?? realProduceSolve;
   try {
     await produce(env, config, capture);
   } catch (err) {
-    if (err instanceof SandboxPoolSaturatedError) return { status: "failed", reason: "saturated", message: err.message };
-    return { status: "failed", reason: "error", message: err instanceof Error ? err.message : String(err) };
+    if (err instanceof SandboxPoolSaturatedError)
+      return { status: 'failed', reason: 'saturated', message: err.message };
+    return {
+      status: 'failed',
+      reason: 'error',
+      message: err instanceof Error ? err.message : String(err),
+    };
   }
-  return { status: "solved", patch: capture.patch ?? "", usage: capture.usage };
+  return { status: 'solved', patch: capture.patch ?? '', usage: capture.usage };
 }
 
 async function runPromptLeaf(
@@ -254,7 +320,7 @@ async function runPromptLeaf(
   config?: TurnConfig,
   deps?: { executeTurn?: typeof executeTurn },
 ): Promise<LeafResult> {
-  if (!env.prompt) return { status: "failed", reason: "bad_inputs" };
+  if (!env.prompt) return { status: 'failed', reason: 'bad_inputs' };
   const cwd = config?.cwd ?? process.cwd();
   const sid = leafSessionId(env);
   const selection = resolveModelSelection({
@@ -275,25 +341,31 @@ async function runPromptLeaf(
   let selected: SelectedSandbox | null;
   try {
     selected = await selectPoolSandbox(sandboxEnvironment(env), cwd, sid, {
-      cap: Number(process.env.KAGENTI_SANDBOX_CAP ?? "20"),
-      ttlMs: Number(process.env.KAGENTI_SANDBOX_LEASE_TTL_MS ?? "60000"),
-      remoteSandbox: process.env.SH_REMOTE_SANDBOX === "1",
+      cap: Number(process.env.KAGENTI_SANDBOX_CAP ?? '20'),
+      ttlMs: Number(process.env.KAGENTI_SANDBOX_LEASE_TTL_MS ?? '60000'),
+      remoteSandbox: process.env.SH_REMOTE_SANDBOX === '1',
     });
   } catch (err) {
     // Saturation stays a distinct transient signal, as for the other kinds: the sync /runs path
     // bounded-waits then 503s on it, and classifyOutcome keeps it retryable for the async queue.
     if (err instanceof SandboxPoolSaturatedError) {
-      return { status: "failed", reason: "saturated", message: err.message };
+      return { status: 'failed', reason: 'saturated', message: err.message };
     }
-    return { status: "failed", reason: "error", message: err instanceof Error ? err.message : String(err) };
+    return {
+      status: 'failed',
+      reason: 'error',
+      message: err instanceof Error ? err.message : String(err),
+    };
   }
 
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   try {
     if (selected) {
-      const hbMs = Number(process.env.KAGENTI_SANDBOX_HEARTBEAT_MS ?? "20000");
+      const hbMs = Number(process.env.KAGENTI_SANDBOX_HEARTBEAT_MS ?? '20000');
       const lease = selected;
-      heartbeat = setInterval(() => { void lease.heartbeat(); }, hbMs);
+      heartbeat = setInterval(() => {
+        void lease.heartbeat();
+      }, hbMs);
     }
     const r: TurnResult = await exec({
       prompt: env.prompt,
@@ -303,13 +375,18 @@ async function runPromptLeaf(
       selection,
       sandbox: { config: selected?.config ?? null, transport: selected?.transport },
     });
-    if (r.stopReason === "aborted") return { status: "aborted" };
-    if (r.stopReason === "error") return { status: "failed", reason: "error", message: r.errorMessage };
-    return { status: "responded", text: r.response, usage: r.usage };
+    if (r.stopReason === 'aborted') return { status: 'aborted' };
+    if (r.stopReason === 'error')
+      return { status: 'failed', reason: 'error', message: r.errorMessage };
+    return { status: 'responded', text: r.response, usage: r.usage };
   } catch (err) {
     // A throw from the turn must not escape past the finally: a lease held past a crashed turn
     // shrinks pool capacity until its TTL expires.
-    return { status: "failed", reason: "error", message: err instanceof Error ? err.message : String(err) };
+    return {
+      status: 'failed',
+      reason: 'error',
+      message: err instanceof Error ? err.message : String(err),
+    };
   } finally {
     if (heartbeat) clearInterval(heartbeat);
     if (selected) await selected.release();
@@ -334,17 +411,18 @@ export const realProduceSolve: ProduceSolve = async (env, config, capture) => {
   // A solve leaf MUST have a real sandbox worktree — fail fast (before any Redis/session work) if the
   // pool is unconfigured. selectPoolSandbox returns null when no sandbox is configured (see select-sandbox.ts).
   const selected = await selectPoolSandbox(sandboxEnvironment(env), cwd, sid, {
-    cap: Number(process.env.KAGENTI_SANDBOX_CAP ?? "20"),
-    ttlMs: Number(process.env.KAGENTI_SANDBOX_LEASE_TTL_MS ?? "60000"),
+    cap: Number(process.env.KAGENTI_SANDBOX_CAP ?? '20'),
+    ttlMs: Number(process.env.KAGENTI_SANDBOX_LEASE_TTL_MS ?? '60000'),
   });
-  if (!selected) throw new Error("solve leaf requires a configured sandbox pool");
+  if (!selected) throw new Error('solve leaf requires a configured sandbox pool');
 
-  const store = new RedisSessionBackend<FileEntry>(config?.redisUrl ?? "redis://localhost:6379");
+  const store = new RedisSessionBackend<FileEntry>(config?.redisUrl ?? 'redis://localhost:6379');
   const backend = new BufferedRedisBackend(store);
   const prior = await store.read(sid);
-  const sessionManager = prior.length > 0
-    ? await SessionManager.openFromCheckpoint(sid, backend, cwd)
-    : SessionManager.create(cwd, undefined, { id: sid }, backend);
+  const sessionManager =
+    prior.length > 0
+      ? await SessionManager.openFromCheckpoint(sid, backend, cwd)
+      : SessionManager.create(cwd, undefined, { id: sid }, backend);
 
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   try {
@@ -354,11 +432,14 @@ export const realProduceSolve: ProduceSolve = async (env, config, capture) => {
     if (swebench) {
       const t0 = Date.now();
       workspaceRef = await setupSwebenchWorkspace(transport, {
-        repoUrl: env.repoUrl!, baseCommit: env.ref!, envKey: env.env_key!, runId: sid,
+        repoUrl: env.repoUrl!,
+        baseCommit: env.ref!,
+        envKey: env.env_key!,
+        runId: sid,
       });
       // Separate setup-duty from solve-duty (spec §4): the driver reads this line for setup ms,
       // and solve-duty = total exec-timing delta − setupMs.
-      const safeSid = sid.replace(/[\r\n]+/g, "");
+      const safeSid = sid.replace(/[\r\n]+/g, '');
       console.error(`[swebench-phase] sid=${safeSid} setupMs=${Date.now() - t0}`);
     } else {
       workspaceRef = await convergeWorkspace(transport, env.repoUrl!, env.ref!, sid);
@@ -366,8 +447,10 @@ export const realProduceSolve: ProduceSolve = async (env, config, capture) => {
     // A solve leaf edits files in its worktree; point the agent's sandbox cwd at that worktree so the
     // model's edits (relative or absolute) land where captureWorkspaceDiff reads them.
     const agentConfig = { ...selected.config, podCwd: workspaceRef };
-    const hbMs = Number(process.env.KAGENTI_SANDBOX_HEARTBEAT_MS ?? "20000");
-    heartbeat = setInterval(() => { void selected.heartbeat(); }, hbMs);
+    const hbMs = Number(process.env.KAGENTI_SANDBOX_HEARTBEAT_MS ?? '20000');
+    heartbeat = setInterval(() => {
+      void selected.heartbeat();
+    }, hbMs);
 
     const agentDir = getAgentDir();
     const settingsManager = SettingsManager.create(cwd, agentDir);
@@ -392,7 +475,11 @@ export const realProduceSolve: ProduceSolve = async (env, config, capture) => {
 
     try {
       const prompt = swebench
-        ? buildSwebenchSolvePrompt(env.problemStatement!, workspaceRef, `${swebenchVenvDir(sid)}/bin/python`)
+        ? buildSwebenchSolvePrompt(
+            env.problemStatement!,
+            workspaceRef,
+            `${swebenchVenvDir(sid)}/bin/python`,
+          )
         : buildSolvePrompt(env.problemStatement!, workspaceRef);
       await session.prompt(prompt);
       // Per-leaf token usage (cumulative across all solve turns) for run cost pricing. Sum assistant
@@ -404,7 +491,9 @@ export const realProduceSolve: ProduceSolve = async (env, config, capture) => {
       } catch {
         /* usage is best-effort */
       }
-      capture.patch = swebench ? await captureSwebenchDiff(transport, sid) : await captureWorkspaceDiff(transport, sid);
+      capture.patch = swebench
+        ? await captureSwebenchDiff(transport, sid)
+        : await captureWorkspaceDiff(transport, sid);
     } finally {
       await backend.flush();
     }
@@ -438,10 +527,10 @@ export const realProduceVerdict: ProduceVerdict = async (item, env, config, capt
   // Durable, resumable session keyed by the (sanitized) session id. BufferedRedisBackend drains
   // writes continuously, so a mid-run crash preserves progress up to the last drained entry.
   const sid = leafSessionId(env);
-  const store = new RedisSessionBackend<FileEntry>(config?.redisUrl ?? "redis://localhost:6379");
+  const store = new RedisSessionBackend<FileEntry>(config?.redisUrl ?? 'redis://localhost:6379');
   const backend = new BufferedRedisBackend(store);
   const isVerdictEntry = (e: unknown) =>
-    (e as { type?: string }).type === "custom" &&
+    (e as { type?: string }).type === 'custom' &&
     (e as { customType?: string }).customType === VERDICT_ENTRY_TYPE;
 
   // Resume the session if one already exists under this id (retry / post-crash); otherwise create
@@ -467,10 +556,10 @@ export const realProduceVerdict: ProduceVerdict = async (item, env, config, capt
   // --- P2: choose a sandbox pod (pool lease) before building the prompt/session. Placed after the
   // verdict fast-path so a recovered verdict does not lease a pod. Returns null ⇒ no sandbox
   // configured (local tools). Throws SandboxPoolSaturatedError when a configured pool is full.
-  const remoteSandbox = process.env.SH_REMOTE_SANDBOX === "1";
+  const remoteSandbox = process.env.SH_REMOTE_SANDBOX === '1';
   const selected = await selectPoolSandbox(sandboxEnvironment(env), cwd, sid, {
-    cap: Number(process.env.KAGENTI_SANDBOX_CAP ?? "20"),
-    ttlMs: Number(process.env.KAGENTI_SANDBOX_LEASE_TTL_MS ?? "60000"),
+    cap: Number(process.env.KAGENTI_SANDBOX_CAP ?? '20'),
+    ttlMs: Number(process.env.KAGENTI_SANDBOX_LEASE_TTL_MS ?? '60000'),
     remoteSandbox,
   });
   const converging = selected != null && !!env.repoUrl && !!env.ref;
@@ -495,8 +584,10 @@ export const realProduceVerdict: ProduceVerdict = async (item, env, config, capt
       }
     }
     if (selected) {
-      const hbMs = Number(process.env.KAGENTI_SANDBOX_HEARTBEAT_MS ?? "20000");
-      heartbeat = setInterval(() => { void selected.heartbeat(); }, hbMs);
+      const hbMs = Number(process.env.KAGENTI_SANDBOX_HEARTBEAT_MS ?? '20000');
+      heartbeat = setInterval(() => {
+        void selected.heartbeat();
+      }, hbMs);
     }
 
     // Gate front-end (design §3): decide whether to pause, abort, or seed a prompt.
@@ -505,13 +596,13 @@ export const realProduceVerdict: ProduceVerdict = async (item, env, config, capt
     const decision = dv && dv.ok ? dv.value : null;
     const seed = decideSeed(gateState, decision, buildLeafPrompt(item, workspaceRef));
 
-    if (seed.kind === "abort") {
+    if (seed.kind === 'abort') {
       if (seed.record) sessionManager.appendCustomEntry(GATE_DECISION_ENTRY_TYPE, seed.record);
       capture.aborted = true;
       await backend.flush();
       return;
     }
-    if (seed.kind === "paused") {
+    if (seed.kind === 'paused') {
       capture.gate = seed.gate;
       await backend.flush();
       return;

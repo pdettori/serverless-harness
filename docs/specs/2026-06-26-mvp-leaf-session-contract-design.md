@@ -7,9 +7,10 @@ for an external deterministic orchestrator**, using the parallel-fan-out archety
 the **leaf-session invocation contract** — parameterized, run-to-completion, structured-output,
 workspace-isolated, on scale-to-zero infra — and nothing domain-specific.
 Realizes: [Capability Charter](2026-06-26-leaf-session-backend-capability-charter.md) §5 (MVP core)
-+ §7 (G1, G6). Single-tenant, key-in-env.
-Builds on (reuse, no new design): M2/M3 (sandbox), M4 (Knative scale-to-zero), M5 (checkpoint/resume), M6 (runtime model selection).
-Defers (per charter): Z1 identity, Z3 injector, Z5 egress, Z6 *extras* (the core clean-context-subagent need is met by a **re-entrant contract**, §2.5); human-gates; triggers; real candidate-generation and PoC/exploit stages.
+
+- §7 (G1, G6). Single-tenant, key-in-env.
+  Builds on (reuse, no new design): M2/M3 (sandbox), M4 (Knative scale-to-zero), M5 (checkpoint/resume), M6 (runtime model selection).
+  Defers (per charter): Z1 identity, Z3 injector, Z5 egress, Z6 _extras_ (the core clean-context-subagent need is met by a **re-entrant contract**, §2.5); human-gates; triggers; real candidate-generation and PoC/exploit stages.
 
 > **Superseded in part by P1 (July 2, 2026).** The **volume envelope** (file-based `inputsRef` /
 > `resultRef` on the `/work` PVC) is replaced by an inline-inputs + inline/Redis-verdict contract in
@@ -18,8 +19,8 @@ Defers (per charter): Z1 identity, Z3 injector, Z5 egress, Z6 *extras* (the core
 > structured output, workspace isolation, re-entrant resume) are unchanged — only the transport.
 
 > **What this slice is NOT.** It is not the real analysis pipeline. The agentic task is a
-> representative **stub** (flag a pattern in a file) so the slice measures *the contract and the
-> integration seam*, not domain logic. The real candidate-generation and validation stages plug into
+> representative **stub** (flag a pattern in a file) so the slice measures _the contract and the
+> integration seam_, not domain logic. The real candidate-generation and validation stages plug into
 > the same contract later.
 
 ---
@@ -83,8 +84,8 @@ request **blocks until the session reaches a terminal state**; the orchestrator 
 ### 2.2 Run-to-completion ("job mode")
 
 Distinct from the interactive `runTurn`: the harness seeds the agent with a fixed prompt —
-*"process the item in `inputs_ref` against the repo at `workspace_ref`; emit your verdict by calling
-`submit_verdict`"* — and runs the agent loop **autonomously to completion** (until `submit_verdict`
+_"process the item in `inputs_ref` against the repo at `workspace_ref`; emit your verdict by calling
+`submit_verdict`"_ — and runs the agent loop **autonomously to completion** (until `submit_verdict`
 is called, or `max_turns`/timeout). Reuses `runTurn` internals; adds the completion loop.
 
 ### 2.3 Structured output (the verdict)
@@ -113,14 +114,14 @@ overwrites — so **retry = re-invoke**. The harness writes `result_ref` fresh e
 ### 2.5 Re-entrancy (design property, not MVP scope)
 
 The contract must be designed so a **leaf session can itself invoke `/runs`** to dispatch a
-**child** leaf session. This is *not built or tested in the MVP* (the MVP is single-level:
+**child** leaf session. This is _not built or tested in the MVP_ (the MVP is single-level:
 orchestrator → leaf), but the contract must **not preclude** it, because it is how the one genuine
 near-term subagent need is met: a leaf agent that wants a fresh-context subtask (see
 [Archetypes & Requirements](2026-06-26-pipeline-archetypes-requirements.md) §6, archetype B's planned
 `explore`/per-arm subagents) simply dispatches a child leaf — which gets a clean context and its own
 sandbox **by construction**, with no separate subagent runtime. Concretely, the MVP keeps the
 contract self-contained (no caller-identity assumption that only an external orchestrator may call
-it) so re-entrancy is a later increment, not a redesign. The Z6 *extras* — parent/child lineage
+it) so re-entrancy is a later increment, not a redesign. The Z6 _extras_ — parent/child lineage
 (`parent_session_id`), budget propagation, sandbox policy, inter-agent messaging — are deferred.
 
 ---
@@ -132,7 +133,7 @@ external orchestrator driver (deterministic; brings its own logic)
   │  for each of N items: POST /runs {session_id, model, inputs_ref, result_ref, workspace_ref}
   ▼  (N concurrent requests)
 Knative harness service  ── scales out to N pods, scales to zero when idle (M4)
-  │  job-mode: seed prompt → run agent to completion (M6 model) 
+  │  job-mode: seed prompt → run agent to completion (M6 model)
   ▼
 sandbox (M2/M3): read workspace_ref (RO), use tools (read/grep), reason with model
   │  agent calls submit_verdict(args)
@@ -147,17 +148,17 @@ orchestrator: read all result_refs → retry any failed/missing (re-invoke) → 
 
 ## 4. Components
 
-| # | Component | New / reuse |
-|---|---|---|
-| 1 | **Invocation contract + `/runs` endpoint** | ⭐ new (the core) |
-| 2 | **Job-mode completion loop** (autonomous run to verdict) | ⭐ new (wraps `runTurn`) |
-| 3 | **`submit_verdict` tool + schema validation + result_ref write** | ⭐ new |
-| 4 | **Minimal orchestrator driver** (fan-out / collect / retry / coverage audit) | ⭐ new (test stand-in) |
-| 5 | **Fixture repo + verdict schema** | ⭐ new (small) |
-| 6 | Sandbox tool execution | ♻️ M2/M3 |
-| 7 | Knative parallel + scale-to-zero | ♻️ M4 |
-| 8 | Per-call model selection | ♻️ M6 |
-| 9 | Checkpoint/resume (verify a restarted session resumes) | ♻️ M5 |
+| #   | Component                                                                    | New / reuse              |
+| --- | ---------------------------------------------------------------------------- | ------------------------ |
+| 1   | **Invocation contract + `/runs` endpoint**                                   | ⭐ new (the core)        |
+| 2   | **Job-mode completion loop** (autonomous run to verdict)                     | ⭐ new (wraps `runTurn`) |
+| 3   | **`submit_verdict` tool + schema validation + result_ref write**             | ⭐ new                   |
+| 4   | **Minimal orchestrator driver** (fan-out / collect / retry / coverage audit) | ⭐ new (test stand-in)   |
+| 5   | **Fixture repo + verdict schema**                                            | ⭐ new (small)           |
+| 6   | Sandbox tool execution                                                       | ♻️ M2/M3                 |
+| 7   | Knative parallel + scale-to-zero                                             | ♻️ M4                    |
+| 8   | Per-call model selection                                                     | ♻️ M6                    |
+| 9   | Checkpoint/resume (verify a restarted session resumes)                       | ♻️ M5                    |
 
 ---
 
@@ -244,4 +245,4 @@ PVC + the fixture repo:
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

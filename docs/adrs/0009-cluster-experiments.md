@@ -26,4 +26,4 @@ We will implement the three experiments as idempotent bash drivers under `deploy
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

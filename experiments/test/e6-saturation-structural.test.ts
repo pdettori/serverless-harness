@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from 'vitest';
 import {
   detectKnee,
   dutyCycle,
@@ -7,25 +7,25 @@ import {
   buildRatioCurve,
   type LadderPoint,
   type WorkloadPoint,
-} from "../src/sharing";
+} from '../src/sharing';
 
-describe("E6 — saturation analysis (structural)", () => {
-  it("computes duty cycle and derived ratio", () => {
+describe('E6 — saturation analysis (structural)', () => {
+  it('computes duty cycle and derived ratio', () => {
     expect(dutyCycle(250, 1000)).toBeCloseTo(0.25, 5);
     expect(derivedRatio(0.25)).toBe(4.0);
     expect(() => dutyCycle(1, 0)).toThrow();
     expect(() => derivedRatio(0)).toThrow();
   });
 
-  it("caps duty cycle at 1 and enforces the sanity floor", () => {
+  it('caps duty cycle at 1 and enforces the sanity floor', () => {
     expect(dutyCycle(1500, 1000)).toBe(1);
     expect(sanityFloorPass(8, 4)).toBe(true);
     expect(sanityFloorPass(2, 4)).toBe(false);
   });
 });
 
-describe("detectKnee — sustained-decline (noise-tolerant)", () => {
-  it("still returns the last healthy rung when the top rung blows past the latency bound", () => {
+describe('detectKnee — sustained-decline (noise-tolerant)', () => {
+  it('still returns the last healthy rung when the top rung blows past the latency bound', () => {
     const series: LadderPoint[] = [
       { c: 1, throughput: 1.0, p95Ms: 1000 },
       { c: 2, throughput: 1.9, p95Ms: 1050 },
@@ -36,7 +36,7 @@ describe("detectKnee — sustained-decline (noise-tolerant)", () => {
     expect(detectKnee(series, 2)).toBe(8);
   });
 
-  it("tolerates a single throughput dip within the latency bound (does not break early)", () => {
+  it('tolerates a single throughput dip within the latency bound (does not break early)', () => {
     const series: LadderPoint[] = [
       { c: 1, throughput: 1.0, p95Ms: 1000 },
       { c: 2, throughput: 2.0, p95Ms: 1100 },
@@ -46,7 +46,7 @@ describe("detectKnee — sustained-decline (noise-tolerant)", () => {
     expect(detectKnee(series, 2)).toBe(8);
   });
 
-  it("breaks on a sustained decline (patience consecutive unhealthy rungs)", () => {
+  it('breaks on a sustained decline (patience consecutive unhealthy rungs)', () => {
     const series: LadderPoint[] = [
       { c: 1, throughput: 1.0, p95Ms: 1000 },
       { c: 2, throughput: 2.0, p95Ms: 1100 },
@@ -57,20 +57,20 @@ describe("detectKnee — sustained-decline (noise-tolerant)", () => {
     expect(detectKnee(series, 2)).toBe(2);
   });
 
-  it("throws when there is no c=1 baseline", () => {
+  it('throws when there is no c=1 baseline', () => {
     expect(() => detectKnee([{ c: 2, throughput: 1, p95Ms: 1 }], 2)).toThrow(/baseline/);
   });
 });
 
-describe("buildRatioCurve — N as a function of per-leaf sandbox work", () => {
-  it("maps each workload point to duty + N, N decreasing as sandbox work rises", () => {
+describe('buildRatioCurve — N as a function of per-leaf sandbox work', () => {
+  it('maps each workload point to duty + N, N decreasing as sandbox work rises', () => {
     const pts: WorkloadPoint[] = [
-      { label: "L0", execMs: 300, execCount: 2, wallMs: 12000 },
-      { label: "L1", execMs: 1200, execCount: 6, wallMs: 12000 },
-      { label: "L2", execMs: 3000, execCount: 14, wallMs: 12000 },
+      { label: 'L0', execMs: 300, execCount: 2, wallMs: 12000 },
+      { label: 'L1', execMs: 1200, execCount: 6, wallMs: 12000 },
+      { label: 'L2', execMs: 3000, execCount: 14, wallMs: 12000 },
     ];
     const curve = buildRatioCurve(pts);
-    expect(curve.map((c) => c.label)).toEqual(["L0", "L1", "L2"]);
+    expect(curve.map((c) => c.label)).toEqual(['L0', 'L1', 'L2']);
     expect(curve[0].duty).toBeCloseTo(0.025, 3);
     expect(curve[0].n).toBe(40); // 1/0.025
     expect(curve[0].execCount).toBe(2);
@@ -79,7 +79,7 @@ describe("buildRatioCurve — N as a function of per-leaf sandbox work", () => {
     expect(curve[2].n).toBeLessThan(curve[0].n);
   });
 
-  it("propagates the dutyCycle guard (wallMs <= 0 throws)", () => {
-    expect(() => buildRatioCurve([{ label: "x", execMs: 1, execCount: 1, wallMs: 0 }])).toThrow();
+  it('propagates the dutyCycle guard (wallMs <= 0 throws)', () => {
+    expect(() => buildRatioCurve([{ label: 'x', execMs: 1, execCount: 1, wallMs: 0 }])).toThrow();
   });
 });

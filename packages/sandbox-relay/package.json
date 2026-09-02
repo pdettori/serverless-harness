@@ -2,7 +2,9 @@
   "name": "@sh/sandbox-relay",
   "type": "module",
   "version": "0.0.0",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "start": "node --import tsx src/main.ts",
     "test": "vitest run"

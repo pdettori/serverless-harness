@@ -54,16 +54,16 @@ M4 is **done** when:
 
 ## 2. Key decisions
 
-| # | Decision | Choice |
-|---|----------|--------|
-| D1 | Response model | **Simple request/response.** `POST /turn` blocks until the LLM turn completes, returns the full assistant message. No streaming, no fire-and-forget. Simplest proof of the serverless lifecycle. |
-| D2 | Sandbox model | **Pre-provisioned.** The sandbox pod already exists; the Knative service receives `KAGENTI_SANDBOX_POD` as an env var. Sandbox lifecycle is a separate concern. |
-| D3 | Deployment target | **Kind cluster + Knative Serving** (Kourier networking). Proves real scale-to-zero locally. |
-| D4 | Container build | **Multi-stage Dockerfile.** Node 20 alpine, pnpm workspace install, pi-fork build chain, kubectl for sandbox exec. |
-| D5 | Package structure | **New `@sh/knative-server`** package for the HTTP server. Shared `runTurn()` extracted to `harness/src/run-turn.ts`. `cli.ts` becomes a thin wrapper. |
-| D6 | HTTP framework | **Node built-in `http` module.** Zero additional deps, keeps the image small. |
-| D7 | Concurrency | **`containerConcurrency: 1`** on the Knative Service. One request per pod; Knative scales horizontally for concurrent sessions. Avoids shared-state complexity. |
-| D8 | Session lifecycle | **Single endpoint.** Omit `sessionId` to create a new session; include it to resume. Response always includes `sessionId` for the caller to capture. |
+| #   | Decision          | Choice                                                                                                                                                                                           |
+| --- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| D1  | Response model    | **Simple request/response.** `POST /turn` blocks until the LLM turn completes, returns the full assistant message. No streaming, no fire-and-forget. Simplest proof of the serverless lifecycle. |
+| D2  | Sandbox model     | **Pre-provisioned.** The sandbox pod already exists; the Knative service receives `KAGENTI_SANDBOX_POD` as an env var. Sandbox lifecycle is a separate concern.                                  |
+| D3  | Deployment target | **Kind cluster + Knative Serving** (Kourier networking). Proves real scale-to-zero locally.                                                                                                      |
+| D4  | Container build   | **Multi-stage Dockerfile.** Node 20 alpine, pnpm workspace install, pi-fork build chain, kubectl for sandbox exec.                                                                               |
+| D5  | Package structure | **New `@sh/knative-server`** package for the HTTP server. Shared `runTurn()` extracted to `harness/src/run-turn.ts`. `cli.ts` becomes a thin wrapper.                                            |
+| D6  | HTTP framework    | **Node built-in `http` module.** Zero additional deps, keeps the image small.                                                                                                                    |
+| D7  | Concurrency       | **`containerConcurrency: 1`** on the Knative Service. One request per pod; Knative scales horizontally for concurrent sessions. Avoids shared-state complexity.                                  |
+| D8  | Session lifecycle | **Single endpoint.** Omit `sessionId` to create a new session; include it to resume. Response always includes `sessionId` for the caller to capture.                                             |
 
 ---
 
@@ -137,17 +137,17 @@ Extracted from `cli.ts`, this is the reusable core:
 
 ```ts
 export interface TurnConfig {
-  redisUrl?: string;              // default: "redis://localhost:6379"
-  cwd?: string;                   // default: process.cwd()
-  anthropicBaseUrl?: string;      // gateway bridge (optional)
-  anthropicAuthToken?: string;    // gateway bridge (optional)
+  redisUrl?: string; // default: "redis://localhost:6379"
+  cwd?: string; // default: process.cwd()
+  anthropicBaseUrl?: string; // gateway bridge (optional)
+  anthropicAuthToken?: string; // gateway bridge (optional)
 }
 
 export interface TurnResult {
   sessionId: string;
-  response: string;               // assistant's final text content
-  stopReason: string;             // "end_turn" | "error" | "aborted" | ...
-  errorMessage?: string;          // present when stopReason is "error"
+  response: string; // assistant's final text content
+  stopReason: string; // "end_turn" | "error" | "aborted" | ...
+  errorMessage?: string; // present when stopReason is "error"
 }
 
 export async function runTurn(
@@ -187,23 +187,23 @@ console.log(`SESSION_ID=${result.sessionId}`);
 Minimal Node `http` — no framework:
 
 ```ts
-import { createServer } from "node:http";
-import { runTurn } from "@sh/harness/run-turn";
+import { createServer } from 'node:http';
+import { runTurn } from '@sh/harness/run-turn';
 
-const PORT = parseInt(process.env.PORT || "8080", 10);
+const PORT = parseInt(process.env.PORT || '8080', 10);
 
 const server = createServer(async (req, res) => {
-  if (req.method === "GET" && req.url === "/health") {
-    res.writeHead(200).end("ok");
+  if (req.method === 'GET' && req.url === '/health') {
+    res.writeHead(200).end('ok');
     return;
   }
 
-  if (req.method === "POST" && req.url === "/turn") {
+  if (req.method === 'POST' && req.url === '/turn') {
     const body = await readBody(req);
     const { sessionId, prompt } = JSON.parse(body);
 
     if (!prompt) {
-      res.writeHead(400, headers).end(JSON.stringify({ error: "prompt_required" }));
+      res.writeHead(400, headers).end(JSON.stringify({ error: 'prompt_required' }));
       return;
     }
 
@@ -216,11 +216,13 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, headers).end(JSON.stringify(result));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const status = message.includes("not_found") ? 404 : 500;
-      res.writeHead(status, headers).end(JSON.stringify({
-        error: message,
-        ...(sessionId ? { sessionId } : {}),
-      }));
+      const status = message.includes('not_found') ? 404 : 500;
+      res.writeHead(status, headers).end(
+        JSON.stringify({
+          error: message,
+          ...(sessionId ? { sessionId } : {}),
+        }),
+      );
     }
     return;
   }
@@ -229,7 +231,7 @@ const server = createServer(async (req, res) => {
 });
 
 // Graceful shutdown (Knative sends SIGTERM before killing)
-process.on("SIGTERM", () => {
+process.on('SIGTERM', () => {
   server.close(() => process.exit(0));
 });
 
@@ -267,6 +269,7 @@ CMD ["node", "--import", "tsx", "packages/knative-server/src/server.ts"]
 ```
 
 Notes:
+
 - `kubectl` in the runtime image for `@sh/k8s-sandbox` pod exec.
 - Source-only packages (`harness/`, `packages/`) run via `tsx` (no compile step needed).
 - Pi-fork is pre-built in stage 1 (ships compiled JS).
@@ -288,9 +291,9 @@ spec:
   template:
     metadata:
       annotations:
-        autoscaling.knative.dev/min-scale: "0"
-        autoscaling.knative.dev/max-scale: "5"
-        autoscaling.knative.dev/scale-to-zero-pod-retention-period: "30s"
+        autoscaling.knative.dev/min-scale: '0'
+        autoscaling.knative.dev/max-scale: '5'
+        autoscaling.knative.dev/scale-to-zero-pod-retention-period: '30s'
     spec:
       containerConcurrency: 1
       timeoutSeconds: 300
@@ -300,9 +303,9 @@ spec:
             - containerPort: 8080
           env:
             - name: REDIS_URL
-              value: "redis://redis.default.svc:6379"
+              value: 'redis://redis.default.svc:6379'
             - name: KAGENTI_SANDBOX_POD
-              value: "sandbox-0"
+              value: 'sandbox-0'
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -314,11 +317,11 @@ spec:
               port: 8080
           resources:
             requests:
-              memory: "256Mi"
-              cpu: "100m"
+              memory: '256Mi'
+              cpu: '100m'
             limits:
-              memory: "512Mi"
-              cpu: "500m"
+              memory: '512Mi'
+              cpu: '500m'
 ```
 
 ### `deploy/knative/setup-kind.sh`
@@ -366,12 +369,12 @@ Client                          Knative                    Redis
 
 Error responses:
 
-| Condition | HTTP status | Body |
-|-----------|-------------|------|
-| Missing `prompt` | 400 | `{ "error": "prompt_required" }` |
-| `sessionId` not found in Redis | 404 | `{ "error": "session_not_found" }` |
-| LLM / turn failure | 500 | `{ "error": "<message>", "sessionId": "<id>" }` |
-| Invalid JSON body | 400 | `{ "error": "invalid_json" }` |
+| Condition                      | HTTP status | Body                                            |
+| ------------------------------ | ----------- | ----------------------------------------------- |
+| Missing `prompt`               | 400         | `{ "error": "prompt_required" }`                |
+| `sessionId` not found in Redis | 404         | `{ "error": "session_not_found" }`              |
+| LLM / turn failure             | 500         | `{ "error": "<message>", "sessionId": "<id>" }` |
+| Invalid JSON body              | 400         | `{ "error": "invalid_json" }`                   |
 
 ---
 
@@ -410,6 +413,7 @@ Proves the full serverless lifecycle on Kind:
 5. **Sandbox check** (if KAGENTI_SANDBOX_POD deployed) — curl `POST /turn { sessionId, prompt: "List files in /tmp" }` → assert tool execution happened (response references file listing).
 
 **Success criteria:**
+
 - Steps 1–4 all pass (the serverless thesis holds).
 - All existing test suites remain green (harness, session-backend, k8s-sandbox).
 
@@ -417,14 +421,14 @@ Proves the full serverless lifecycle on Kind:
 
 ## 10. Residual risks
 
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| Cold-start latency too high (Knative + Node startup + Redis read + LLM call) | Poor interactive UX | M4 measures but does not optimize — compaction-checkpoint (M5) addresses this. Acceptable for PoC. |
-| Knative idle timeout too aggressive (kills pod mid-LLM-call) | Dropped request | `timeoutSeconds: 300` on the Knative revision gives LLM calls up to 5 minutes. |
-| kubectl in-container cannot reach sandbox pod (RBAC) | Sandbox tools fail | Setup script creates a ServiceAccount with pod exec permissions; fallback: run without sandbox (tools are inert without env var). |
-| Pi-fork build fragility (build order, version drift) | Dockerfile breaks | Pinned pi-fork commit (submodule); explicit ordered build; CI will catch drift. |
-| Redis not reachable from Knative pod (DNS/network) | Session create/resume fails | Redis deployed in same namespace; smoke test validates connectivity end-to-end. |
-| `containerConcurrency: 1` limits throughput | Slow under load | Acceptable for PoC; `max-scale: 5` allows 5 concurrent sessions. Production tuning is out of scope. |
+| Risk                                                                         | Impact                      | Mitigation                                                                                                                        |
+| ---------------------------------------------------------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Cold-start latency too high (Knative + Node startup + Redis read + LLM call) | Poor interactive UX         | M4 measures but does not optimize — compaction-checkpoint (M5) addresses this. Acceptable for PoC.                                |
+| Knative idle timeout too aggressive (kills pod mid-LLM-call)                 | Dropped request             | `timeoutSeconds: 300` on the Knative revision gives LLM calls up to 5 minutes.                                                    |
+| kubectl in-container cannot reach sandbox pod (RBAC)                         | Sandbox tools fail          | Setup script creates a ServiceAccount with pod exec permissions; fallback: run without sandbox (tools are inert without env var). |
+| Pi-fork build fragility (build order, version drift)                         | Dockerfile breaks           | Pinned pi-fork commit (submodule); explicit ordered build; CI will catch drift.                                                   |
+| Redis not reachable from Knative pod (DNS/network)                           | Session create/resume fails | Redis deployed in same namespace; smoke test validates connectivity end-to-end.                                                   |
+| `containerConcurrency: 1` limits throughput                                  | Slow under load             | Acceptable for PoC; `max-scale: 5` allows 5 concurrent sessions. Production tuning is out of scope.                               |
 
 ---
 
@@ -440,4 +444,4 @@ scale-to-zero works, M5 optimizes the cold-start path so it stays fast at scale.
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

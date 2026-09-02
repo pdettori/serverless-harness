@@ -20,8 +20,8 @@ contract + `runLeaf` (MVP/PR #10), gate-7 resume (PR #11).
 
 ## 1. Goal & motivation
 
-Archetypes A (parallel fan-out) and B (iterative loop) start from an *invocation* — an external
-orchestrator dispatches work. **Archetype C — scheduled ingestion** starts from a *clock*: "every
+Archetypes A (parallel fan-out) and B (iterative loop) start from an _invocation_ — an external
+orchestrator dispatches work. **Archetype C — scheduled ingestion** starts from a _clock_: "every
 night at 02:00, process the standing batch." The harness already accepts background work via
 `POST /runs {async:true}`; this slice adds the missing **start signal** so a schedule — with no
 external orchestrator process running — can dispatch that work.
@@ -32,11 +32,11 @@ post-MVP. This realizes the **cron** half of it.
 
 ### Charter fit (why this respects "harness is invoked, not orchestrator")
 
-The harness charter (G1/G2) is that the harness is *invoked*, never the orchestrator. A cron schedule
+The harness charter (G1/G2) is that the harness is _invoked_, never the orchestrator. A cron schedule
 that dispatches a **fixed, config-defined list** does not violate this: the schedule and the list are
 **operator-supplied configuration**, not a decision the harness computes. The CronJob is a thin
-*client* of the unchanged async contract — equivalent to an external caller that happens to be driven
-by a clock. Dynamic work-selection (deciding *what* to process at fire time) would be orchestration
+_client_ of the unchanged async contract — equivalent to an external caller that happens to be driven
+by a clock. Dynamic work-selection (deciding _what_ to process at fire time) would be orchestration
 and is explicitly out of scope (§8).
 
 ---
@@ -65,11 +65,11 @@ operator/orchestrator reads markers under the fire-stamped resultRef dir
 
 **Components** (each independently testable):
 
-| Unit | Responsibility | Lives in |
-|---|---|---|
-| `cron-dispatch` | read config + fire id → POST each templated envelope async; aggregate result → exit code | `packages/knative-server/src/cron-dispatch.ts` |
-| schedule + item list | **one manifest, two YAML docs:** a ConfigMap (envelope list + `sessionId`/`resultRef` templates with `__FIRE__`) and the CronJob (schedule, `concurrencyPolicy: Forbid`, downward-API Job-name env, ConfigMap mount, harness image, `serverless-harness` SA). Single `kubectl apply -f`. | `deploy/knative/leaf-cron.yaml` |
-| live gate | gated smoke: a fire dispatches the list → leaves complete; dispatcher-retry is idempotent | `deploy/knative/leaf-cron-smoke.sh` |
+| Unit                 | Responsibility                                                                                                                                                                                                                                                                           | Lives in                                       |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `cron-dispatch`      | read config + fire id → POST each templated envelope async; aggregate result → exit code                                                                                                                                                                                                 | `packages/knative-server/src/cron-dispatch.ts` |
+| schedule + item list | **one manifest, two YAML docs:** a ConfigMap (envelope list + `sessionId`/`resultRef` templates with `__FIRE__`) and the CronJob (schedule, `concurrencyPolicy: Forbid`, downward-API Job-name env, ConfigMap mount, harness image, `serverless-harness` SA). Single `kubectl apply -f`. | `deploy/knative/leaf-cron.yaml`                |
+| live gate            | gated smoke: a fire dispatches the list → leaves complete; dispatcher-retry is idempotent                                                                                                                                                                                                | `deploy/knative/leaf-cron-smoke.sh`            |
 
 **Key properties:** no new harness logic on the enqueue path (the dispatcher is a client of the
 existing contract); no Job RBAC beyond the existing `serverless-harness` ServiceAccount; the schedule
@@ -88,16 +88,24 @@ its cadence; `kubectl create job --from=cronjob/leaf-cron <name>` to fire one on
 schedule-submission API — registering schedules is the operator's `kubectl` (or the external
 orchestrator's), not a harness control plane (charter G1/G2).
 
-
 ```json
-{ "items": [
-    { "sessionId":   "nightly/__FIRE__/i1",
-      "inputsRef":   "/work/nightly/inputs/i1.json",
-      "resultRef":   "/work/nightly/__FIRE__/results/i1.json",
-      "workspaceRef":"/workspace/nightly/repo",
-      "model":       "claude-haiku-4-5" },
-    { "sessionId": "nightly/__FIRE__/i2", "inputsRef": "…/i2.json", "resultRef": "/work/nightly/__FIRE__/results/i2.json", "workspaceRef": "/workspace/nightly/repo" }
-] }
+{
+  "items": [
+    {
+      "sessionId": "nightly/__FIRE__/i1",
+      "inputsRef": "/work/nightly/inputs/i1.json",
+      "resultRef": "/work/nightly/__FIRE__/results/i1.json",
+      "workspaceRef": "/workspace/nightly/repo",
+      "model": "claude-haiku-4-5"
+    },
+    {
+      "sessionId": "nightly/__FIRE__/i2",
+      "inputsRef": "…/i2.json",
+      "resultRef": "/work/nightly/__FIRE__/results/i2.json",
+      "workspaceRef": "/workspace/nightly/repo"
+    }
+  ]
+}
 ```
 
 - `__FIRE__` is the only template token; the dispatcher replaces it (every occurrence, in every
@@ -113,7 +121,7 @@ The **fire id** is the dispatcher pod's owning **Job name**, read via the downwa
 
 - **Unique per scheduled fire:** the CronJob names each Job `…-<unix-scheduled-time>`.
 - **Stable across a Job's pod retries:** if the dispatcher pod fails and `backoffLimit` restarts it,
-  the new pod is under the *same* Job → same fire id → re-POSTs the *same* `sessionId`s.
+  the new pod is under the _same_ Job → same fire id → re-POSTs the _same_ `sessionId`s.
 
 ### 3.3 Idempotency & delivery semantics
 
@@ -124,7 +132,7 @@ The **fire id** is the dispatcher pod's owning **Job name**, read via the downwa
   **resumes/overwrites** rather than duplicating — at-least-once dispatch with effectively-once
   outcome, consistent with [async §3.5](2026-06-27-async-leaf-completion-design.md) and MVP §2.4.
 - `concurrencyPolicy: Forbid` prevents two dispatcher Jobs for the same CronJob overlapping (a slow
-  fire won't be double-started by the next tick). Leaf executions across *different* fires may
+  fire won't be double-started by the next tick). Leaf executions across _different_ fires may
   overlap freely — they are distinct `sessionId`s.
 
 ### 3.4 Dispatcher result → exit code
@@ -141,12 +149,12 @@ malformed envelope, which the dispatcher surfaces as a failed fire.
 ## 4. Why a CronJob, not the KEDA cron scaler
 
 The async design noted "KEDA's cron scaler is the on-ramp." On implementation that is the wrong
-primitive: KEDA's `cron` scaler is **window-based** — it scales a workload's replicas *up between* a
+primitive: KEDA's `cron` scaler is **window-based** — it scales a workload's replicas _up between_ a
 `start`/`end` cron pair and back down after, intended for "keep N replicas warm during business
 hours." It does not model a **discrete fire at time T**, and on a `ScaledJob` it would spawn jobs
 continuously across the active window. The native Kubernetes **`CronJob`** is the correct discrete
-scheduler. KEDA remains the right tool for the *queue* half (already in use for the `ScaledJob`); the
-*schedule* half is a `CronJob`. This supersedes the async spec's passing note.
+scheduler. KEDA remains the right tool for the _queue_ half (already in use for the `ScaledJob`); the
+_schedule_ half is a `CronJob`. This supersedes the async spec's passing note.
 
 ---
 
@@ -170,6 +178,7 @@ The dispatcher POSTs to the Knative service over cluster-internal networking:
 ### 6.1 Unit (vitest, pure — injected `fetch`, no cluster)
 
 `cron-dispatch`:
+
 - each config item is POSTed exactly once to `/runs` with `async:true`;
 - `__FIRE__` is substituted with the fire id in `sessionId` **and** `resultRef` (and any other field
   containing it); non-templated fields pass through verbatim;
@@ -232,4 +241,4 @@ out here so the harness performs no work-selection.
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

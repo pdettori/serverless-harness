@@ -1,8 +1,8 @@
-import { isAbsolute, resolve as resolvePath } from "node:path";
-import { createGrepTool } from "@earendil-works/pi-coding-agent";
-import type { K8sSandboxConfig } from "./config.js";
-import type { ExecInPod } from "./exec.js";
-import { mapPath, shQuote } from "./paths.js";
+import { isAbsolute, resolve as resolvePath } from 'node:path';
+import { createGrepTool } from '@earendil-works/pi-coding-agent';
+import type { K8sSandboxConfig } from './config.js';
+import type { ExecInPod } from './exec.js';
+import { mapPath, shQuote } from './paths.js';
 
 /**
  * grep cannot be routed via GrepOperations because Pi's grep always spawns a
@@ -19,25 +19,25 @@ export function createPodGrepTool(
   return {
     ...base,
     async execute(_id: string, params: Record<string, unknown>, signal?: AbortSignal) {
-      const pattern = String(params.pattern ?? "");
-      const searchDir = typeof params.path === "string" ? params.path : ".";
-      const glob = typeof params.glob === "string" ? params.glob : undefined;
+      const pattern = String(params.pattern ?? '');
+      const searchDir = typeof params.path === 'string' ? params.path : '.';
+      const glob = typeof params.glob === 'string' ? params.glob : undefined;
       const ignoreCase = params.ignoreCase === true;
       const literal = params.literal === true;
-      const context = typeof params.context === "number" ? params.context : 0;
+      const context = typeof params.context === 'number' ? params.context : 0;
 
       const headPath = isAbsolute(searchDir) ? searchDir : resolvePath(localCwd, searchDir);
       const podPath = mapPath(headPath, cfg.headCwd, cfg.podCwd);
 
-      const parts = ["rg", "--line-number", "--no-heading", "--color=never", "--hidden"];
-      if (ignoreCase) parts.push("--ignore-case");
-      if (literal) parts.push("--fixed-strings");
-      if (context > 0) parts.push("--context", String(context));
-      if (glob) parts.push("--glob", shQuote(glob));
-      parts.push("--", shQuote(pattern), shQuote(podPath));
+      const parts = ['rg', '--line-number', '--no-heading', '--color=never', '--hidden'];
+      if (ignoreCase) parts.push('--ignore-case');
+      if (literal) parts.push('--fixed-strings');
+      if (context > 0) parts.push('--context', String(context));
+      if (glob) parts.push('--glob', shQuote(glob));
+      parts.push('--', shQuote(pattern), shQuote(podPath));
 
       const streamed: Buffer[] = [];
-      const r = await exec(parts.join(" "), {
+      const r = await exec(parts.join(' '), {
         signal,
         onData: (chunk) => streamed.push(chunk),
       });
@@ -49,14 +49,20 @@ export function createPodGrepTool(
       }
       if (r.exitCode !== 0 && r.exitCode !== 1) {
         const detail = Buffer.concat(streamed).toString().trim();
-        throw new Error(`rg failed in pod (exit ${r.exitCode})${detail ? `: ${detail}` : ""}`);
+        throw new Error(`rg failed in pod (exit ${r.exitCode})${detail ? `: ${detail}` : ''}`);
       }
       const text = r.stdout.toString();
       // rg exits 1 with no output when there are no matches.
-      if (r.exitCode === 1 && text.trim() === "") {
-        return { content: [{ type: "text" as const, text: "No matches found" }], details: undefined };
+      if (r.exitCode === 1 && text.trim() === '') {
+        return {
+          content: [{ type: 'text' as const, text: 'No matches found' }],
+          details: undefined,
+        };
       }
-      return { content: [{ type: "text" as const, text: text.length ? text : "No matches found" }], details: undefined };
+      return {
+        content: [{ type: 'text' as const, text: text.length ? text : 'No matches found' }],
+        details: undefined,
+      };
     },
   } as ReturnType<typeof createGrepTool>;
 }

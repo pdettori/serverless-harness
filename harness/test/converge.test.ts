@@ -1,143 +1,161 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from 'vitest';
 import {
-  leafWorkspaceRef, buildConvergeScript, buildCleanupScript, convergeWorkspace,
-  buildDiffCaptureScript, captureWorkspaceDiff,
-} from "../src/converge.js";
+  leafWorkspaceRef,
+  buildConvergeScript,
+  buildCleanupScript,
+  convergeWorkspace,
+  buildDiffCaptureScript,
+  captureWorkspaceDiff,
+} from '../src/converge.js';
 
-describe("leafWorkspaceRef", () => {
-  it("is /workspace/leaves/<runId>", () => {
-    expect(leafWorkspaceRef("run-a-item-1")).toBe("/workspace/leaves/run-a-item-1");
+describe('leafWorkspaceRef', () => {
+  it('is /workspace/leaves/<runId>', () => {
+    expect(leafWorkspaceRef('run-a-item-1')).toBe('/workspace/leaves/run-a-item-1');
   });
 });
 
-describe("buildConvergeScript", () => {
-  const s = buildConvergeScript("https://git.example/r.git", "abc123", "leaf-1");
+describe('buildConvergeScript', () => {
+  const s = buildConvergeScript('https://git.example/r.git', 'abc123', 'leaf-1');
   it("fetches the per-leaf repoUrl+ref explicitly (never a fixed 'origin')", () => {
     // #67: fetch must target the URL from this leaf's envelope, so one pooled
     // sandbox can serve many repos. It must NOT fetch a fixed `origin`.
     expect(s).toContain("fetch --quiet 'https://git.example/r.git' 'abc123'");
-    expect(s).not.toContain("fetch --quiet origin");
+    expect(s).not.toContain('fetch --quiet origin');
     // No `git clone` — init+fetch replaces it (clone binds origin to the first URL).
-    expect(s).not.toContain("git clone");
+    expect(s).not.toContain('git clone');
   });
-  it("does init+fetch inside the flocked subshell (no clone race)", () => {
+  it('does init+fetch inside the flocked subshell (no clone race)', () => {
     // #67 defect 2: the whole init+fetch must run under the flock, in order:
     // flock → init → fetch → close the lock fd.
     expect(s).toMatch(/flock 9[\s\S]*git init[\s\S]*fetch[\s\S]*9>"\$LOCK"/);
   });
-  it("self-heals a missing or corrupt repo (init under lock, retry on fetch failure)", () => {
+  it('self-heals a missing or corrupt repo (init under lock, retry on fetch failure)', () => {
     // Missing/non-git /workspace/repo → rm -rf + git init (closes #59).
     expect(s).toContain('[ -d "$REPO/.git" ] || { rm -rf "$REPO"; git init');
     // A failed fetch (e.g. corrupt .git) re-inits and fetches once more.
     expect(s).toMatch(/fetch --quiet '[^']*' '[^']*' \|\| \{ rm -rf "\$REPO"; git init/);
   });
-  it("adds a per-leaf worktree at the fetched commit and prints the path", () => {
-    expect(s).toContain("worktree add");
-    expect(s).toContain("/workspace/leaves/leaf-1");
+  it('adds a per-leaf worktree at the fetched commit and prints the path', () => {
+    expect(s).toContain('worktree add');
+    expect(s).toContain('/workspace/leaves/leaf-1');
     expect(s).toContain('printf');
   });
-  it("single-quote-escapes inputs to resist injection", () => {
-    const evil = buildConvergeScript("https://x/r.git'; rm -rf /; '", "main", "leaf-1");
+  it('single-quote-escapes inputs to resist injection', () => {
+    const evil = buildConvergeScript("https://x/r.git'; rm -rf /; '", 'main', 'leaf-1');
     expect(evil).toContain(`'https://x/r.git'\\''; rm -rf /; '\\'''`);
   });
 });
 
-describe("convergeWorkspace", () => {
-  it("returns trimmed stdout as the workspace ref on success", async () => {
-    const transport = {
-      exec: async () => ({ stdout: Buffer.from("/workspace/leaves/leaf-1\n"), exitCode: 0, truncated: false }),
-      close: async () => {},
-    };
-    expect(await convergeWorkspace(transport, "u", "r", "leaf-1")).toBe("/workspace/leaves/leaf-1");
-  });
-  it("throws on non-zero exit", async () => {
-    const transport = {
-      exec: async () => ({ stdout: Buffer.from(""), exitCode: 1, truncated: false }),
-      close: async () => {},
-    };
-    await expect(convergeWorkspace(transport, "u", "r", "leaf-1")).rejects.toThrow(/converge failed/);
-  });
-  it("reports a capped converge as truncation, not a failed converge", async () => {
-    // A converge whose fetch/worktree output overruns the sandbox output cap currently
-    // surfaces as "converge failed (exit null)", which reads as a broken git command
-    // rather than output too large for the seam.
-    const transport = {
-      exec: async () => ({ stdout: Buffer.from("partial"), exitCode: null, truncated: true }),
-      close: async () => {},
-    };
-    await expect(convergeWorkspace(transport, "u", "r", "leaf-1")).rejects.toThrow(/output cap/);
-  });
-});
-
-describe("buildCleanupScript", () => {
-  it("removes the leaf worktree and prunes", () => {
-    const c = buildCleanupScript("leaf-1");
-    expect(c).toContain("worktree remove");
-    expect(c).toContain("/workspace/leaves/leaf-1");
-    expect(c).toContain("worktree prune");
-  });
-});
-
-describe("buildDiffCaptureScript", () => {
-  it("stages all edits then emits the cached diff, scoped to the leaf worktree", () => {
-    const s = buildDiffCaptureScript("run-1");
-    expect(s).toContain("/workspace/leaves/run-1");
-    expect(s).toContain('git -C "$LEAF" add -A');
-    expect(s).toContain('git -C "$LEAF" diff --cached');
-  });
-});
-
-describe("captureWorkspaceDiff", () => {
-  it("returns stdout as the patch on exit 0", async () => {
-    const transport = {
-      exec: async () => ({ stdout: Buffer.from("diff --git a/x b/x\n"), exitCode: 0, truncated: false }),
-      close: async () => {},
-    };
-    expect(await captureWorkspaceDiff(transport, "run-1")).toBe("diff --git a/x b/x\n");
-  });
-  it("throws on non-zero exit", async () => {
-    const transport = {
-      exec: async () => ({ stdout: Buffer.from(""), exitCode: 3, truncated: false }),
-      close: async () => {},
-    };
-    await expect(captureWorkspaceDiff(transport, "run-1")).rejects.toThrow(/exit 3/);
-  });
-  it("returns an empty string when the worktree has no changes (exit 0, empty stdout)", async () => {
-    const transport = {
-      exec: async () => ({ stdout: Buffer.from(""), exitCode: 0, truncated: false }),
-      close: async () => {},
-    };
-    expect(await captureWorkspaceDiff(transport, "run-1")).toBe("");
-  });
-  it("restores a trailing newline the transport stripped (patch must not end mid-line)", async () => {
-    // Some exec transports drop the trailing newline; a diff that ends mid-line is rejected by
-    // `git apply` / GNU patch, so captureWorkspaceDiff must normalize it back.
+describe('convergeWorkspace', () => {
+  it('returns trimmed stdout as the workspace ref on success', async () => {
     const transport = {
       exec: async () => ({
-        stdout: Buffer.from("diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b"),
+        stdout: Buffer.from('/workspace/leaves/leaf-1\n'),
         exitCode: 0,
         truncated: false,
       }),
       close: async () => {},
     };
-    const patch = await captureWorkspaceDiff(transport, "run-1");
-    expect(patch.endsWith("\n")).toBe(true);
-    expect(patch).toBe("diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n");
+    expect(await convergeWorkspace(transport, 'u', 'r', 'leaf-1')).toBe('/workspace/leaves/leaf-1');
   });
-  it("does not add a second newline when the patch already ends with one", async () => {
+  it('throws on non-zero exit', async () => {
     const transport = {
-      exec: async () => ({ stdout: Buffer.from("diff --git a/x b/x\n"), exitCode: 0, truncated: false }),
+      exec: async () => ({ stdout: Buffer.from(''), exitCode: 1, truncated: false }),
       close: async () => {},
     };
-    expect(await captureWorkspaceDiff(transport, "run-1")).toBe("diff --git a/x b/x\n");
+    await expect(convergeWorkspace(transport, 'u', 'r', 'leaf-1')).rejects.toThrow(
+      /converge failed/,
+    );
   });
-  it("reports a capped diff as truncation, not a failed capture", async () => {
+  it('reports a capped converge as truncation, not a failed converge', async () => {
+    // A converge whose fetch/worktree output overruns the sandbox output cap currently
+    // surfaces as "converge failed (exit null)", which reads as a broken git command
+    // rather than output too large for the seam.
+    const transport = {
+      exec: async () => ({ stdout: Buffer.from('partial'), exitCode: null, truncated: true }),
+      close: async () => {},
+    };
+    await expect(convergeWorkspace(transport, 'u', 'r', 'leaf-1')).rejects.toThrow(/output cap/);
+  });
+});
+
+describe('buildCleanupScript', () => {
+  it('removes the leaf worktree and prunes', () => {
+    const c = buildCleanupScript('leaf-1');
+    expect(c).toContain('worktree remove');
+    expect(c).toContain('/workspace/leaves/leaf-1');
+    expect(c).toContain('worktree prune');
+  });
+});
+
+describe('buildDiffCaptureScript', () => {
+  it('stages all edits then emits the cached diff, scoped to the leaf worktree', () => {
+    const s = buildDiffCaptureScript('run-1');
+    expect(s).toContain('/workspace/leaves/run-1');
+    expect(s).toContain('git -C "$LEAF" add -A');
+    expect(s).toContain('git -C "$LEAF" diff --cached');
+  });
+});
+
+describe('captureWorkspaceDiff', () => {
+  it('returns stdout as the patch on exit 0', async () => {
+    const transport = {
+      exec: async () => ({
+        stdout: Buffer.from('diff --git a/x b/x\n'),
+        exitCode: 0,
+        truncated: false,
+      }),
+      close: async () => {},
+    };
+    expect(await captureWorkspaceDiff(transport, 'run-1')).toBe('diff --git a/x b/x\n');
+  });
+  it('throws on non-zero exit', async () => {
+    const transport = {
+      exec: async () => ({ stdout: Buffer.from(''), exitCode: 3, truncated: false }),
+      close: async () => {},
+    };
+    await expect(captureWorkspaceDiff(transport, 'run-1')).rejects.toThrow(/exit 3/);
+  });
+  it('returns an empty string when the worktree has no changes (exit 0, empty stdout)', async () => {
+    const transport = {
+      exec: async () => ({ stdout: Buffer.from(''), exitCode: 0, truncated: false }),
+      close: async () => {},
+    };
+    expect(await captureWorkspaceDiff(transport, 'run-1')).toBe('');
+  });
+  it('restores a trailing newline the transport stripped (patch must not end mid-line)', async () => {
+    // Some exec transports drop the trailing newline; a diff that ends mid-line is rejected by
+    // `git apply` / GNU patch, so captureWorkspaceDiff must normalize it back.
+    const transport = {
+      exec: async () => ({
+        stdout: Buffer.from('diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b'),
+        exitCode: 0,
+        truncated: false,
+      }),
+      close: async () => {},
+    };
+    const patch = await captureWorkspaceDiff(transport, 'run-1');
+    expect(patch.endsWith('\n')).toBe(true);
+    expect(patch).toBe('diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n');
+  });
+  it('does not add a second newline when the patch already ends with one', async () => {
+    const transport = {
+      exec: async () => ({
+        stdout: Buffer.from('diff --git a/x b/x\n'),
+        exitCode: 0,
+        truncated: false,
+      }),
+      close: async () => {},
+    };
+    expect(await captureWorkspaceDiff(transport, 'run-1')).toBe('diff --git a/x b/x\n');
+  });
+  it('reports a capped diff as truncation, not a failed capture', async () => {
     // A >8 MiB diff currently surfaces as "diff capture failed (exit null)", which reads
     // as a broken git command rather than a diff too large for the seam.
     const transport = {
-      exec: async () => ({ stdout: Buffer.from("partial"), exitCode: null, truncated: true }),
+      exec: async () => ({ stdout: Buffer.from('partial'), exitCode: null, truncated: true }),
       close: async () => {},
     };
-    await expect(captureWorkspaceDiff(transport, "run-1")).rejects.toThrow(/output cap/);
+    await expect(captureWorkspaceDiff(transport, 'run-1')).rejects.toThrow(/output cap/);
   });
 });

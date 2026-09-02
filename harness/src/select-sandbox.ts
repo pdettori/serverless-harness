@@ -1,4 +1,4 @@
-import { credentials } from "@grpc/grpc-js";
+import { credentials } from '@grpc/grpc-js';
 import {
   listPoolPods,
   resolveSandboxConfig,
@@ -8,9 +8,9 @@ import {
   type K8sSandboxConfig,
   type SandboxTransport,
   type ExecClientLike,
-} from "@sh/k8s-sandbox";
-import { RedisLeaseStore, type LeaseStore } from "./sandbox-lease.js";
-import { RedisRecordStore, type RecordStore, type SandboxRecord } from "./pool-records.js";
+} from '@sh/k8s-sandbox';
+import { RedisLeaseStore, type LeaseStore } from './sandbox-lease.js';
+import { RedisRecordStore, type RecordStore, type SandboxRecord } from './pool-records.js';
 
 /** Pure: pods ordered ascending by active load (stable — ties keep input order). */
 export function orderByLoad(loads: { pod: string; active: number }[]): string[] {
@@ -24,7 +24,7 @@ export function orderByLoad(loads: { pod: string; active: number }[]): string[] 
 export class SandboxPoolSaturatedError extends Error {
   constructor(selector: string) {
     super(`sandbox pool '${selector}' saturated: all pods at capacity`);
-    this.name = "SandboxPoolSaturatedError";
+    this.name = 'SandboxPoolSaturatedError';
   }
 }
 
@@ -37,7 +37,12 @@ export interface SelectedSandbox {
 }
 
 export interface SelectDeps {
-  listPods?: (selector: string, namespace: string, context?: string, run?: RunKubectl) => Promise<string[]>;
+  listPods?: (
+    selector: string,
+    namespace: string,
+    context?: string,
+    run?: RunKubectl,
+  ) => Promise<string[]>;
   lease?: LeaseStore;
   run?: RunKubectl;
   /** Mirrored grpc presence records; defaults to a RedisRecordStore. Only consulted when opts.remoteSandbox is true. */
@@ -48,7 +53,7 @@ export interface SelectDeps {
 
 /** Lazily builds a real gRPC exec client — only reached on the grpc branch when the flag is on. */
 function defaultExecClient(_sandboxId: string, env: NodeJS.ProcessEnv): ExecClientLike {
-  const addr = env.SH_RELAY_ADDR ?? "sandbox-relay.default.svc.cluster.local:8443";
+  const addr = env.SH_RELAY_ADDR ?? 'sandbox-relay.default.svc.cluster.local:8443';
   return new SandboxExecClient(addr, credentials.createInsecure()) as unknown as ExecClientLike;
 }
 
@@ -73,9 +78,9 @@ export async function selectPoolSandbox(
     return config ? { config, heartbeat: async () => {}, release: async () => {} } : null;
   }
 
-  const namespace = env.KAGENTI_SANDBOX_NAMESPACE ?? "default";
+  const namespace = env.KAGENTI_SANDBOX_NAMESPACE ?? 'default';
   const context = env.KAGENTI_SANDBOX_CONTEXT || undefined;
-  const podCwd = env.KAGENTI_SANDBOX_CWD ?? "/workspace";
+  const podCwd = env.KAGENTI_SANDBOX_CWD ?? '/workspace';
   const list = deps.listPods ?? listPoolPods;
   const lease = deps.lease ?? new RedisLeaseStore(env.REDIS_URL);
 
@@ -103,13 +108,18 @@ export async function selectPoolSandbox(
   const candidates = [...pods, ...grpcRecs.map((r) => r.sandboxId)];
   if (candidates.length === 0) throw new Error(`no Running pods for pool selector '${selector}'`);
 
-  const loads = await Promise.all(candidates.map(async (name) => ({ pod: name, active: await lease.load(name) })));
+  const loads = await Promise.all(
+    candidates.map(async (name) => ({ pod: name, active: await lease.load(name) })),
+  );
   for (const name of orderByLoad(loads)) {
     if (await lease.acquire(name, opts.cap, runId, opts.ttlMs)) {
       const config: K8sSandboxConfig = { pod: name, namespace, context, podCwd, headCwd };
       const rec = grpcById.get(name);
       const transport = rec
-        ? GrpcRelayTransport(name, (deps.makeExecClient ?? ((id: string) => defaultExecClient(id, env)))(name))
+        ? GrpcRelayTransport(
+            name,
+            (deps.makeExecClient ?? ((id: string) => defaultExecClient(id, env)))(name),
+          )
         : undefined;
       return {
         config,

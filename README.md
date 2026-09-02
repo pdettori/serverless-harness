@@ -2,7 +2,7 @@
 
 **Run stateful AI coding agents serverless — scale to zero between turns, resume exactly where they left off.**
 
-![status](https://img.shields.io/badge/status-MVP%20(Phase%201)-success)
+![status](<https://img.shields.io/badge/status-MVP%20(Phase%201)-success>)
 ![platform](https://img.shields.io/badge/platform-Knative%20%2B%20KEDA-blue)
 ![runtime](https://img.shields.io/badge/runtime-Pi%20coding%20agent-informational)
 ![node](https://img.shields.io/badge/node-22%2B-green)
@@ -40,13 +40,13 @@ rest.
 
 ## Why
 
-| Persistent agent | Serverless Harness |
-|------------------|--------------------|
-| Process stays resident between turns | Scales to **zero** when idle, cold-starts in sub-second |
+| Persistent agent                                    | Serverless Harness                                                    |
+| --------------------------------------------------- | --------------------------------------------------------------------- |
+| Process stays resident between turns                | Scales to **zero** when idle, cold-starts in sub-second               |
 | State lives in process memory — lost on crash/evict | State lives in **Redis** — survives eviction, restart, and cold start |
-| Tools execute in the agent process | Tools execute in an **isolated sandbox pod** (brain/hands split) |
-| Idle compute billed continuously | **Only Redis + sandbox** stay resident (2 pods at rest) |
-| One invocation model | **Four**: sync, async fan-out, scheduled, human-gated |
+| Tools execute in the agent process                  | Tools execute in an **isolated sandbox pod** (brain/hands split)      |
+| Idle compute billed continuously                    | **Only Redis + sandbox** stay resident (2 pods at rest)               |
+| One invocation model                                | **Four**: sync, async fan-out, scheduled, human-gated                 |
 
 In an idle-heavy workload [experiment](deploy/knative/EXPERIMENTS.md), the serverless path consumed
 roughly **a quarter** of the pod-seconds of an equivalent always-on agent — because the expensive
@@ -68,14 +68,14 @@ flowchart LR
     R <-->|session state| Q
 ```
 
-| Component | Role |
-|-----------|------|
-| **Knative Service** | Scale-to-zero HTTP endpoint; runs a turn inline (sync) or enqueues it (async) |
-| **Redis** | Durable session state (resume by `sessionId`), work queue (Streams), gate state |
-| **KEDA ScaledJob** | Autoscales `leaf-worker` pods 0→N on queue depth (`lagCount` + `pendingEntriesCount`) |
-| **sandbox-0** | Persistent pod where all tool/code execution runs; reached via `kubectl exec` |
-| **Shared PVC** | Volume-envelope contract — inputs, results, and markers travel as files |
-| **CronJob** | Scheduled dispatch (`cron-dispatch`) for periodic batch work |
+| Component           | Role                                                                                  |
+| ------------------- | ------------------------------------------------------------------------------------- |
+| **Knative Service** | Scale-to-zero HTTP endpoint; runs a turn inline (sync) or enqueues it (async)         |
+| **Redis**           | Durable session state (resume by `sessionId`), work queue (Streams), gate state       |
+| **KEDA ScaledJob**  | Autoscales `leaf-worker` pods 0→N on queue depth (`lagCount` + `pendingEntriesCount`) |
+| **sandbox-0**       | Persistent pod where all tool/code execution runs; reached via `kubectl exec`         |
+| **Shared PVC**      | Volume-envelope contract — inputs, results, and markers travel as files               |
+| **CronJob**         | Scheduled dispatch (`cron-dispatch`) for periodic batch work                          |
 
 > **Note:** The Knative Service and the `leaf-worker` are the **same container image** with two entry
 > points (`server.ts` vs `leaf-job.ts`). Both converge on `runLeaf()`, which routes execution into
@@ -182,11 +182,11 @@ troubleshooting — is in **[`deploy/knative/README-ocp.md`](deploy/knative/READ
 
 The same backend serves three orchestration patterns, all validated end-to-end on Kind:
 
-| Archetype | Pattern | Example use case |
-|-----------|---------|------------------|
-| **A — Async fan-out** | `{async:true}` → Redis Streams → KEDA scales workers 0→N → done-markers | "Research 10 topics concurrently" |
-| **B — Human gate** | Leaf pauses → `awaiting_approval` → external verdict → resume/terminate | "Draft a clause, pause for legal sign-off, finalize" |
-| **C — Scheduled** | CronJob → `cron-dispatch` reads a config list → posts each as async | "Summarize yesterday's tickets at 02:00 daily" |
+| Archetype             | Pattern                                                                 | Example use case                                     |
+| --------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------- |
+| **A — Async fan-out** | `{async:true}` → Redis Streams → KEDA scales workers 0→N → done-markers | "Research 10 topics concurrently"                    |
+| **B — Human gate**    | Leaf pauses → `awaiting_approval` → external verdict → resume/terminate | "Draft a clause, pause for legal sign-off, finalize" |
+| **C — Scheduled**     | CronJob → `cron-dispatch` reads a config list → posts each as async     | "Summarize yesterday's tickets at 02:00 daily"       |
 
 ---
 
@@ -228,17 +228,17 @@ backend with all three dispatch archetypes. See the
 [milestone registry](docs/specs/README.md) for the source-of-truth status of every milestone.
 
 **Phase 2 — Zero-Trust Credential Plane (design complete, deferred):** a credential plane where
-*no component influenced by model output ever holds a raw secret.*
+_no component influenced by model output ever holds a raw secret._
 
-| ID | Adds |
-|----|------|
-| Z1 | Per-session SPIFFE identity (SPIRE) |
-| Z2 | Secret-free, default-deny harness lock-down |
-| Z3 | Inference injector — provider-key chokepoint, mTLS to the LLM gateway |
-| Z4 | MCP code-mode in the sandbox |
-| Z5 | Generalized credentialed egress (sandbox forward proxy) |
-| Z6 | Subagents as isolated child sessions |
-| Z7 | Red-team + formal validation of the credential plane |
+| ID  | Adds                                                                  |
+| --- | --------------------------------------------------------------------- |
+| Z1  | Per-session SPIFFE identity (SPIRE)                                   |
+| Z2  | Secret-free, default-deny harness lock-down                           |
+| Z3  | Inference injector — provider-key chokepoint, mTLS to the LLM gateway |
+| Z4  | MCP code-mode in the sandbox                                          |
+| Z5  | Generalized credentialed egress (sandbox forward proxy)               |
+| Z6  | Subagents as isolated child sessions                                  |
+| Z7  | Red-team + formal validation of the credential plane                  |
 
 Today the harness uses a trust-the-operator model: the model credential is a pre-provisioned
 Kubernetes Secret, there is no egress policy, and all leaves share one service-account identity. Those
@@ -258,9 +258,8 @@ gaps are exactly what Phase 2 closes.
 
 ## Status & License
 
-This is explorative work. It is an MVP — the scale-to-zero, durable-resume, sandbox-isolation, 
-and dispatch features above are built and smoke-verified; the zero-trust credential plane is 
+This is explorative work. It is an MVP — the scale-to-zero, durable-resume, sandbox-isolation,
+and dispatch features above are built and smoke-verified; the zero-trust credential plane is
 designed but not yet implemented. Interfaces may change.
 
 Licensed under the [Apache License 2.0](LICENSE).
-

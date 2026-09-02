@@ -1,5 +1,5 @@
-import { describe, expect, it, vi, afterEach } from "vitest";
-import { OUTPUT_TRUNCATED_MARKER, type SandboxTransport } from "../src/transport.js";
+import { describe, expect, it, vi, afterEach } from 'vitest';
+import { OUTPUT_TRUNCATED_MARKER, type SandboxTransport } from '../src/transport.js';
 
 /**
  * A scripted sandbox backend, transport-agnostic. Each transport's conformance
@@ -38,7 +38,7 @@ export interface FakeBehavior {
  *                         a regression that deletes the stop fails loudly instead of
  *                         silently reporting `true`.
  */
-export type ProducerStop = "remote-abort" | "local-kill" | "producer-side-cap" | "none";
+export type ProducerStop = 'remote-abort' | 'local-kill' | 'producer-side-cap' | 'none';
 
 /** What a transport declares about itself to the battery. */
 export interface TransportCapabilities {
@@ -84,47 +84,47 @@ export function runConformance(
   afterEach(() => vi.useRealTimers());
 
   describe(`SandboxTransport conformance: ${label}`, () => {
-    it("returns collected stdout and the exit code", async () => {
-      const { transport } = make({ stdout: ["foo", "bar"], exitCode: 0 });
-      const r = await transport.exec("echo hi");
-      expect(r.stdout.toString()).toBe("foobar");
+    it('returns collected stdout and the exit code', async () => {
+      const { transport } = make({ stdout: ['foo', 'bar'], exitCode: 0 });
+      const r = await transport.exec('echo hi');
+      expect(r.stdout.toString()).toBe('foobar');
       expect(r.exitCode).toBe(0);
       expect(r.truncated).toBe(false); // an untruncated exec must say so explicitly
     });
 
     it.skipIf(!caps.streams)(
-      "streams stdout and stderr to onData; stderr is excluded from stdout",
+      'streams stdout and stderr to onData; stderr is excluded from stdout',
       async () => {
-        const { transport } = make({ stdout: ["out"], stderr: ["err"], exitCode: 0 });
+        const { transport } = make({ stdout: ['out'], stderr: ['err'], exitCode: 0 });
         const chunks: string[] = [];
-        const r = await transport.exec("cmd", { onData: (c) => chunks.push(c.toString()) });
-        expect(r.stdout.toString()).toBe("out"); // stderr NOT collected
-        expect(chunks).toContain("out");
-        expect(chunks).toContain("err"); // stderr streamed
+        const r = await transport.exec('cmd', { onData: (c) => chunks.push(c.toString()) });
+        expect(r.stdout.toString()).toBe('out'); // stderr NOT collected
+        expect(chunks).toContain('out');
+        expect(chunks).toContain('err'); // stderr streamed
       },
     );
 
-    it("forwards stdin to the backend", async () => {
+    it('forwards stdin to the backend', async () => {
       const { transport, stdinSeen } = make({ stdout: [], exitCode: 0 });
-      await transport.exec("base64 -d", { stdin: Buffer.from("payload") });
-      expect(stdinSeen()?.toString()).toBe("payload");
+      await transport.exec('base64 -d', { stdin: Buffer.from('payload') });
+      expect(stdinSeen()?.toString()).toBe('payload');
     });
 
-    it("propagates a non-zero exit code", async () => {
+    it('propagates a non-zero exit code', async () => {
       const { transport } = make({ stdout: [], exitCode: 3 });
-      const r = await transport.exec("false");
+      const r = await transport.exec('false');
       expect(r.exitCode).toBe(3);
     });
 
-    it("caps returned stdout, appends the truncation marker, and stops collecting", async () => {
+    it('caps returned stdout, appends the truncation marker, and stops collecting', async () => {
       // All three transports advertise a total-output-per-exec cap (spec §8): the
       // concrete mitigation for a hostile sandbox flooding the model's context. A cap on
       // fewer than all transports is a divergence in the seam, not an implementation detail.
-      const handle = make({ stdout: ["aaaa", "bbbb", "cccc"], exitCode: 0 }, { outputCapBytes: 6 });
-      const r = await handle.transport.exec("cat big");
+      const handle = make({ stdout: ['aaaa', 'bbbb', 'cccc'], exitCode: 0 }, { outputCapBytes: 6 });
+      const r = await handle.transport.exec('cat big');
       const s = r.stdout.toString();
       expect(s).toContain(OUTPUT_TRUNCATED_MARKER);
-      expect(s).not.toContain("cccc"); // collection stopped at the cap
+      expect(s).not.toContain('cccc'); // collection stopped at the cap
       expect(r.exitCode).toBeNull(); // the exec was cut short, so there is no real exit code
       // The seam represents truncation explicitly rather than overloading a null exit
       // code, which also means "signalled, no status" (spec §3.1). Callers cannot tell
@@ -139,23 +139,23 @@ export function runConformance(
       expect(handle.producerStop()).toBe(caps.producerStop);
     });
 
-    it("does not flag output that lands exactly on the cap", async () => {
+    it('does not flag output that lands exactly on the cap', async () => {
       // The boundary is `> cap`, not `>= cap`. Output that lands exactly on the cap is
       // COMPLETE and must not be reported as truncated — otherwise every read of a
       // cap-sized file would fail. The over-cap case above pins the other side.
-      const { transport } = make({ stdout: ["aaaa", "bb"], exitCode: 0 }, { outputCapBytes: 6 });
-      const r = await transport.exec("cat exactly-at-cap");
+      const { transport } = make({ stdout: ['aaaa', 'bb'], exitCode: 0 }, { outputCapBytes: 6 });
+      const r = await transport.exec('cat exactly-at-cap');
       expect(r.truncated).toBe(false);
       expect(r.exitCode).toBe(0);
-      expect(r.stdout.toString()).toBe("aaaabb");
+      expect(r.stdout.toString()).toBe('aaaabb');
       expect(r.stdout.toString()).not.toContain(OUTPUT_TRUNCATED_MARKER);
     });
 
-    it("rejects with timeout:<n> when the command exceeds the timeout", async () => {
+    it('rejects with timeout:<n> when the command exceeds the timeout', async () => {
       vi.useFakeTimers();
       const { transport } = make({ hang: true });
-      const p = transport.exec("sleep 999", { timeout: 2 });
-      const assertion = expect(p).rejects.toThrow("timeout:2");
+      const p = transport.exec('sleep 999', { timeout: 2 });
+      const assertion = expect(p).rejects.toThrow('timeout:2');
       await vi.advanceTimersByTimeAsync(2000);
       await assertion;
     });
@@ -163,12 +163,12 @@ export function runConformance(
     it("rejects with 'aborted' when the signal fires", async () => {
       const { transport } = make({ hang: true });
       const ac = new AbortController();
-      const p = transport.exec("sleep 999", { signal: ac.signal });
+      const p = transport.exec('sleep 999', { signal: ac.signal });
       ac.abort();
-      await expect(p).rejects.toThrow("aborted");
+      await expect(p).rejects.toThrow('aborted');
     });
 
-    it("close() resolves and is idempotent", async () => {
+    it('close() resolves and is idempotent', async () => {
       const { transport } = make({ stdout: [], exitCode: 0 });
       await expect(transport.close()).resolves.toBeUndefined();
       await expect(transport.close()).resolves.toBeUndefined();

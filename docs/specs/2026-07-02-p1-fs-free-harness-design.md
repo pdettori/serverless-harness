@@ -38,7 +38,7 @@ harness does network I/O only** (LLM, Redis, sandbox exec API). Today the harnes
 
 Because the harness and the async worker both read/write the same `/work` PVC, and (in the epic's
 target) many harness pods would share it across nodes, this file coupling is what forces cross-node
-**RWX** on OpenShift. The OCP RWX pain is a *symptom*; the root cause is harness filesystem I/O.
+**RWX** on OpenShift. The OCP RWX pain is a _symptom_; the root cause is harness filesystem I/O.
 
 P1 removes that I/O. Once the envelope and markers are inline-or-Redis and the working set is on the
 sandbox's own durable volume, the harness (Service **and** async worker) mounts **no shared writable
@@ -57,7 +57,7 @@ a Redis key changes nothing about integrity. P1 is an FS-surface reduction, not 
 
 No live external consumer exists (the in-repo callers — `cron-dispatch.ts`, the smoke drivers — are
 updated in the same change; the planned BugStone Archetype-A consumer is designed but unbuilt). A
-transitional "accept both shapes" is not available *to the harness*: honoring the old
+transitional "accept both shapes" is not available _to the harness_: honoring the old
 `inputsRef`/`resultRef` fields would require keeping the `/work` mount, defeating P1. So the file
 paths are removed outright.
 
@@ -70,20 +70,21 @@ process, so it does not violate FS-free.
 
 ```jsonc
 {
-  "sessionId": "run-123/i1",         // correlation + idempotency key (unchanged)
-  "item": {                          // NEW — was the JSON body of the inputsRef file
+  "sessionId": "run-123/i1", // correlation + idempotency key (unchanged)
+  "item": {
+    // NEW — was the JSON body of the inputsRef file
     "item_id": "i1",
-    "file": "src/foo.ts",            // relative to workspaceRef, resolved in the sandbox
+    "file": "src/foo.ts", // relative to workspaceRef, resolved in the sandbox
     "pattern": "eval(",
-    "require_approval": false
+    "require_approval": false,
   },
-  "decision": { "gateId": 1, "action": "approve" },  // NEW, resume/approve only — was the decisionRef file
-  "model": "claude-haiku-4-5",       // unchanged optionals
+  "decision": { "gateId": 1, "action": "approve" }, // NEW, resume/approve only — was the decisionRef file
+  "model": "claude-haiku-4-5", // unchanged optionals
   "provider": "anthropic",
-  "workspaceRef": "/workspace/run-123/repo",         // absolute path INSIDE the sandbox (unchanged)
+  "workspaceRef": "/workspace/run-123/repo", // absolute path INSIDE the sandbox (unchanged)
   "maxTurns": 20,
   "async": false,
-  "tenant": "team1"
+  "tenant": "team1",
 }
 ```
 
@@ -143,7 +144,7 @@ same record.
 ```
 
 - **Write:** `SET leaf:result:<id> <json> EX <ttl>` — value + expiry in one call.
-  - **Sync path:** the HTTP layer writes the record *and* returns the union, so a sync result is also
+  - **Sync path:** the HTTP layer writes the record _and_ returns the union, so a sync result is also
     queryable via `/runs/status` for the TTL window (matches today, where the sync verdict file was
     also readable).
   - **Async path:** the worker (`leaf-job-runner.ts`) writes the record instead of
@@ -152,7 +153,7 @@ same record.
   cleanup — records self-expire, no unbounded growth. A `paused` record carries the same TTL and is
   overwritten (fresh TTL) on approve/resume, so a long human-gate wait is bounded by the TTL; set it
   higher for long gates (documented caveat).
-- **Concurrency:** single writer per `sessionId` in practice (one sync request *or* one queue
+- **Concurrency:** single writer per `sessionId` in practice (one sync request _or_ one queue
   consumer owns a leaf at a time — the work-queue `claim` guarantees a single in-flight consumer), so
   last-write-wins is safe; no CAS at P1.
 
@@ -192,12 +193,12 @@ survives restarts," explicitly as an alternative to a size-1 StatefulSet, and it
 apiVersion: agents.x-k8s.io/v1alpha1
 kind: Sandbox
 metadata:
-  name: sandbox-0                 # the name is the config handle now (see §6.2)
+  name: sandbox-0 # the name is the config handle now (see §6.2)
 spec:
-  volumeClaimTemplates:           # durable working set (survives pod restart)
+  volumeClaimTemplates: # durable working set (survives pod restart)
     - metadata: { name: workspace }
       spec:
-        accessModes: ["ReadWriteOnce"]           # RWO fine at P1 (single sandbox)
+        accessModes: ['ReadWriteOnce'] # RWO fine at P1 (single sandbox)
         resources: { requests: { storage: 1Gi } }
   podTemplate:
     spec:
@@ -205,7 +206,7 @@ spec:
         - name: sandbox
           image: <sandbox-image>
           volumeMounts:
-            - { name: workspace, mountPath: /workspace }   # durable, was emptyDir
+            - { name: workspace, mountPath: /workspace } # durable, was emptyDir
 ```
 
 ### 6.2 Harness exec resolution — `@sh/k8s-sandbox`
@@ -218,8 +219,8 @@ the pod from a **label selector**, authoritatively, from the CR's own status:
 - Config becomes **Sandbox name + namespace**: `KAGENTI_SANDBOX_NAME` (+ existing
   `KAGENTI_SANDBOX_NAMESPACE`). `KAGENTI_SANDBOX_POD` is still honored as a fallback so nothing breaks
   mid-migration; if set, it short-circuits resolution.
-- Resolution: read `Sandbox/<name>` `.status.selector` (the CRD documents it as *"the label selector
-  for pods"*), then `kubectl get pod -l <selector> -o jsonpath='{.items[0].metadata.name}'` → pod
+- Resolution: read `Sandbox/<name>` `.status.selector` (the CRD documents it as _"the label selector
+  for pods"_), then `kubectl get pod -l <selector> -o jsonpath='{.items[0].metadata.name}'` → pod
   name → the existing `kubectl exec` path is otherwise unchanged.
 - **When** it resolves: once **per leaf-session**, at extension init. The k8s-sandbox extension
   factory is synchronous, so the pod name is resolved in the async `runLeaf`/`runTurn` setup and the
@@ -284,12 +285,12 @@ the pod from a **label selector**, authoritatively, from the CR's own status:
 
 ## 10. Acceptance mapping (issue #45)
 
-| Acceptance | Met by |
-|---|---|
-| Harness/worker mount no shared writable volume; red-team grep finds no `/work` mount and no `writeFileSync` in the envelope path | §7 deploy edits + §9 red-team grep |
-| `leaf-smoke.sh` passes with inputs inline + verdict from response/Redis; Claim 0 still holds | §3, §8 driver rewrite |
-| Async path drains via Redis; verdict retrievable via `/runs/status` | §4 worker writes `leaf:result:*`; §3.4 status reads it |
-| Sandbox repo survives a sandbox pod restart (durable PVC) | §6.1 `volumeClaimTemplates` + §9 durability smoke |
+| Acceptance                                                                                                                       | Met by                                                 |
+| -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Harness/worker mount no shared writable volume; red-team grep finds no `/work` mount and no `writeFileSync` in the envelope path | §7 deploy edits + §9 red-team grep                     |
+| `leaf-smoke.sh` passes with inputs inline + verdict from response/Redis; Claim 0 still holds                                     | §3, §8 driver rewrite                                  |
+| Async path drains via Redis; verdict retrievable via `/runs/status`                                                              | §4 worker writes `leaf:result:*`; §3.4 status reads it |
+| Sandbox repo survives a sandbox pod restart (durable PVC)                                                                        | §6.1 `volumeClaimTemplates` + §9 durability smoke      |
 
 ## 11. Non-goals (this phase)
 
@@ -311,4 +312,4 @@ deliverable (P0′ — manifests here are written OCP-aware, but the cutover is 
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

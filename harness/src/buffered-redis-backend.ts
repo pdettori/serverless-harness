@@ -1,5 +1,5 @@
-import type { FileEntry, SessionStorageBackend } from "@earendil-works/pi-coding-agent";
-import type { LogStore } from "@sh/session-backend";
+import type { FileEntry, SessionStorageBackend } from '@earendil-works/pi-coding-agent';
+import type { LogStore } from '@sh/session-backend';
 
 /**
  * Write-behind decorator adapting a generic LogStore to Pi's SessionStorageBackend.
@@ -42,7 +42,7 @@ export class BufferedRedisBackend implements SessionStorageBackend {
   async latestCheckpoint(sessionId: string): Promise<FileEntry | null> {
     const row = await this.store.latestWhere(
       sessionId,
-      (e) => e.type === "custom" && (e as { customType?: string }).customType === "checkpoint",
+      (e) => e.type === 'custom' && (e as { customType?: string }).customType === 'checkpoint',
     );
     return row ? row.entry : null;
   }

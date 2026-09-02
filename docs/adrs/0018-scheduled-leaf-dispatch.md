@@ -31,4 +31,4 @@ ConfigMap-defined static envelope list, substitutes the fire id (its owning Job 
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

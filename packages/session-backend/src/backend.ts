@@ -1,5 +1,5 @@
 // packages/session-backend/src/backend.ts
-import type { StoredEntry } from "./entry";
+import type { StoredEntry } from './entry';
 
 /**
  * Generic append-only log store. Entry-agnostic: stores opaque `E` records keyed

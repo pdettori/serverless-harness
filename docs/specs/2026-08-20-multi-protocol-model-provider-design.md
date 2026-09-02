@@ -40,11 +40,11 @@ is a small, bounded generalization of the harness wrapper — not per-model spec
 
 Three places hardcode the Anthropic protocol; each is a dispatch point in the new design.
 
-| Seam | File | Coupling |
-|---|---|---|
-| Model synthesis | `harness/src/run-turn.ts` `synthesizeCustomModel()` | Returns `Model<"anthropic-messages">`, `provider:"anthropic"`, `baseUrl = ANTHROPIC_BASE_URL` |
-| Tool-choice nudge | `harness/src/tool-choice-extension.ts` | Injects `tool_choice: { type: "auto" }` — the **Anthropic object form**. vLLM/OpenAI reject the object; they want the string `"auto"` |
-| Gateway/auth transform | `harness/src/run-turn.ts` `applyModelGateway()` | Rewrites to Bearer auth + strips `x-api-key`; seeds `ANTHROPIC_API_KEY` — Anthropic-specific |
+| Seam                   | File                                                | Coupling                                                                                                                              |
+| ---------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Model synthesis        | `harness/src/run-turn.ts` `synthesizeCustomModel()` | Returns `Model<"anthropic-messages">`, `provider:"anthropic"`, `baseUrl = ANTHROPIC_BASE_URL`                                         |
+| Tool-choice nudge      | `harness/src/tool-choice-extension.ts`              | Injects `tool_choice: { type: "auto" }` — the **Anthropic object form**. vLLM/OpenAI reject the object; they want the string `"auto"` |
+| Gateway/auth transform | `harness/src/run-turn.ts` `applyModelGateway()`     | Rewrites to Bearer auth + strips `x-api-key`; seeds `ANTHROPIC_API_KEY` — Anthropic-specific                                          |
 
 Pi's substrate already supports the target: `pi-fork/packages/ai/src/providers/openai-completions.ts`
 `createClient()` spreads `model.headers` into `defaultHeaders` and uses `model.baseUrl`; and
@@ -55,11 +55,11 @@ via a custom header and ignores the Bearer token).
 
 ## 3. The protocol landscape
 
-| `SH_MODEL_API` | Pi `api` | Endpoint | Serves |
-|---|---|---|---|
-| `anthropic` (default) | `anthropic-messages` | `/v1/messages` | Direct Anthropic, LiteLLM (Anthropic-format) |
-| `openai-completions` | `openai-completions` | `/v1/chat/completions` | RITS, vLLM, OpenAI, Azure, most OSS gateways |
-| `openai-responses` | `openai-responses` | `/v1/responses` | OpenAI, some gateways (optional; low priority) |
+| `SH_MODEL_API`        | Pi `api`             | Endpoint               | Serves                                         |
+| --------------------- | -------------------- | ---------------------- | ---------------------------------------------- |
+| `anthropic` (default) | `anthropic-messages` | `/v1/messages`         | Direct Anthropic, LiteLLM (Anthropic-format)   |
+| `openai-completions`  | `openai-completions` | `/v1/chat/completions` | RITS, vLLM, OpenAI, Azure, most OSS gateways   |
+| `openai-responses`    | `openai-responses`   | `/v1/responses`        | OpenAI, some gateways (optional; low priority) |
 
 ## 4. Design
 
@@ -71,14 +71,14 @@ versions of the two extensions.
 `SH_MODEL_CUSTOM=1` stays the master "custom endpoint" switch. A new selector chooses the protocol;
 absent, it defaults to `anthropic` (today's behavior).
 
-| Env | Meaning | Default |
-|---|---|---|
-| `SH_MODEL_API` | `anthropic` \| `openai-completions` \| `openai-responses` | `anthropic` |
-| `SH_MODEL` | served model id (used as `id` + `name`) | — (required) |
-| `SH_MODEL_BASE_URL` | endpoint base URL | falls back to `ANTHROPIC_BASE_URL` (anthropic) / `OPENAI_BASE_URL` (openai\*) for back-compat |
-| `SH_MODEL_HEADERS` | JSON object of extra request headers, e.g. `{"RITS_API_KEY":"${RITS_API_KEY}"}`. String values support `${VAR}` interpolation from env, so a secret value flows in via a secretKeyRef env (no inline literal) | `{}` |
-| `SH_MODEL_AUTH` | `bearer` \| `custom-header` \| `none` — how the endpoint authenticates | `bearer` |
-| `SH_MODEL_CONTEXT_WINDOW` / `SH_MODEL_MAX_TOKENS` / `SH_MODEL_PROVIDER` | existing knobs, unchanged | 131072 / 8192 / per-protocol |
+| Env                                                                     | Meaning                                                                                                                                                                                                       | Default                                                                                       |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `SH_MODEL_API`                                                          | `anthropic` \| `openai-completions` \| `openai-responses`                                                                                                                                                     | `anthropic`                                                                                   |
+| `SH_MODEL`                                                              | served model id (used as `id` + `name`)                                                                                                                                                                       | — (required)                                                                                  |
+| `SH_MODEL_BASE_URL`                                                     | endpoint base URL                                                                                                                                                                                             | falls back to `ANTHROPIC_BASE_URL` (anthropic) / `OPENAI_BASE_URL` (openai\*) for back-compat |
+| `SH_MODEL_HEADERS`                                                      | JSON object of extra request headers, e.g. `{"RITS_API_KEY":"${RITS_API_KEY}"}`. String values support `${VAR}` interpolation from env, so a secret value flows in via a secretKeyRef env (no inline literal) | `{}`                                                                                          |
+| `SH_MODEL_AUTH`                                                         | `bearer` \| `custom-header` \| `none` — how the endpoint authenticates                                                                                                                                        | `bearer`                                                                                      |
+| `SH_MODEL_CONTEXT_WINDOW` / `SH_MODEL_MAX_TOKENS` / `SH_MODEL_PROVIDER` | existing knobs, unchanged                                                                                                                                                                                     | 131072 / 8192 / per-protocol                                                                  |
 
 Secrets are **never** inline in `SH_MODEL_HEADERS` in manifests — the header **value** comes from a
 `secretKeyRef` env indirection at the deployment layer (same pattern as `RITS_API_KEY` /
@@ -117,6 +117,7 @@ const model: Model<"openai-completions"> = {
 ### 4.3 Protocol-aware `toolChoiceExtension`
 
 The nudge must emit the form the protocol accepts:
+
 - `anthropic` → `tool_choice: { type: "auto" }` (object) — unchanged.
 - `openai-*` → `tool_choice: "auto"` (string). vLLM/OpenAI reject the object
   (`Invalid value for 'function': 'None'`).
@@ -128,6 +129,7 @@ tools present and unset" guard, the first-request log) stays.
 
 `applyModelGateway` is Anthropic-gateway-specific (Bearer + strip `x-api-key` + seed
 `ANTHROPIC_API_KEY`). For `openai-*` it must **not** apply that rewrite. Behavior by `SH_MODEL_AUTH`:
+
 - `bearer` — Pi sends `Authorization: Bearer <OPENAI_API_KEY>` (standard OpenAI/vLLM).
 - `custom-header` — the endpoint authenticates via a header in `SH_MODEL_HEADERS` (e.g. RITS's
   `RITS_API_KEY`); **strip the default `Authorization`** so the SDK Bearer isn't sent, but keep a
@@ -156,6 +158,7 @@ needs it; not on the critical path.
 ## 6. Testing & verification gate
 
 ### 6.1 Unit (fast, vitest) — extend `harness/test/run-turn-model.test.ts`
+
 - `SH_MODEL_API=openai-completions` → synthesized model has `api:"openai-completions"`,
   `provider:"openai"`, `baseUrl` from `SH_MODEL_BASE_URL`, `headers` parsed from `SH_MODEL_HEADERS`.
 - `custom-header` auth → default `Authorization` stripped, custom header present.
@@ -166,6 +169,7 @@ needs it; not on the critical path.
 - Invalid `SH_MODEL_API` / missing base URL → clear error.
 
 ### 6.2 Live gate (cluster)
+
 - **OpenAI-compat, tool-capable:** point `SH_MODEL_API=openai-completions` at a RITS/vLLM route with
   the tool-call parser (e.g. Qwen2.5-72B-Instruct or Kimi) and run a **tool-requiring** `/turn`
   ("use your bash tool to run `echo PONG`") → assert a **structured** tool call executes in the
@@ -201,4 +205,4 @@ before committing it to a run.**
 
 ---
 
-*Assisted-By: Claude Code*
+_Assisted-By: Claude Code_

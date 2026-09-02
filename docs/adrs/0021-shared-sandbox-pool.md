@@ -27,4 +27,4 @@ We will run the pool as N distinct single-instance `Sandbox` CRs sharing a commo
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

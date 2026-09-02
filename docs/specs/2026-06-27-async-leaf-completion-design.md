@@ -41,7 +41,7 @@ completion decouples the orchestrator from task duration:
 - **B — iterative role-based loop**: "gate-while-idle" (a session sleeps awaiting approval) is the
   canonical async + scale-to-zero + durable-resume case (archetypes §7.6). Not built here, but the
   substrate (scale-from-queue-to-zero + resume) is exactly what B will reuse.
-- **C — scheduled ingestion**: needs cron/event triggers as the *start signal*. KEDA's scaler
+- **C — scheduled ingestion**: needs cron/event triggers as the _start signal_. KEDA's scaler
   catalog (cron, queue/stream) is precisely that on-ramp — adopting KEDA now is the production trigger
   substrate C will extend, without bespoke trigger code.
 
@@ -80,16 +80,16 @@ orchestrator polls the done-marker on its own volume   (or GET /runs/status?sess
 
 **Components** (each independently testable):
 
-| Unit | Responsibility | Lives in |
-|---|---|---|
-| enqueue handler | validate envelope, `XADD` to `leaf-queue`, return `202` + handle | `knative-server/src/server.ts` |
-| status handler | report `queued\|running\|done\|failed` from the marker (+ queue state) | `knative-server/src/server.ts` |
-| `WorkQueue` | Redis Streams primitive: `ensureGroup`/`enqueue`/`claim`/`ack`/`touch`/`pending` | `packages/work-queue` (`@sh/work-queue`) |
-| `leaf-job-runner` | wrapper loop: claim → `runLeaf` → classify → marker → ack/reclaim | `harness/src/leaf-job-runner.ts` |
-| `classifyOutcome` | pure ack-vs-reclaim decision (see §6) | `harness/src/classify-outcome.ts` |
-| done-marker | atomic write/read of `<result_ref>.status` | `harness/src/done-marker.ts` |
-| job entrypoint | thin `main`: real queue + backend → `leaf-job-runner` | `knative-server/src/leaf-job.ts` |
-| KEDA `ScaledJob` | redis-streams trigger → Job per pending entry, scale-to-zero, cap | `deploy/knative/leaf-scaledjob.yaml` |
+| Unit              | Responsibility                                                                   | Lives in                                 |
+| ----------------- | -------------------------------------------------------------------------------- | ---------------------------------------- |
+| enqueue handler   | validate envelope, `XADD` to `leaf-queue`, return `202` + handle                 | `knative-server/src/server.ts`           |
+| status handler    | report `queued\|running\|done\|failed` from the marker (+ queue state)           | `knative-server/src/server.ts`           |
+| `WorkQueue`       | Redis Streams primitive: `ensureGroup`/`enqueue`/`claim`/`ack`/`touch`/`pending` | `packages/work-queue` (`@sh/work-queue`) |
+| `leaf-job-runner` | wrapper loop: claim → `runLeaf` → classify → marker → ack/reclaim                | `harness/src/leaf-job-runner.ts`         |
+| `classifyOutcome` | pure ack-vs-reclaim decision (see §6)                                            | `harness/src/classify-outcome.ts`        |
+| done-marker       | atomic write/read of `<result_ref>.status`                                       | `harness/src/done-marker.ts`             |
+| job entrypoint    | thin `main`: real queue + backend → `leaf-job-runner`                            | `knative-server/src/leaf-job.ts`         |
+| KEDA `ScaledJob`  | redis-streams trigger → Job per pending entry, scale-to-zero, cap                | `deploy/knative/leaf-scaledjob.yaml`     |
 
 **Key properties:** true background (Jobs outlive the request); scale-to-zero (no always-on worker);
 **at-least-once** delivery, where a crashed leaf re-runs the same `sessionId` → **gate-7 resume**; the
@@ -133,7 +133,7 @@ A small JSON file the leaf-job writes **last, atomically** (temp file + rename):
   "ts": "<iso8601>" }
 ```
 
-Written *after* `result_ref` on success, or *instead of* it on failure — so a single file
+Written _after_ `result_ref` on success, or _instead of_ it on failure — so a single file
 unambiguously signals terminal state for both outcomes (`result_ref` alone cannot: failures write
 none, and a result mid-write looks "present").
 
@@ -142,7 +142,7 @@ none, and a result mid-write looks "present").
 - **Primary (canonical):** the orchestrator polls the **done-marker on its own volume**; the harness
   is not on the completion critical path.
 - **Secondary (convenience):** `GET /runs/status?sessionId=…` → `{ status: queued | running |
-  done | failed, reason? }`, where `done|failed` come from the marker and `queued|running` from the
+done | failed, reason? }`, where `done|failed` come from the marker and `queued|running` from the
   queue/consumer-group state.
 
 ### 3.5 Idempotency & delivery semantics
@@ -165,7 +165,7 @@ the stream is `leaf-queue:<tenant>` (§7).
 
 ### 4.2 Delivery lifecycle (at-least-once)
 
-- `XADD` → entry *pending* (unconsumed).
+- `XADD` → entry _pending_ (unconsumed).
 - A leaf-job claims via `XREADGROUP … COUNT 1` → entry enters the group's **PEL**
   (delivered-but-unacked).
 - Terminal completion (`done` or a deterministic `failed`) → write `result_ref`/marker → **`XACK`** →
@@ -236,12 +236,12 @@ from env).
 
 **`classifyOutcome` — the ack-vs-reclaim crux:**
 
-| Outcome | done-marker | Queue action | Rationale |
-|---|---|---|---|
-| `runLeaf` → `done` | `done` | **XACK** | success; `result_ref` written |
-| `runLeaf` → `failed: bad_inputs \| no_verdict \| invalid_verdict` | `failed` + reason | **XACK** | deterministic; re-running won't help (orchestrator re-dispatches with a *new* sessionId for a true retry) |
-| `runLeaf` → `failed: error` (model/gateway blip) | none yet | **no ack → reclaim** | possibly transient; bounded retry via delivery count → on exhaustion, `failed` marker + ack |
-| process **crash** (OOM/evict/SIGKILL, no return) | none | **no ack → reclaim** | entry stays in PEL → `XAUTOCLAIM` after `min-idle` → **gate-7 resume**; bounded by `maxAttempts` |
+| Outcome                                                           | done-marker       | Queue action         | Rationale                                                                                                 |
+| ----------------------------------------------------------------- | ----------------- | -------------------- | --------------------------------------------------------------------------------------------------------- |
+| `runLeaf` → `done`                                                | `done`            | **XACK**             | success; `result_ref` written                                                                             |
+| `runLeaf` → `failed: bad_inputs \| no_verdict \| invalid_verdict` | `failed` + reason | **XACK**             | deterministic; re-running won't help (orchestrator re-dispatches with a _new_ sessionId for a true retry) |
+| `runLeaf` → `failed: error` (model/gateway blip)                  | none yet          | **no ack → reclaim** | possibly transient; bounded retry via delivery count → on exhaustion, `failed` marker + ack               |
+| process **crash** (OOM/evict/SIGKILL, no return)                  | none              | **no ack → reclaim** | entry stays in PEL → `XAUTOCLAIM` after `min-idle` → **gate-7 resume**; bounded by `maxAttempts`          |
 
 **Effectively-once outcome:** at-least-once delivery × idempotent `runLeaf` (resume + overwrite) =
 the same verdict regardless of redelivery. A rare double-process (partition after the heartbeat
@@ -254,14 +254,14 @@ noted as an honest caveat.
 
 ### 6.1 Unit (fast, vitest)
 
-| Unit | Coverage |
-|---|---|
-| `WorkQueue` | `XADD`→`XREADGROUP` returns the entry; `XACK` clears the PEL; `XAUTOCLAIM` reclaims past `min-idle`; delivery-count increments; `pending`. Against a real Redis, **gated** like the existing `redis-backend` tests (skip when no `REDIS_URL`). |
-| `classifyOutcome` | pure §5 table: `done`→ack+done; `bad_inputs/no_verdict/invalid_verdict`→ack+failed; `error`→no-ack/retryable; exhausted→failed+ack. |
-| enqueue handler | `vi.mock` queue → `202`+`XADD` once on valid async envelope; `400` no-`XADD` on malformed; **async omitted/false still runs the sync path** (no regression). |
-| status handler | marker present→done/failed; absent+pending→queued/running (injected marker-reader + queue-state). |
-| `leaf-job-runner` | injected fakes (queue, `runLeaf`, marker writer, clock): autoclaim-preferred-over-read; dead-letter when delivery>max; heartbeat scheduled+cleared; ack-on-terminal; no-ack+rethrow on retryable. |
-| done-marker | atomic temp+rename; correct JSON for `done` and `failed`. |
+| Unit              | Coverage                                                                                                                                                                                                                                       |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WorkQueue`       | `XADD`→`XREADGROUP` returns the entry; `XACK` clears the PEL; `XAUTOCLAIM` reclaims past `min-idle`; delivery-count increments; `pending`. Against a real Redis, **gated** like the existing `redis-backend` tests (skip when no `REDIS_URL`). |
+| `classifyOutcome` | pure §5 table: `done`→ack+done; `bad_inputs/no_verdict/invalid_verdict`→ack+failed; `error`→no-ack/retryable; exhausted→failed+ack.                                                                                                            |
+| enqueue handler   | `vi.mock` queue → `202`+`XADD` once on valid async envelope; `400` no-`XADD` on malformed; **async omitted/false still runs the sync path** (no regression).                                                                                   |
+| status handler    | marker present→done/failed; absent+pending→queued/running (injected marker-reader + queue-state).                                                                                                                                              |
+| `leaf-job-runner` | injected fakes (queue, `runLeaf`, marker writer, clock): autoclaim-preferred-over-read; dead-letter when delivery>max; heartbeat scheduled+cleared; ack-on-terminal; no-ack+rethrow on retryable.                                              |
+| done-marker       | atomic temp+rename; correct JSON for `done` and `failed`.                                                                                                                                                                                      |
 
 ### 6.2 Live gate — `deploy/knative/leaf-async-smoke.sh` (gated `ASYNC_LIVE_SMOKE=1`)
 
@@ -289,7 +289,7 @@ The queue substrate adapts to **per-user queues** without redesign: an optional 
 namespaces the stream (`leaf-queue:<tenant>` + its own consumer group) and the `sessionId` (prefixed,
 then `toSessionId`-sanitized). This yields separate backlogs, fairness, and scaling per tenant.
 
-**KEDA caveat:** a `ScaledJob` watches *one* stream. A small, known tenant set → one `ScaledJob` per
+**KEDA caveat:** a `ScaledJob` watches _one_ stream. A small, known tenant set → one `ScaledJob` per
 tenant (true per-user queues). Dynamic/many users → either provision a `ScaledJob` per tenant at
 onboarding, or run a single `ScaledJob` over a shared stream with tenant-tagged entries + app-level
 per-tenant caps (workload separation, not separate queues).
@@ -316,7 +316,7 @@ stream-per-tenant + `ScaledJob`-per-tenant wiring is **not** built.
 - A separate dead-letter queue stream (dead-letter = `failed` marker + ack).
 - Changes to synchronous `POST /runs` (unchanged).
 
-**Substrate-agnostic seam:** the async *contract* (enqueue envelope → background execution →
+**Substrate-agnostic seam:** the async _contract_ (enqueue envelope → background execution →
 `result_ref` + done-marker + status) depends only on the `WorkQueue` interface + `leaf-job-runner`,
 not KEDA. A KEDA-less cluster could drive the same queue with harness-created Jobs or an always-on
 worker without changing `runLeaf` / done-marker / status — the documented fallback.
@@ -340,4 +340,4 @@ worker without changing `runLeaf` / done-marker / status — the documented fall
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

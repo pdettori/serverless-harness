@@ -48,15 +48,15 @@ operations plus one real `kubectl exec` smoke on a kind cluster.
 
 ## 2. Key decisions (resolved during brainstorming)
 
-| # | Decision | Choice |
-|---|----------|--------|
-| D1 | Transport to the pod | **`kubectl exec` shell-out**, behind an injectable `execInPod` seam. Zero new runtime deps; a near-verbatim port of the SSH example's `sshExec`. |
-| D2 | Operation coverage | **Route all seven** (`read/write/edit/bash/ls/grep/find`). The SSH example leaves `ls/grep/find` local; for a real sandbox that silently shows the head's FS, so M2 closes the gap. |
-| D3 | Pod lifecycle | **Client targets an existing pod** identified by env (`namespace` + `pod`); ship one plain `Deployment + PVC` manifest as the fixture, applied out-of-band. No dynamic create/teardown in the client. |
-| D4 | Verification gate | **Injectable seam + deterministic fake-exec unit tests (all 7 ops) + one real kind smoke.** Direct mirror of M1's gate. |
-| D5 | Code placement | **New `@sh/k8s-sandbox` package + thin env-gated `cli.ts` wiring.** **No pi-fork change** — the Operations seam is already native. |
-| D6 | Headless config surface | **Env vars / factory argument, not CLI flags.** `KAGENTI_SANDBOX_POD` is the on/off gate; unset ⇒ extension inert, all tools local. |
-| D7 | Path mapping | **Mirror the SSH example:** announce the pod cwd in the system prompt via `before_agent_start`; map head-cwd → pod-cwd in the operations (naive `path.replace`, fragility accepted for M2). |
+| #   | Decision                | Choice                                                                                                                                                                                                |
+| --- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | Transport to the pod    | **`kubectl exec` shell-out**, behind an injectable `execInPod` seam. Zero new runtime deps; a near-verbatim port of the SSH example's `sshExec`.                                                      |
+| D2  | Operation coverage      | **Route all seven** (`read/write/edit/bash/ls/grep/find`). The SSH example leaves `ls/grep/find` local; for a real sandbox that silently shows the head's FS, so M2 closes the gap.                   |
+| D3  | Pod lifecycle           | **Client targets an existing pod** identified by env (`namespace` + `pod`); ship one plain `Deployment + PVC` manifest as the fixture, applied out-of-band. No dynamic create/teardown in the client. |
+| D4  | Verification gate       | **Injectable seam + deterministic fake-exec unit tests (all 7 ops) + one real kind smoke.** Direct mirror of M1's gate.                                                                               |
+| D5  | Code placement          | **New `@sh/k8s-sandbox` package + thin env-gated `cli.ts` wiring.** **No pi-fork change** — the Operations seam is already native.                                                                    |
+| D6  | Headless config surface | **Env vars / factory argument, not CLI flags.** `KAGENTI_SANDBOX_POD` is the on/off gate; unset ⇒ extension inert, all tools local.                                                                   |
+| D7  | Path mapping            | **Mirror the SSH example:** announce the pod cwd in the system prompt via `before_agent_start`; map head-cwd → pod-cwd in the operations (naive `path.replace`, fragility accepted for M2).           |
 
 ---
 
@@ -109,12 +109,12 @@ canned `stdout` / `exitCode`, so no test touches a cluster.
 
 Resolved at construction from the factory argument or env (env wins for headless runs):
 
-| Env var | Meaning |
-|---------|---------|
-| `KAGENTI_SANDBOX_POD` | Pod name — **the on/off gate.** Unset ⇒ extension inert; all tools run locally (default headless behavior unchanged). |
-| `KAGENTI_SANDBOX_NAMESPACE` | Namespace (default `default`). |
-| `KAGENTI_SANDBOX_CONTEXT` | Kube context (optional; omit to use current-context). |
-| `KAGENTI_SANDBOX_CWD` | Pod working directory, e.g. `/workspace`. The cwd announced to the model; head-cwd → this is the path map. |
+| Env var                     | Meaning                                                                                                               |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `KAGENTI_SANDBOX_POD`       | Pod name — **the on/off gate.** Unset ⇒ extension inert; all tools run locally (default headless behavior unchanged). |
+| `KAGENTI_SANDBOX_NAMESPACE` | Namespace (default `default`).                                                                                        |
+| `KAGENTI_SANDBOX_CONTEXT`   | Kube context (optional; omit to use current-context).                                                                 |
+| `KAGENTI_SANDBOX_CWD`       | Pod working directory, e.g. `/workspace`. The cwd announced to the model; head-cwd → this is the path map.            |
 
 ---
 
@@ -123,22 +123,22 @@ Resolved at construction from the factory argument or env (env wins for headless
 File transfer mirrors the SSH example's `cat` / `base64` approach. All paths are
 mapped head-cwd → pod-cwd before the command is built, and shell-quoted.
 
-| Op | In-pod implementation |
-|----|----------------------|
-| **Read** | `readFile` → `cat <p>` (buffered); `access` → `test -r <p>`; `detectImageMimeType` → `file --mime-type -b <p>` (whitelist jpeg/png/gif/webp, else null) |
-| **Write** | `writeFile` → `echo <b64> \| base64 -d > <p>`; `mkdir` → `mkdir -p <d>` |
-| **Edit** | compose Read + Write; `access` → `test -r <p> && test -w <p>` |
-| **Bash** | stream `cd <cwd> && <command>` through `execInPod` with `onData` / `signal` / `timeout` (mirrors `createRemoteBashOps`) |
-| **Ls** | `exists` → `test -e <p>`; `stat.isDirectory()` → `test -d <p>`; `readdir` → `ls -1A <p>` split on newline |
-| **Grep** | `isDirectory` → `test -d <p>`; `readFile` (string) → `cat <p>` (context lines) |
-| **Find** | `exists` → `test -e <p>`; `glob` → run `fd` / `find` **in-pod** (Pi's default fd path is local; supplying a custom `glob` is the documented override point) |
+| Op        | In-pod implementation                                                                                                                                       |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Read**  | `readFile` → `cat <p>` (buffered); `access` → `test -r <p>`; `detectImageMimeType` → `file --mime-type -b <p>` (whitelist jpeg/png/gif/webp, else null)     |
+| **Write** | `writeFile` → `echo <b64> \| base64 -d > <p>`; `mkdir` → `mkdir -p <d>`                                                                                     |
+| **Edit**  | compose Read + Write; `access` → `test -r <p> && test -w <p>`                                                                                               |
+| **Bash**  | stream `cd <cwd> && <command>` through `execInPod` with `onData` / `signal` / `timeout` (mirrors `createRemoteBashOps`)                                     |
+| **Ls**    | `exists` → `test -e <p>`; `stat.isDirectory()` → `test -d <p>`; `readdir` → `ls -1A <p>` split on newline                                                   |
+| **Grep**  | `isDirectory` → `test -d <p>`; `readFile` (string) → `cat <p>` (context lines)                                                                              |
+| **Find**  | `exists` → `test -e <p>`; `glob` → run `fd` / `find` **in-pod** (Pi's default fd path is local; supplying a custom `glob` is the documented override point) |
 
 ### 4.1 Load-bearing risk — grep/find search routing (proven first, not assumed)
 
 For `read/write/edit/bash/ls` the search/exec clearly flows through `operations`.
-For **grep** and **find**, Pi's tool may run `rg` / `fd` *locally in `execute()`* and
-use `operations` only for ancillary reads — `find.ts` comments: *"Actual fd execution
-happens in execute() when no custom glob is provided."*
+For **grep** and **find**, Pi's tool may run `rg` / `fd` _locally in `execute()`_ and
+use `operations` only for ancillary reads — `find.ts` comments: _"Actual fd execution
+happens in execute() when no custom glob is provided."_
 
 The implementation plan's **first task is a spike** that confirms whether supplying a
 custom `glob` (find) and the grep operations actually reroutes the **search itself** to
@@ -193,14 +193,14 @@ No dynamic create/teardown in the client — the deferred sandbox track owns lif
 
 ## 8. Residual risks
 
-| Risk | Mitigation |
-|------|------------|
-| grep/find search hardwired to a local binary | **Task 1 spike** proves routing; fallback = override the tool's `execute` to run the search in-pod. |
-| Per-op `kubectl exec` latency (each op = a new exec) | Acceptable for M2 (not the perf milestone); flagged for M3 — a persistent in-pod channel or API-exec is the upgrade path. |
-| Abort/timeout kills the local `kubectl`, but the remote command may linger (no TTY) | Accepted for M2; noted for the lifecycle track. Kill the local process on `signal`/timeout as the SSH example does. |
-| `base64 -d` vs `--decode` (busybox) and binary-file safety | Mirror the SSH example's base64 flow; the smoke includes a binary-file round-trip. |
-| Naive `path.replace` cwd mapping (inherited from SSH) | Kept for M2; fragility documented. Revisit if paths outside the announced cwd appear. |
-| `before_agent_start` may not fire on the headless path | Spike confirms; if absent, announce the pod cwd by other means (status line + system-prompt edit at session construction). |
+| Risk                                                                                | Mitigation                                                                                                                 |
+| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| grep/find search hardwired to a local binary                                        | **Task 1 spike** proves routing; fallback = override the tool's `execute` to run the search in-pod.                        |
+| Per-op `kubectl exec` latency (each op = a new exec)                                | Acceptable for M2 (not the perf milestone); flagged for M3 — a persistent in-pod channel or API-exec is the upgrade path.  |
+| Abort/timeout kills the local `kubectl`, but the remote command may linger (no TTY) | Accepted for M2; noted for the lifecycle track. Kill the local process on `signal`/timeout as the SSH example does.        |
+| `base64 -d` vs `--decode` (busybox) and binary-file safety                          | Mirror the SSH example's base64 flow; the smoke includes a binary-file round-trip.                                         |
+| Naive `path.replace` cwd mapping (inherited from SSH)                               | Kept for M2; fragility documented. Revisit if paths outside the announced cwd appear.                                      |
+| `before_agent_start` may not fire on the headless path                              | Spike confirms; if absent, announce the pod cwd by other means (status line + system-prompt edit at session construction). |
 
 ---
 
@@ -214,4 +214,4 @@ expressible; M3 adds the Knative trigger to reach Config C (serverless).
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_
