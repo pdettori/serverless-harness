@@ -21,6 +21,7 @@ typecheck:
 	cd harness && pnpm exec tsc --noEmit
 	cd packages/k8s-sandbox && pnpm exec tsc --noEmit
 	cd packages/knative-server && pnpm exec tsc --noEmit
+	cd packages/config-bundle && pnpm exec tsc --noEmit
 	cd experiments && pnpm exec tsc --noEmit
 
 # Laptop showcase: harness on kind, remote worker as a host container dialing out.
