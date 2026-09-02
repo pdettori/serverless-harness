@@ -1,0 +1,446 @@
+# Claude Code workflow promotion: design
+
+**Date:** 2026-09-02 · **Status:** Proposed · **ADRs:**
+[ADR-0030](../adrs/0030-claude-code-workflow-promotion.md),
+[ADR-0031](../adrs/0031-promoted-memory-read-only.md) · **Builds on:** M1 (Redis session
+backend), M2/M3 (sandbox client + persistent channel), P1 (fs-free harness), P2 (shared
+sandbox pool)
+
+## 1. Problem
+
+The harness runs Pi sessions well but is hard to _author for_. Getting a useful agent workflow
+onto it means hand-assembling a prompt and hoping the runtime has what the prompt assumes.
+Meanwhile the same person already has a working workflow on their laptop, in Claude Code:
+skills they trust, a `CLAUDE.md`, accumulated memory, and a slash command that ties it
+together. Nothing carries that across.
+
+The ask is a **promotion path**: iterate locally in Claude Code until the workflow behaves,
+then move it to the managed environment with one command and have it behave the same way.
+
+Two facts make this tractable, and one makes it delicate.
+
+**Pi already speaks most of Claude Code's configuration vocabulary.**
+`pi-fork/packages/coding-agent/src/core/resource-loader.ts` exposes `getSkills()`,
+`getPrompts()`, `getAgentsFiles()`, `getSystemPrompt()`, `getAppendSystemPrompt()`, and
+`getExtensions()`. `core/skills.ts` implements the **Agent Skills standard** — `SKILL.md` with
+`name`/`description` frontmatter, `disable-model-invocation`, and the same directory-discovery
+rules Claude Code uses. `loadProjectContextFiles` (`resource-loader.ts:62`) already looks for
+`CLAUDE.md` alongside `AGENTS.md`. Pi's built-in tools (`bash`, `read`, `write`, `edit`,
+`grep`, `find`, `ls`) are near-isomorphic to Claude Code's.
+
+**The harness deliberately uses none of it.** `harness/src/run-turn.ts:463` constructs
+`DefaultResourceLoader` with only `{ cwd, agentDir, settingsManager, extensionFactories }`,
+where `cwd` is the harness pod's own directory. No skills, prompts, context, or memory travel
+today. The gap is delivery and wiring, not capability.
+
+**The fs-free split constrains delivery.** Per
+[`2026-07-02-p1-fs-free-harness-design.md`](2026-07-02-p1-fs-free-harness-design.md) the
+harness mounts no shared writable volume — only an emptyDir `/tmp` — and tool calls execute in
+a _separate_ sandbox pod. A "skill" therefore splits in two: its prose must be readable by the
+**harness** process (it feeds the system prompt), while anything it executes must exist in the
+**sandbox**. The two halves travel differently and must not drift apart.
+
+## 2. Goals and non-goals
+
+**Goals.**
+
+1. One local command promotes a working Claude Code workflow; no hand-authored manifest, ever.
+2. Skills, `CLAUDE.md`, memory, prompt, and slash commands travel.
+3. What cannot work remotely is dropped with a machine-readable reason, before a run is paid for.
+4. Re-promotion of unchanged configuration is free.
+5. A promoted leaf stays replayable — the idempotency contract at `harness/src/run-leaf.ts:67`
+   is preserved.
+6. Absent a promoted bundle, harness behavior is unchanged.
+
+**Non-goals.**
+
+- **MCP servers.** Out of scope. The harness's answer is code-mode in the sandbox
+  ([ADR-0005](../adrs/0005-mcp-code-mode.md)) plus the credential/egress plane; promoting local
+  MCP configuration is a separate, much larger problem.
+- **Subagents.** Pi has no Task equivalent (§9).
+- **Installing binaries.** Preflight detects and reports; the sandbox image provides.
+- **Live attach.** Driving a harness session interactively from Claude Code is the phase-2
+  shape this design keeps the door open for (§6.4), not what it builds.
+
+## 3. Design overview
+
+```
+ laptop                            harness pod (fs-free)        sandbox pod (shared pool)
+ ──────                            ─────────────────────        ────────────────────────
+ ~/.claude ─┐
+ repo/.claude├─ sh promote ──► CAS store ──► /tmp/sh-config/<digest>/    /workspace/.sh-config/<digest>/
+ memory/ ───┘    │                              skills/  prompts/            exec/  memory/
+                 │                                   │                            │
+                 ├─► lockfile.json (committed)   DefaultResourceLoader      $SH_SKILLS_DIR
+                 └─► preflight report            + agentsFilesOverride
+```
+
+One digest names both halves. The envelope carries the digest; nothing else about the workflow
+is transmitted per-dispatch.
+
+## 4. Bundle
+
+### 4.1 Format
+
+A tar+gzip blob; the digest is `sha256` over the **canonical** tar (sorted paths, normalized
+mtimes and modes). Layout:
+
+```
+lockfile.json          generated; also emitted locally for committing
+skills/<name>/…        whole skill directories, verbatim
+context/               CLAUDE.md chain + selected memory files + MEMORY.md
+prompt/                systemPrompt / appendSystemPrompt fragments
+prompts/               slash commands → Pi PromptTemplates
+exec/                  skill-local scripts destined for the sandbox
+```
+
+Skill _directories_ travel, not files: skills reference siblings (`superpowers:brainstorming`
+reads `visual-companion.md`) and carry subtrees (`dataviz/references/`). Only `skills/` and
+`prompts/` become files in the harness pod; `context/` and `prompt/` are injected inline.
+
+`lockfile.json` records the bundle format version, the pi and harness versions built against,
+every included skill with source path and content hash, every **excluded** skill with a
+machine-readable reason code, included memory files, the expected sandbox image reference, and
+the detected-binary list. It is committed for diffability and is preflight's input.
+
+### 4.2 Classifier: two buckets
+
+A skill either **travels** or is **dropped with a reason**. There is deliberately no
+"travels with rewriting" bucket (§7, A1).
+
+- **Shipped default deny-list**, by skill and family: the Artifact skills, `document-skills:*`,
+  `statusline-setup`, `keybindings-help`, `update-config` — subject matter that does not exist
+  in the harness.
+- **Subagent dependency**: skills whose operation _is_ dispatching subagents
+  (`dispatching-parallel-agents`, `subagent-driven-development`) drop until §9 lands.
+- **User deny-list**, additive, for personal or sensitive content. Never an allow-list — an
+  allow-list is the manifest burden returning through the side door.
+- **Interaction dependence** (§4.6) — warned, not dropped, and mode-sensitive.
+- **Binary detection** over skill bodies and `exec/`, producing the list preflight diffs
+  against the sandbox inventory. Detection only.
+
+The deny-list is **curated, not inferred**. Grepping for `Agent` as an incompatibility signal
+is a trap: the word appears in nearly every superpowers skill's prose. Preflight _warns_ on
+suspicious patterns; it never silently drops on a heuristic. A wrongly-dropped skill fails
+remotely and confusingly, which is the failure class this design exists to prevent.
+
+Tool-name drift (`Bash`→`bash`, `Glob`→`find`, `LS`→`ls`) is handled by an injected
+`appendSystemPrompt` note, not by editing prose.
+
+### 4.3 Promotion command
+
+The work lives in a testable CLI in this repo — `sh promote`, alongside `harness/src/cli.ts` —
+and the Claude Code slash command is a thin wrapper over it. Building only the slash command
+would leave the logic untestable and unusable from CI.
+
+**Inputs**, in Claude Code's precedence order: user scope (`~/.claude/skills`,
+`~/.claude/plugins`), project scope (repo `.claude/`), and the project's memory directory.
+
+**Dedupe is mandatory.** A representative laptop shows 149 `SKILL.md` files but far fewer
+skills: `plugins/cache/` (~39 MB) is largely a resolved duplicate of `plugins/marketplaces/`
+(~23 MB). Without dedupe by resolved skill identity, the lockfile double-counts and the bundle
+ships each skill twice. Of ~62 MB on disk, ~11 MB is markdown; a pruned bundle is single-digit MB.
+
+**Entry prompts** make a bundle a _workflow_ rather than a pile of configuration. The bundle
+carries named templates in `prompts/`; the envelope names one plus arguments. One bundle
+therefore serves many dispatches, which is what the harness's fan-out model wants.
+
+**The secret scan blocks.** Promotion reads the memory directory and `settings.json`, which in
+practice contain operational notes about credentials. Every file entering the bundle is
+pattern-scanned; a hit **refuses the upload** with path and line. This is the one place
+friction is wanted: credentials reaching a shared cluster's store is not recoverable by
+re-promoting.
+
+**Idempotence.** The digest is computed locally; if the store holds it, upload is a no-op.
+
+```
+$ sh promote --entry brainstorm-and-plan
+
+  resolved   87 skills (149 SKILL.md → 87 after cache/marketplace dedupe)
+  travels    79
+  dropped     8   document-skills:xlsx,docx,pptx,pdf  (no harness equivalent)
+                  artifact-design, artifact-diagramming  (no artifact runtime)
+                  dispatching-parallel-agents, subagent-driven-development
+                                                       (needs subagent extension)
+  context    CLAUDE.md (2 files) + 10 memory files
+  secrets    scan clean
+  binaries   gh, kubectl, pnpm  →  present in sandbox:pool-default
+  entry      brainstorm-and-plan
+  bundle     sha256:4f2a…c19  (3.2 MB, unchanged — upload skipped)
+  lockfile   .claude/promoted.lock.json  (2 skills changed since last promote)
+```
+
+### 4.4 Harness-side materialization
+
+`LeafEnvelope` (`harness/src/run-leaf.ts:92`) gains one optional field, `configRef?: string`.
+Absent means today's behavior byte for byte — the converge, solve, and swebench paths are
+untouched, and the feature is opt-in with zero blast radius.
+
+Cold start fetches by digest, unpacks into `/tmp/sh-config/<digest>/`, and caches keyed by
+digest so a warm pod's second turn skips the work. A digest-keyed cache cannot go stale, so
+its death with the pod is correct rather than unfortunate. Unpack goes to a temp path and is
+renamed into place: a crash mid-unpack must never leave a half-populated skill directory,
+which would silently truncate a skill's instructions.
+
+Wiring at `harness/src/run-turn.ts:463`:
+
+```ts
+new DefaultResourceLoader({
+  cwd,
+  agentDir,
+  settingsManager,
+  extensionFactories,
+  additionalSkillPaths: [`${dir}/skills`],
+  additionalPromptTemplatePaths: [`${dir}/prompts`],
+  noContextFiles: true,
+  agentsFilesOverride: () => ({ agentsFiles: bundle.context }),
+  appendSystemPrompt: [toolNameMappingNote, skillsRootNote, ...bundle.promptFragments],
+});
+```
+
+**`noContextFiles: true` is load-bearing.** `loadProjectContextFiles` walks ancestor
+directories for `CLAUDE.md`/`AGENTS.md` (`resource-loader.ts:62`). On the harness pod that walk
+reaches _this repository's own_ `CLAUDE.md` — "Serverless Harness … pnpm workspace … DCO
+sign-off required." Unsuppressed, every promoted session silently inherits the harness
+project's instructions as if they were the user's. `noSkills` / `noPromptTemplates` are set for
+the same reason: the harness image ships none today, and explicit suppression keeps that true.
+
+Failures are loud. An unresolvable digest, a format-version mismatch, or a checksum mismatch
+**fails the leaf immediately**, digest included in the message. There is no fallback to running
+unconfigured: a silently unconfigured agent producing plausible-but-wrong work is the expensive
+remote failure this design exists to prevent.
+
+The resolver is **pure with respect to the digest**, so replaying an envelope reproduces the
+run — preserving the idempotency property (`run-leaf.ts:67`) that §5 depends on.
+
+### 4.5 Sandbox-side overlay
+
+Content enters the sandbox the way `converge.ts` already does it: build a shell script, exec it
+through the transport (`buildConvergeScript`, `convergeWorkspace`), under a **per-pod flock**
+that serializes concurrent converges, into a **per-leaf** path `/workspace/leaves/<runId>`.
+The pool is shared ([ADR-0021](../adrs/0021-shared-sandbox-pool.md)), so nothing may be global.
+
+Transport is a base64 tarball piped into `tar -x` in one exec — not per-file heredocs, which
+would be pathological in a 200-leaf fan-out. Scripts get `chmod +x`, since tar-over-exec does
+not reliably preserve the bit.
+
+**Two-level placement.** Bundles are immutable and content-addressed, so they cache _shared_
+at `/workspace/.sh-config/<digest>/`, populated once under the same flock discipline, and are
+bound into each leaf's workspace. A 200-leaf fan-out pushes the bundle once, not 200 times.
+Per-leaf content stays under `/workspace/leaves/<runId>/` so `cleanupWorkspace` remains the
+only teardown path.
+
+**Path translation.** A skill's `SKILL.md` is read in the harness pod, but its internal paths
+are written relative to where the skill lives _locally_ — `superpowers:brainstorming` instructs
+a read of `skills/brainstorming/visual-companion.md`. Issued into the sandbox, that path
+resolves to nothing, and the model gets a confusing miss rather than a reasonable error. So the
+bundle layout is mirrored verbatim into the sandbox, the sandbox exports `SH_SKILLS_DIR`, and
+an injected note states it: _skill files live at `$SH_SKILLS_DIR/<skill-name>/`; resolve
+relative paths in skill instructions against that root._ Without this, every skill referencing
+a sibling degrades quietly.
+
+**Binary inventory contract**, so preflight's claim is true rather than aspirational:
+
+1. The sandbox image **declares** its inventory at a known path, baked in at build time.
+2. A **copy is checked into this repo** per image tag, so preflight works offline.
+3. `--verify` **probes a live sandbox** (`command -v`) for ground truth.
+4. **CI asserts** the checked-in copy matches the image it describes. Without (4) the copy
+   drifts and preflight starts lying — and a lying preflight is worse than none.
+
+**Consistency.** Both halves come from one digest; the harness fails the leaf if the overlay
+for that digest cannot be established. There is no partial-configuration state.
+
+### 4.6 Preflight and the failure taxonomy
+
+Preflight's value is entirely in being honest about its limits.
+
+**Caught locally, no cluster.** Deny-listed skill (dropped, reason recorded); a skill
+referencing a sibling absent from the bundle, found by resolving path-like references in
+`SKILL.md`; secret-scan hit (blocks); entry prompt not present in `prompts/`; duplicate skill
+names surviving dedupe, surfaced through Pi's existing `ResourceCollision` diagnostics rather
+than a parallel mechanism; dangling `[[links]]` in `MEMORY.md` to deny-listed files (warn).
+
+**Caught locally with inventory data.** Missing binary — the highest-value check, since a
+missing `gh` is the classic silent remote failure. Also sandbox pool/image-tag existence, and
+harness-version-supports-bundle-format.
+
+**Not catchable locally; run-time only.** Stated in full, because a preflight implying
+completeness is worse than one stating its edges: a binary present at a different version or
+with different flags; a tool present but lacking credentials; egress the sandbox denies; and
+any skill whose prose assumes host behavior with no analogue but no mechanical signature.
+
+**Interaction-dependent skills** deserve their own name. An unattended run cannot ask a
+question. `superpowers:brainstorming` is the clean example — built around asking one question
+at a time and waiting; promoted unattended it degenerates into the agent inventing the answers.
+`receiving-code-review` shares the shape. These are technically portable and semantically
+broken.
+
+This is **mode-sensitive**, which is why it warns rather than drops:
+`sh promote --mode unattended|attended`. Under `unattended` it is a loud warning (opt-in drop);
+under `attended` — the phase-2 live-attach shape — these skills are exactly what is wanted. One
+flag, and phase 2 inherits the classifier unchanged.
+
+A partial bridge exists and is **not** built here: the harness already has a human-gate
+archetype (`request_approval`, `gate.ts`,
+[ADR-0016](../adrs/0016-human-gate.md)). Mapping interaction-dependent skills onto real gates
+is an interesting future direction, out of scope.
+
+## 5. Memory model: read-only in, findings out
+
+Memory travels **read-only**. The harness writes none, and what a promoted run learns comes
+back as data in the leaf result, not as a memory write. Three reasons, in descending weight:
+
+1. **Write-back breaks idempotency.** `run-leaf.ts:67` treats `session_id` as the idempotency
+   key: a retry or resume of the same envelope maps deterministically to the same session.
+   Mutable shared memory makes a leaf's behavior depend on what other leaves learned first, so
+   replaying an envelope no longer reproduces the run. In a 200-leaf fan-out, memory becomes a
+   race.
+2. **Memory writes want review, and unattended runs cannot provide it.** Local memory is good
+   _because_ it is a byproduct of a human correcting the agent in a loop. An unattended run
+   writing into that store is an unreviewed write into future context.
+3. **The valuable findings have a better channel.** What one would actually want back are
+   operational discoveries — "this cluster cannot reach X", "the sandbox image lacks Y". Those
+   belong in the leaf result, which `harness/src/leaf-result-store.ts` already carries; the
+   human then decides what to keep. Same learning loop, review preserved, no new infrastructure.
+
+**Progressive disclosure, via the sandbox.** Injecting every memory file inline works at 10
+files and bloats context at 200. The elegant path is blocked instructively: locally the agent
+reads memory on demand with `read`, but here `read` executes in the _sandbox_, which cannot see
+the harness pod's `/tmp`. So memory files are overlaid into the sandbox at a known path over
+the channel `exec/` already needs, and only `MEMORY.md` is injected inline as the index. Local
+semantics reproduced, one index in context, scales past any cap.
+
+**Seam for later.** "Where memory comes from" is a resolver interface with exactly one
+implementation (bundle snapshot). Pi supplies the hook: `agentsFilesOverride` makes memory just
+another context source, so a future memory _service_ is a constructor argument, not a redesign.
+Building that service now would be speculative work against a loop a result field closes for
+free. See [ADR-0031](../adrs/0031-promoted-memory-read-only.md).
+
+## 6. Decisions
+
+- **D1 — Content-addressed bundle referenced by digest in the envelope.** Not git-native, not
+  OCI (§7).
+- **D2 — Prune by compatibility, never by relevance.** Ship everything that can work; drop only
+  what provably cannot. Omission and misfire are correctness problems with no automatic fix;
+  payload size is an engineering problem with a known fix (content-addressing + dedupe). Solve
+  the tractable one, eliminate the intractable ones.
+- **D3 — Generated lockfile, never a hand-authored manifest.** A `package-lock.json`, not a
+  `package.json`.
+- **D4 — Prose is never rewritten.** Tool-name drift is handled by an injected mapping note.
+- **D5 — Read-only memory; findings return in the leaf result.**
+- **D6 — Materialization split follows fs-free.** Prose to the harness pod's emptyDir; anything
+  executable to the sandbox. One digest covers both.
+- **D7 — Secret scan blocks promotion.** The only deliberate friction.
+- **D8 — Interaction dependence is mode-sensitive**, not a hard incompatibility, which keeps
+  the classifier valid for phase-2 live attach.
+- **D9 — Subagent support is a separate spec** (§9).
+
+## 7. Alternatives considered
+
+- **A1 — Rewrite tool names across skill files.** Rejected: a regex deciding whether "Read" is
+  a tool reference or English will mangle prose, and the damage surfaces as a skill misbehaving
+  remotely. An injected mapping note costs one paragraph and mutates nothing (D4).
+- **A2 — Session-derived manifest.** Record which skills a good local session actually touched
+  and generate the manifest from that. Rejected once payload size was measured: it buys a
+  smaller bundle by reintroducing omission, losing exactly the skills a _future_ run needs.
+- **A3 — Mirror `~/.claude` wholesale, unpruned.** Rejected: no meaningful preflight, and
+  skills that provably cannot work (Artifact, document-skills) would misfire remotely.
+- **A4 — Git-native profile ref, converged like a workspace.** Cheapest to build —
+  `convergeWorkspace` exists, and a commit SHA is a free digest with real promotion history.
+  Rejected on cold start: scale-to-zero means no warm cache, so _every_ cold start pays a git
+  clone against a sub-second target. It also needs a cluster-reachable remote with credentials
+  and pushes `~/.claude` into git. Its audit property is **stolen cheaply** instead — commit the
+  small textual lockfile, move the bundle out-of-band.
+- **A5 — OCI artifact for everything.** Registry infrastructure exists; digests, cosign, and
+  scanning come free; and it pays for binaries in the same currency an image already uses.
+  Rejected for phase 1 on loop speed — push-and-pull per promotion is hostile to
+  "tweak a skill, re-promote" — and because the harness pod would need its own pull client,
+  kubelet not fetching artifacts on its behalf. **Not a rival**: D1 already assumes an image
+  for binaries, so signing the bundle artifact later is additive.
+- **A6 — Read-write memory synced back to the laptop.** Rejected on §5(1) (idempotency) and
+  §5(2) (unreviewed writes).
+- **A7 — Session-scoped memory writes.** Rejected as redundant: within-run continuity is what
+  `checkpoint-extension.ts` already provides, and a second mechanism for it is drift.
+- **A8 — A dedicated memory service now.** The right eventual answer to a _different_ problem
+  (curated, team-shared knowledge across many runs, with ownership and staleness semantics).
+  Speculative here, and it would land scope in the promotion path.
+
+## 8. Testing and acceptance
+
+Mirroring existing conventions: `harness/test/converge.test.ts` for script generation,
+`run-turn-sandbox.test.ts` for fake transports, `pool-live-smoke.test.ts` and
+`packages/k8s-sandbox/test/m3-live-smoke.test.ts` for the env-gated live tier.
+
+**Unit, no cluster or Redis** — over fixture trees shaped like `~/.claude`:
+
+- `promote-classify.test.ts` — `cache/` vs `marketplaces/` dedupe, deny-list application,
+  broken-sibling-path detection, dangling `MEMORY.md` links, collision surfacing.
+- `promote-bundle.test.ts` — **digest determinism is load-bearing** and gets property-style
+  coverage, not one example: identical input yields an identical digest, and a different
+  directory-walk order still does. Both "re-promotion is free" and leaf replay rest on
+  canonical tar. Plus secret-scan positives and negatives.
+
+**Wiring** — `config-resolver.test.ts` asserts an unpacked bundle yields the expected skills,
+prompts, and context. One test is named for the bug it guards: **the harness `CLAUDE.md`
+leak**. Construct the loader with a cwd inside this repository and assert the harness project's
+instructions are absent from `agentsFiles`. It is the only failure here that produces
+plausible-but-wrong behavior instead of an error, so it is the only one a reviewer would never
+notice.
+
+**Overlay** — `config-overlay.test.ts`, mirroring `converge.test.ts` with an injected fake
+`ExecInPod`: assert writes land only under the per-leaf path and the digest-keyed shared cache,
+never globally; assert `chmod +x`; assert flock discipline matches converge's.
+
+**Integration with Redis**, following `integration.test.ts` — round-trip by digest, a second
+identical upload is a no-op, a missing digest fails fast.
+
+**Live smoke** — `promote-live-smoke.test.ts` behind `SH_PROMOTE_LIVE_SMOKE`. It promotes a
+deliberately tiny two-skill fixture and runs a leaf whose success _requires_ a promoted skill
+to fire **and** that skill to read a sibling file from its own directory. That assertion is
+what proves path translation end to end — otherwise the first proof arrives in production.
+
+**Measurement** — cold start with a bundle versus without, recorded in
+[`../../deploy/knative/EXPERIMENTS.md`](../../deploy/knative/EXPERIMENTS.md). The README claims
+sub-second cold start and this feature is the most plausible thing to erode it, so it belongs
+in the evidence trail rather than in an assertion.
+
+**Done means:**
+
+1. A bundle promoted from a real `~/.claude` runs a leaf that invokes a promoted skill and
+   reads a sibling file from it.
+2. With `configRef` absent, the existing suite is green unmodified.
+3. A planted credential blocks promotion.
+4. A missing binary is reported by preflight _before_ dispatch.
+5. Re-promoting unchanged configuration uploads nothing.
+6. The harness's own `CLAUDE.md` is provably absent from a promoted session.
+7. Cold-start delta measured and recorded.
+8. The lockfile is committed and diffs legibly between promotions.
+
+Continuing the red-team precedent from the fs-free spec: **a grep assertion that no bundle
+content is written outside `/tmp` on the harness side**, keeping the lockdown posture
+([ADR-0011](../adrs/0011-harness-lockdown.md)) intact.
+
+## 9. Deferred: subagent support
+
+Pi has no Task equivalent — `pi-fork/packages/coding-agent/src/core/tools/` holds `bash`,
+`edit`, `find`, `grep`, `ls`, `read`, `write` and nothing that spawns a nested agent. Support
+is buildable, since `createAgentSession` is exported from Pi's SDK, but it needs nested session
+IDs derived from the parent, budget roll-up through `budget-voter.ts`, a defined interaction
+with `checkpoint-extension.ts`, and a depth cap. That is net-new code touching the two most
+delicate pieces of existing machinery and warrants **its own spec**.
+
+The seam is clean: subagent-dependent skills drop today with a stable reason code, and when the
+extension lands the code flips and they travel. Nothing else in this design changes.
+
+## 10. Risks
+
+- **A lying preflight.** Mitigated by the CI inventory check (§4.5); without it, trust decays
+  silently.
+- **Deny-list rot.** Curation is a maintenance cost; a newly-added local skill family that
+  cannot work remotely will misfire until the list catches up. Accepted deliberately over
+  heuristic inference.
+- **Cold-start regression.** Bounded by measurement (§8) rather than assumption.
+- **Blob size in Redis.** Single-digit MB with dedupe and TTL is acceptable; an object store is
+  the escape hatch if bundles grow, and D1's digest indirection makes that swap local.
+- **Semantic drift.** A promoted workflow can behave differently for reasons no check catches
+  (§4.6, tier 3). The mitigation is honesty in the report, not a promise of fidelity.
