@@ -23,3 +23,30 @@ updates:
     directory: /
     schedule:
       interval: weekly
+
+  # Go modules were not covered above, so Go advisories reached us only as a red
+  # trivy-scan gate and had to be bumped by hand -- CVE-2026-84304 (grpc) in #203.
+  # Dependabot needs one entry per go.mod; there is no recursive directory match.
+  - package-ecosystem: gomod
+    directory: /gen/go
+    schedule:
+      interval: weekly
+    groups:
+      # grpc, protobuf and genproto are generated-code peers: bumping one without
+      # the others can break the buf-generated bindings, so move them together.
+      grpc-protobuf:
+        patterns:
+          - 'google.golang.org/grpc*'
+          - 'google.golang.org/protobuf*'
+          - 'google.golang.org/genproto*'
+
+  - package-ecosystem: gomod
+    directory: /remote-worker
+    schedule:
+      interval: weekly
+    groups:
+      grpc-protobuf:
+        patterns:
+          - 'google.golang.org/grpc*'
+          - 'google.golang.org/protobuf*'
+          - 'google.golang.org/genproto*'
