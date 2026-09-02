@@ -89,8 +89,8 @@ importers:
   packages/k8s-sandbox:
     dependencies:
       '@bufbuild/protobuf':
-        specifier: ^2.6.1
-        version: 2.12.1
+        specifier: ^2.14.0
+        version: 2.14.0
       '@earendil-works/pi-coding-agent':
         specifier: link:../../pi-fork/packages/coding-agent
         version: link:../../pi-fork/packages/coding-agent
@@ -189,8 +189,8 @@ importers:
 
 packages:
 
-  '@bufbuild/protobuf@2.12.1':
-    resolution: {integrity: sha512-BvAMfS6LrgZiryOAZ4pBYucu4wG/Ei/9o9DZ9akbREnMLbPJiom2i8b9C8IsKErQoiKqVhrerzt3kOT/RrzLHg==}
+  '@bufbuild/protobuf@2.14.0':
+    resolution: {integrity: sha512-C3UGsiCwSprE2NKIIFA3hCDlpXTMCAXRZuEVp88L1GY36Y41+rYL5fryE+nOFhp4p4JPQvdV8PQ4DWgHgeTE+w==}
 
   '@esbuild/aix-ppc64@0.21.5':
     resolution: {integrity: sha512-1SDgH6ZSPTlggy1yI6+Dbkiz8xzpHJEVAlF/AM1tHPLsf5STom9rwtjE4hKAF20FfXXNTFqEYXyJNWh1GiZedQ==}
@@ -1026,7 +1026,7 @@ packages:
 
 snapshots:
 
-  '@bufbuild/protobuf@2.12.1': {}
+  '@bufbuild/protobuf@2.14.0': {}
 
   '@esbuild/aix-ppc64@0.21.5':
     optional: true
