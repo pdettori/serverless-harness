@@ -103,10 +103,27 @@ export type LeafResult =
   | { status: "responded"; text: string; usage?: LeafUsage }
   | { status: "failed"; reason: "no_verdict" | "invalid_verdict" | "bad_inputs" | "error" | "saturated"; message?: string };
 
+/**
+ * Strip trailing "/" from a workspace root with a linear scan.
+ *
+ * Deliberately not `/\/+$/`: CodeQL flags that as polynomial (js/polynomial-redos), and the input
+ * is caller-controlled -- workspaceRef arrives on the LeafEnvelope, i.e. straight off the request
+ * body with no normalisation in between. The regex retries from every position on a long run of
+ * slashes, so `/w` + 100k slashes + a non-slash costs ~15s of CPU per call; this costs ~0.005ms.
+ *
+ * Shared by both prompt builders on purpose. 8efd213 rewrote the same regex in buildSolvePrompt
+ * but missed the copy in buildLeafPrompt; one implementation means there is no second copy to miss.
+ */
+function stripTrailingSlashes(ref: string): string {
+  let end = ref.length;
+  while (end > 0 && ref.charCodeAt(end - 1) === 47 /* "/" */) end--;
+  return ref.slice(0, end);
+}
+
 export function buildLeafPrompt(item: LeafItem, workspaceRef?: string): string {
   // The file/grep tools run in the sandbox pod; give the agent the absolute path so it does
   // not resolve a relative path against the harness process cwd (which the sandbox maps away).
-  const filePath = workspaceRef ? `${workspaceRef.replace(/\/+$/, "")}/${item.file}` : item.file;
+  const filePath = workspaceRef ? `${stripTrailingSlashes(workspaceRef)}/${item.file}` : item.file;
   const lines = [
     `You are reviewing one candidate finding in a sandboxed workspace.`,
     `Item id: ${item.item_id}`,
@@ -135,11 +152,7 @@ export function buildLeafPrompt(item: LeafItem, workspaceRef?: string): string {
 export function buildSolvePrompt(problemStatement: string, workspaceRef: string): string {
   // The agent's tools run in the sandbox pod and its session cwd is a harness-local path, so the
   // worktree root must be given as an absolute in-pod path the model edits under (cf. buildLeafPrompt).
-  // Strip trailing slashes with a linear scan instead of `/\/+$/`, which CodeQL flags as polynomial
-  // (js/polynomial-redos) on strings with many trailing '/'.
-  let rootEnd = workspaceRef.length;
-  while (rootEnd > 0 && workspaceRef.charCodeAt(rootEnd - 1) === 47 /* "/" */) rootEnd--;
-  const root = workspaceRef.slice(0, rootEnd);
+  const root = stripTrailingSlashes(workspaceRef);
   return [
     `You are fixing a software issue in a checked-out repository.`,
     `Repository root (an absolute path in your sandbox): ${root}`,

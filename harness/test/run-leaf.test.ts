@@ -124,6 +124,44 @@ describe("buildLeafPrompt", () => {
   });
 });
 
+// The prompt builders strip trailing "/" from workspaceRef with a linear scan rather than
+// `/\/+$/`, which CodeQL flags as polynomial (js/polynomial-redos). workspaceRef arrives on the
+// LeafEnvelope -- i.e. straight off the request body, with no normalisation in between -- so the
+// input is caller-controlled. These cases pin the rewrite to the old regex's exact behaviour; the
+// last is the regression guard: the regex burns ~15s of CPU on 100k slashes, the scan ~0.005ms.
+describe("prompt builders: trailing-slash strip on workspaceRef", () => {
+  const item = { item_id: "i1", file: "a.py", pattern: "eval(" };
+  // prettier-ignore
+  const refs = [
+    "/w", "/w/", "/w//", "/w/////////", "/", "////", "/w/x", "/w ", "/w /", "/wörk/", "/w/./",
+  ];
+
+  for (const ref of refs) {
+    it(`buildLeafPrompt matches the old strip for ${JSON.stringify(ref)}`, () => {
+      expect(buildLeafPrompt(item, ref)).toContain(`${ref.replace(/\/+$/, "")}/a.py`);
+    });
+
+    it(`buildSolvePrompt matches the old strip for ${JSON.stringify(ref)}`, () => {
+      expect(buildSolvePrompt("stmt", ref)).toContain(
+        `root (an absolute path in your sandbox): ${ref.replace(/\/+$/, "")}`,
+      );
+    });
+  }
+
+  it("leaves the bare file name alone when workspaceRef is empty", () => {
+    expect(buildLeafPrompt(item, "")).toContain("read tool): a.py");
+  });
+
+  it("handles a pathological run of slashes in linear time (js/polynomial-redos guard)", () => {
+    // Many slashes then a non-slash: nothing to strip, but `/\/+$/` retries from every position.
+    const evil = `/w${"/".repeat(100_000)}x`;
+    const started = performance.now();
+    const prompt = buildLeafPrompt(item, evil);
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(prompt).toContain(`${evil}/a.py`);
+  });
+});
+
 describe("buildSolvePrompt", () => {
   it("embeds the problem statement and the absolute worktree root", () => {
     const p = buildSolvePrompt("Fix the off-by-one in paginate().", "/workspace/leaves/run-1/");
