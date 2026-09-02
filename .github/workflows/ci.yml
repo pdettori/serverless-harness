@@ -24,27 +24,27 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
         with:
-          node-version: "22"
+          node-version: '22'
 
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86  # v6.0.10
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 9
 
       - name: Cache pnpm store
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.local/share/pnpm/store/v3
           key: pnpm-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: pnpm-
 
       - name: Cache pi-fork node_modules
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: pi-fork/node_modules
           key: pi-fork-${{ hashFiles('pi-fork/package-lock.json') }}
@@ -68,6 +68,43 @@ jobs:
       - name: Test
         run: pnpm -r test
 
+  # Runs the same `make lint` (pre-commit over all files) that contributors run locally, so
+  # a config that silently executes zero hooks can no longer look identical to a green
+  # build -- which is exactly how the broken `typescript` identify tag survived unnoticed.
+  # Needs node/pnpm because the prettier hook drives the repo's own pinned Prettier, and
+  # needs the pi-fork submodule because the workspace links into it.
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: '22'
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 9
+
+      - name: Cache pre-commit environments
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+          restore-keys: pre-commit-
+
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+
+      - name: Install pre-commit
+        run: pipx install pre-commit==4.3.0
+
+      - name: Run hooks
+        run: make lint
+
   # The deploy/ shell tests are cluster-free (kubectl/kind/docker are mocked on PATH), so
   # they need no node, no pnpm and no cluster -- hence their own fast job rather than a step
   # tacked onto `check`. Without this job nothing runs them: security-scans.yml only
@@ -76,7 +113,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run deploy shell tests
         run: make test-deploy
@@ -85,14 +122,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99  # v1
+      - uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1
         with:
-          version: "1.71.0"
+          version: '1.71.0'
           github_token: ${{ github.token }}
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: gen/go/go.mod
 
