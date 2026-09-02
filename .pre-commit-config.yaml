@@ -19,6 +19,11 @@ repos:
   #
   # `ts`/`tsx` are the identify tags for TypeScript -- there is no `typescript` tag, and
   # naming one silently matched no .ts file and then failed config validation outright.
+  #
+  # Deliberately no `exclude:`. Prettier applies `.prettierignore` even to paths handed to
+  # it explicitly, which is exactly how pre-commit invokes it, so `.prettierignore` is the
+  # single source of truth for the ignore set -- one list to keep correct instead of two
+  # that must agree. Same reasoning as the single pinned binary above.
   - repo: local
     hooks:
       - id: prettier
@@ -26,7 +31,6 @@ repos:
         entry: pnpm exec prettier --write --ignore-unknown
         language: system
         types_or: [javascript, jsx, ts, tsx, json, yaml, markdown]
-        exclude: ^(pi-fork/|packages/k8s-sandbox/src/gen/|gen/)
 
   # `-S warning` matches the shellcheck gate in .github/workflows/security-scans.yml
   # exactly, so the hook and that job cannot disagree about what fails. The scripts are
