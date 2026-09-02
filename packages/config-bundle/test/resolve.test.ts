@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { resolveSkills, readSkillFrontmatterName } from '../src/resolve.js';
@@ -32,6 +32,15 @@ describe('readSkillFrontmatterName', () => {
   });
   it('returns null when there is no frontmatter', () => {
     expect(readSkillFrontmatterName('# just a heading')).toBeNull();
+  });
+  it('strips surrounding double quotes', () => {
+    expect(readSkillFrontmatterName('---\nname: "foo"\n---\nbody')).toBe('foo');
+  });
+  it('strips surrounding single quotes', () => {
+    expect(readSkillFrontmatterName("---\nname: 'foo'\n---\nbody")).toBe('foo');
+  });
+  it('leaves unquoted names untouched', () => {
+    expect(readSkillFrontmatterName('---\nname: foo\n---\nbody')).toBe('foo');
   });
 });
 
@@ -84,5 +93,29 @@ describe('resolveSkills', () => {
 
   it('returns an empty list for roots that do not exist', () => {
     expect(resolveSkills({ userDir: join(root, 'nope') })).toEqual([]);
+  });
+
+  it('skips dangling symlinks without throwing', () => {
+    skill(join(root, 'user', 'skills', 'real'), 'real');
+    // Create a dangling symlink inside the skill directory
+    const skillDir = join(root, 'user', 'skills', 'real');
+    symlinkSync(join(root, 'nonexistent'), join(skillDir, 'dangling'));
+    const found = resolveSkills({ userDir: join(root, 'user') });
+    expect(found).toHaveLength(1);
+    expect(found[0]!.name).toBe('real');
+    // dangling symlink should not appear in files
+    expect(found[0]!.files).not.toContain('dangling');
+  });
+
+  it('does not hang on symlink cycles', () => {
+    skill(join(root, 'user', 'skills', 'real'), 'real');
+    const skillDir = join(root, 'user', 'skills', 'real');
+    const subdir = join(skillDir, 'subdir');
+    mkdirSync(subdir);
+    // Create a symlink cycle: subdir -> skill dir (ancestor)
+    symlinkSync(skillDir, join(subdir, 'cycle'));
+    const found = resolveSkills({ userDir: join(root, 'user') });
+    expect(found).toHaveLength(1);
+    expect(found[0]!.name).toBe('real');
   });
 });
