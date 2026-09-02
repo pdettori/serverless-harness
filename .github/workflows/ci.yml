@@ -145,6 +145,19 @@ jobs:
           git diff --cached --exit-code -- packages/k8s-sandbox/src/gen gen \
             || { echo "::error::Generated stubs are out of date or untracked. Run 'buf generate' and commit."; exit 1; }
 
+      # A module left out of go.work falls back to standalone resolution and brings
+      # back the stale-go.mod failure the workspace exists to prevent (#212).
+      - name: Verify go.work covers every module
+        run: |
+          covered="$(go work edit -json | jq -r '.Use[].DiskPath')"
+          rc=0
+          while read -r mod; do
+            dir="./$(dirname "$mod")"
+            grep -qxF "$dir" <<<"$covered" \
+              || { echo "::error file=$mod::$mod is not listed in go.work -- add \"$dir\" to the use block."; rc=1; }
+          done < <(git ls-files | grep -E '(^|/)go\.mod$')
+          exit $rc
+
       - name: Build and test Go stubs
         run: cd gen/go && go build ./... && go test ./...
 
@@ -154,3 +167,15 @@ jobs:
           test -z "$(gofmt -l .)" || { echo "::error::gofmt needs running:"; gofmt -l .; exit 1; }
           go vet ./...
           go test -race ./...
+
+      # Advisory only. In workspace mode a stale go.mod no longer breaks the build, so
+      # this is hygiene rather than correctness -- and failing here would put Dependabot's
+      # coupled bumps back in the red, which is the whole point of #212. Neither module is
+      # consumed externally (gen/go is reached only through the local replace), so drift
+      # can be tidied whenever convenient.
+      - name: Check go.mod tidiness (advisory)
+        run: |
+          for mod in gen/go remote-worker; do
+            (cd "$mod" && go mod tidy -diff) \
+              || echo "::warning file=$mod/go.mod::$mod/go.mod is not tidy -- run 'cd $mod && go mod tidy'"
+          done

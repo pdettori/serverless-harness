@@ -8,6 +8,9 @@
 # RELAY_ADDR=sandbox-relay.default.svc:8443 (no port-forward needed in-cluster).
 FROM golang:1.25-alpine AS build
 WORKDIR /src
+# go.work first: it is what lets the two modules be bumped independently (see #212).
+# Without it the build here resolves each go.mod on its own and fails on a stale one.
+COPY go.work ./
 COPY gen/go/ ./gen/go/
 COPY remote-worker/ ./remote-worker/
 WORKDIR /src/remote-worker
