@@ -27,4 +27,4 @@ We will build a job-mode `/runs` endpoint that runs an agent autonomously to a s
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

@@ -32,10 +32,10 @@ spec:
               value: __TOKEN__
           securityContext:
             runAsNonRoot: true
-            runAsUser: 1001           # matches the image's USER 1001; nonroot-v2 SCC allows it
+            runAsUser: 1001 # matches the image's USER 1001; nonroot-v2 SCC allows it
             allowPrivilegeEscalation: false
             capabilities:
-              drop: ["ALL"]
+              drop: ['ALL']
             seccompProfile:
               type: RuntimeDefault
           # Memory must cover the worker's own buffering, not just its idle size.
@@ -47,5 +47,5 @@ spec:
           # A 64Mi limit was therefore an OOMKill the relay could trigger at will.
           # Keep this in sync with BufferCap in internal/exec/runner.go.
           resources:
-            requests: { cpu: "10m", memory: "64Mi" }
-            limits: { memory: "256Mi" }
+            requests: { cpu: '10m', memory: '64Mi' }
+            limits: { memory: '256Mi' }

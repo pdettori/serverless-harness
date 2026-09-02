@@ -27,4 +27,4 @@ We will mint a **per-session** SPIFFE identity with the attested user encoded in
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

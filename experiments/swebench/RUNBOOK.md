@@ -11,21 +11,22 @@ contributors who have never run it before.
 Two experiments over [SWE-bench Verified](https://www.swebench.com/) solve tasks ("leaves"), each
 of which leases an execution **sandbox** (a pod with the repo + tools) from a shared pool:
 
-| Exp | Question | Output |
-|-----|----------|--------|
-| **E6** | How many leaves can one sandbox serve (sharing ratio **N = 1/duty**)? Where's the concurrency knee? | `RATIO_CURVE`, `E6_RESULT`, sweep points |
-| **E1** | Dedicated (1 sandbox/leaf) vs a shared pool: reservation-seconds saved? | `E1B_RESULT` (benefit ratio) |
-| **Plan D** | Are the produced patches *correct*? (offline, model-free) | resolved-rate |
+| Exp        | Question                                                                                            | Output                                   |
+| ---------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| **E6**     | How many leaves can one sandbox serve (sharing ratio **N = 1/duty**)? Where's the concurrency knee? | `RATIO_CURVE`, `E6_RESULT`, sweep points |
+| **E1**     | Dedicated (1 sandbox/leaf) vs a shared pool: reservation-seconds saved?                             | `E1B_RESULT` (benefit ratio)             |
+| **Plan D** | Are the produced patches _correct_? (offline, model-free)                                           | resolved-rate                            |
 
 **Platform constraint:** the SWE-bench sandbox image is **x86_64-only** (built from the official
-per-instance eval images), so the *cluster* steps are **OpenShift/AMD64 only**. The *offline
-evaluator* (§9) runs anywhere with Docker, including arm64 laptops under emulation.
+per-instance eval images), so the _cluster_ steps are **OpenShift/AMD64 only**. The _offline
+evaluator_ (§9) runs anywhere with Docker, including arm64 laptops under emulation.
 
 ---
 
 ## 1. Prerequisites
 
 **Cluster**
+
 - OpenShift **4.20+**, AMD64 worker nodes, `oc` logged in as **cluster-admin**.
 - Reference run used 6× `m6i.xlarge` (4 vCPU / 16 GiB) on AWS. Sandbox pods request 512Mi/250m,
   limit 4Gi; each sandbox needs a **50Gi RWO PVC** (a default StorageClass must exist).
@@ -35,6 +36,7 @@ evaluator* (§9) runs anywhere with Docker, including arm64 laptops under emulat
 (for §9 only).
 
 **Credentials**: an Anthropic API key. Export **before** cluster setup:
+
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...          # direct Anthropic (recommended)
 # — or, for a gateway: export ANTHROPIC_AUTH_TOKEN=...  ANTHROPIC_BASE_URL=https://...
@@ -49,6 +51,7 @@ git clone https://github.com/kagenti/serverless-harness.git
 cd serverless-harness
 git submodule update --init --recursive        # pi-fork submodule
 ```
+
 All paths below are relative to this repo root. Requires the SWE-bench experiment scripts on
 `main` (Plan B/C + the Plan D evaluator, PR #140).
 
@@ -75,6 +78,7 @@ oc patch knativeserving knative-serving -n knative-serving --type merge \
 ```
 
 Sanity check:
+
 ```bash
 oc get ksvc serverless-harness -n default          # Ready=True, URL present
 oc get pods -n default -l app=redis                 # Running
@@ -82,6 +86,7 @@ oc get crd sandboxes.agents.x-k8s.io                # installed
 ```
 
 Capture the route for the drivers:
+
 ```bash
 export KSVC_URL="https://$(oc get route serverless-harness -n default -o jsonpath='{.spec.host}')"
 export KUBECONFIG=<path-to-cluster-kubeconfig>
@@ -121,6 +126,7 @@ deploy/knative/build-swebench-sandbox.sh --emit --limit 5 --offset 5 \
 ```
 
 Confirm the final `…ff962cb83fe5c624-15of15` tag exists:
+
 ```bash
 oc get istag -n default | grep swebench-sandbox
 ```
@@ -154,6 +160,7 @@ oc apply -f deploy/knative/swebench-sandbox-pool.yaml
 oc get sandbox -n default -l app=sandbox                 # wait for swebench-sandbox-0/1/2
 oc wait --for=condition=Ready pod -l sh.kagenti.io/sandbox-pool=swebench -n default --timeout=600s
 ```
+
 3 Sandbox CRs, pool label `sh.kagenti.io/sandbox-pool=swebench`, image pinned to the
 `…-15of15` internal-registry tag, 50Gi PVC each. First image pull takes several minutes.
 
@@ -162,6 +169,7 @@ oc wait --for=condition=Ready pod -l sh.kagenti.io/sandbox-pool=swebench -n defa
 ## 7. Run the experiments
 
 Set a per-run log dir and keep everything under it:
+
 ```bash
 export LOG_DIR=/tmp/kagenti/run-$(date +%Y%m%d); mkdir -p "$LOG_DIR"
 ```
@@ -176,6 +184,7 @@ E6_LIVE=1 WORKLOAD=swebench \
   KSVC_URL="$KSVC_URL" KUBECONFIG="$KUBECONFIG" LOG_DIR="$LOG_DIR" \
   bash deploy/knative/e6-saturation.sh 2>&1 | tee "$LOG_DIR/e6.log"
 ```
+
 Emits per-bucket duty, `RATIO_CURVE=…`, `sweep c=… p95Ms=…`, a final `E6_RESULT …`, and a
 `COST_REPORT …`. Note the `knee=` value.
 
@@ -192,6 +201,7 @@ E1B_LIVE=1 \
   KSVC_URL="$KSVC_URL" KUBECONFIG="$KUBECONFIG" LOG_DIR="$LOG_DIR" \
   bash deploy/knative/e1-benefit.sh 2>&1 | tee "$LOG_DIR/e1.log"
 ```
+
 Emits `dedicated:` / `shared@N:` lines, a final `E1B_RESULT benefit=…x …`, and a `COST_REPORT …`.
 
 > **Long runs (~4–6 h):** run each driver under `nohup … </dev/null &` (or a detached wrapper that
@@ -222,7 +232,7 @@ Key artifacts in `$LOG_DIR`: `e6.log`, `e1.log`, `predictions*.jsonl` (patches),
 `deploy/knative/EXPERIMENTS.md`.
 
 > **Health tally** on `E6_RESULT`/`E1B_RESULT` (`health=solved/total … transport=N`): OpenShift
-> ingress may drop long-lived HTTP responses; those leaves are *excluded from metrics but counted*.
+> ingress may drop long-lived HTTP responses; those leaves are _excluded from metrics but counted_.
 > Their cost is still captured (Redis-side) and their patch is recoverable (`poll_leaf_result`), so
 > the numbers stay trustworthy despite transport loss.
 
@@ -239,12 +249,14 @@ PRED_A="$LOG_DIR/predictions.jsonl" PRED_B="$LOG_DIR/predictions-e1.jsonl" \
   RUN_ID=my-run MAX_WORKERS=2 LOG_DIR="$LOG_DIR/eval" \
   bash experiments/swebench/evaluate.sh
 ```
+
 Prints `RESOLVED_RATE = <resolved>/<completed> (…%)` plus the resolved / unresolved / empty-patch /
 errored instance lists. The script installs `swebench` in a venv, merges + dedups the two
 prediction files (restoring trailing newlines), pulls prebuilt x86 eval images
 (`--namespace swebench`), and summarizes the report.
 
 Smoke one instance first (fast, proves the loop):
+
 ```bash
 INSTANCE_IDS="django__django-11555" RUN_ID=smoke MAX_WORKERS=1 \
   PRED_A="$LOG_DIR/predictions.jsonl" PRED_B="$LOG_DIR/predictions-e1.jsonl" \
@@ -276,13 +288,13 @@ oc get sandbox -n default -l app=sandbox        # default pool back to 3/3
 
 ## 11. Interpreting the results
 
-| Line | Meaning |
-|------|---------|
-| `RATIO_CURVE … n=5.7/7.3/3.1` | **N = 1/duty** per weight bucket = concurrent leaves one sandbox could serve. Reference: light 5.7 / medium 7.3 / heavy 3.1. |
-| `sweep c=… p95Ms=…` | Concurrency sweep. If p95 climbs while throughput is flat and sandboxes stay lightly loaded → the **knee is upstream** (model/harness tier), not the sandbox pool. |
-| `E1B_RESULT benefit=1.5x` | Dedicated ÷ shared reservation-seconds/leaf. >1 = pooling saves reserved sandbox-time; check `withinDegrade=true` (p95 within the 2× budget). |
-| `COST_REPORT costUsd=…` | Model spend, summed from Redis session streams (dominated by cache-reads). Reference full run ≈ $25.90 on Haiku. |
-| `RESOLVED_RATE` (§9) | Correctness: fraction of applied patches that pass the gold tests. |
+| Line                          | Meaning                                                                                                                                                            |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `RATIO_CURVE … n=5.7/7.3/3.1` | **N = 1/duty** per weight bucket = concurrent leaves one sandbox could serve. Reference: light 5.7 / medium 7.3 / heavy 3.1.                                       |
+| `sweep c=… p95Ms=…`           | Concurrency sweep. If p95 climbs while throughput is flat and sandboxes stay lightly loaded → the **knee is upstream** (model/harness tier), not the sandbox pool. |
+| `E1B_RESULT benefit=1.5x`     | Dedicated ÷ shared reservation-seconds/leaf. >1 = pooling saves reserved sandbox-time; check `withinDegrade=true` (p95 within the 2× budget).                      |
+| `COST_REPORT costUsd=…`       | Model spend, summed from Redis session streams (dominated by cache-reads). Reference full run ≈ $25.90 on Haiku.                                                   |
+| `RESOLVED_RATE` (§9)          | Correctness: fraction of applied patches that pass the gold tests.                                                                                                 |
 
 **Sizing guidance from the reference run:** set the shared-pool cap from the **duty-cycle N (3–7)**,
 and scale **harness pods + model quota** (not the sandbox pool) for more throughput.
@@ -291,15 +303,15 @@ and scale **harness pods + model quota** (not the sandbox pool) for more through
 
 ## 12. Troubleshooting
 
-| Symptom | Cause / fix |
-|---------|-------------|
-| `set_ksvc_timeout` fails / revision not Ready | Cluster `max-revision-timeout-seconds` < 1800 — do the §3 patch. |
-| Leaves killed mid-run, empty patches | Same timeout issue, or ingress dropped the response. Check the `transport=` tally; cost/patch are still recoverable from Redis. |
-| `SandboxPoolSaturatedError` | Every pool pod at `KAGENTI_SANDBOX_CAP`. Raise the cap or add Sandbox CRs. |
-| Evaluator: `patch unexpectedly ends in middle of line` | Missing trailing newline on captured patch. `merge_predictions.py` repairs it; the capture-side fix is PR #141. |
-| Evaluator very slow / flaky on arm64 | x86 images under emulation. Lower `MAX_WORKERS`, or run on a native x86 host. Pure-python instances work; C-extension repos need native x86. |
-| Sandbox pod `ImagePullBackOff` | The `…-15of15` istag isn't built/pushed (§4), or the pool YAML tag doesn't match. |
+| Symptom                                                | Cause / fix                                                                                                                                  |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `set_ksvc_timeout` fails / revision not Ready          | Cluster `max-revision-timeout-seconds` < 1800 — do the §3 patch.                                                                             |
+| Leaves killed mid-run, empty patches                   | Same timeout issue, or ingress dropped the response. Check the `transport=` tally; cost/patch are still recoverable from Redis.              |
+| `SandboxPoolSaturatedError`                            | Every pool pod at `KAGENTI_SANDBOX_CAP`. Raise the cap or add Sandbox CRs.                                                                   |
+| Evaluator: `patch unexpectedly ends in middle of line` | Missing trailing newline on captured patch. `merge_predictions.py` repairs it; the capture-side fix is PR #141.                              |
+| Evaluator very slow / flaky on arm64                   | x86 images under emulation. Lower `MAX_WORKERS`, or run on a native x86 host. Pure-python instances work; C-extension repos need native x86. |
+| Sandbox pod `ImagePullBackOff`                         | The `…-15of15` istag isn't built/pushed (§4), or the pool YAML tag doesn't match.                                                            |
 
 ---
 
-*Reference run: 2026-07-17, OpenShift 4.20.8, Claude Haiku 4.5. Assisted-By: Claude Code.*
+_Reference run: 2026-07-17, OpenShift 4.20.8, Claude Haiku 4.5. Assisted-By: Claude Code._

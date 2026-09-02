@@ -9,7 +9,7 @@ updates:
       # bumped together — they fail CI if versions diverge across steps.
       codeql-action:
         patterns:
-          - "github/codeql-action*"
+          - 'github/codeql-action*'
 
   - package-ecosystem: npm
     directory: /

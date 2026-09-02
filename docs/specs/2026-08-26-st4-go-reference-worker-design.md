@@ -89,7 +89,7 @@ ways to return the same bytes. Reported on #87 so ST1's author can correct the p
 
 This does not contradict the "static binary, no runtime deps" requirement: the binary
 itself stays CGO-free with no dynamic dependencies. `bash` is a dependency of the
-*commands*, not of the worker — and in production the binary drops into a sandbox image
+_commands_, not of the worker — and in production the binary drops into a sandbox image
 that already has a shell. It is the two **standalone demo images** built here that need a
 shell-bearing base.
 
@@ -99,16 +99,16 @@ must be verified empirically before choosing; the plan carries that as an explic
 
 ## 4. Decisions
 
-| # | Decision | Rationale |
-|---|---|---|
-| D1 | Per-exec `bash -c` child; **no** persistent shell | Every harness command is self-contained (`cd 'cwd' && …`, `env K=v bash -c …`), so no state must persist. Decisive: `base64 -d > f` only terminates on stdin EOF, which a shared shell cannot give per-exec. |
-| D2 | Timeout → `ExecError{"timeout:<n>"}` | All three existing transports reject with exactly this string (`exec.ts:79`, `persistent-exec.ts:129`, and `GrpcRelayTransport`'s own deadline). The worker's timer normally fires first, so its choice is what the caller sees; `End{-1}` would make a timeout resolve as a success with partial output. |
-| D3 | `streaming: false` → buffer, one `Chunk` + terminal | §3.2. |
-| D4 | Dedup keyed `req_id` + fingerprint guard | §3.1. |
-| D5 | Bounded concurrency, `capacity_max = N` (default 4) | Sandboxes are shared, so concurrent execs are real; strict serialization head-of-line blocks one leaf behind another's slow `bash`. §7's "one in flight" describes the ordering guarantee, not a worker cap. |
-| D6 | Contract battery against an in-process **Go** fake relay; real TS relay behind `SH_LIVE_RELAY=1` | The battery's subjects are all worker-side (SIGKILL, process groups, dedup); the relay is a pure bridge and contributes nothing to them. Decisively, dedup can *only* be tested against a relay that misbehaves on purpose — the real one has no redelivery path. Keeps the existing CI Go job free of node/pnpm/redis. |
-| D7 | Delete the HELLO WORLD path; rewrite its docs | Once bash runs, a mode that fabricates output is a liability in a component whose security story is "only executes commands and returns bytes". The demo becomes strictly better: the FLAGGED verdict comes from real file content. |
-| D8 | Reconnect in-process, cache preserved | Today the worker returns on `recv` error and exits; a pod restart wipes the cache, making "reconnect → dedup" unreachable by construction. |
+| #   | Decision                                                                                         | Rationale                                                                                                                                                                                                                                                                                                               |
+| --- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | Per-exec `bash -c` child; **no** persistent shell                                                | Every harness command is self-contained (`cd 'cwd' && …`, `env K=v bash -c …`), so no state must persist. Decisive: `base64 -d > f` only terminates on stdin EOF, which a shared shell cannot give per-exec.                                                                                                            |
+| D2  | Timeout → `ExecError{"timeout:<n>"}`                                                             | All three existing transports reject with exactly this string (`exec.ts:79`, `persistent-exec.ts:129`, and `GrpcRelayTransport`'s own deadline). The worker's timer normally fires first, so its choice is what the caller sees; `End{-1}` would make a timeout resolve as a success with partial output.               |
+| D3  | `streaming: false` → buffer, one `Chunk` + terminal                                              | §3.2.                                                                                                                                                                                                                                                                                                                   |
+| D4  | Dedup keyed `req_id` + fingerprint guard                                                         | §3.1.                                                                                                                                                                                                                                                                                                                   |
+| D5  | Bounded concurrency, `capacity_max = N` (default 4)                                              | Sandboxes are shared, so concurrent execs are real; strict serialization head-of-line blocks one leaf behind another's slow `bash`. §7's "one in flight" describes the ordering guarantee, not a worker cap.                                                                                                            |
+| D6  | Contract battery against an in-process **Go** fake relay; real TS relay behind `SH_LIVE_RELAY=1` | The battery's subjects are all worker-side (SIGKILL, process groups, dedup); the relay is a pure bridge and contributes nothing to them. Decisively, dedup can _only_ be tested against a relay that misbehaves on purpose — the real one has no redelivery path. Keeps the existing CI Go job free of node/pnpm/redis. |
+| D7  | Delete the HELLO WORLD path; rewrite its docs                                                    | Once bash runs, a mode that fabricates output is a liability in a component whose security story is "only executes commands and returns bytes". The demo becomes strictly better: the FLAGGED verdict comes from real file content.                                                                                     |
+| D8  | Reconnect in-process, cache preserved                                                            | Today the worker returns on `recv` error and exits; a pod restart wipes the cache, making "reconnect → dedup" unreachable by construction.                                                                                                                                                                              |
 
 ## 5. Architecture
 
@@ -165,13 +165,13 @@ concurrent `Send`.
 
 ### Terminal-frame mapping
 
-| Outcome | Frame |
-|---|---|
-| child exited normally | `End{req_id, exit_code: N}` |
-| killed by `Abort` | `End{req_id, exit_code: -1}` (signal/none) |
-| `timeout_s` expired | `ExecError{req_id, "timeout:<n>"}` |
-| spawn / pipe failure | `ExecError{req_id, message}` |
-| queue overflow | `ExecError{req_id, "busy: queue full"}` |
+| Outcome               | Frame                                      |
+| --------------------- | ------------------------------------------ |
+| child exited normally | `End{req_id, exit_code: N}`                |
+| killed by `Abort`     | `End{req_id, exit_code: -1}` (signal/none) |
+| `timeout_s` expired   | `ExecError{req_id, "timeout:<n>"}`         |
+| spawn / pipe failure  | `ExecError{req_id, message}`               |
+| queue overflow        | `ExecError{req_id, "busy: queue full"}`    |
 
 The cache stores whichever terminal frame was produced, not strictly an `End` — a superset
 of the acceptance wording, so a redelivered `req_id` whose first run timed out re-emits the
@@ -200,14 +200,14 @@ still see EOF or anything reading stdin blocks forever. So: write `spec.Stdin` i
 then close unconditionally.
 
 **Two pipes, 32 KiB reads.** Independent goroutines drain stdout and stderr into 32 KiB
-buffers; each read emits one `Chunk` on the matching `Stream` enum. The read size *is* the
+buffers; each read emits one `Chunk` on the matching `Stream` enum. The read size _is_ the
 per-frame cap, satisfying §8 backpressure with no extra buffering layer.
 
 A `Sink.Chunk` error means the stream is gone: the runner cancels its context (killing
 the process group) and returns that error, and the session emits no terminal frame —
 there is nowhere to send it.
 
-*Known property:* relative ordering **between** stdout and stderr is not preserved, since
+_Known property:_ relative ordering **between** stdout and stderr is not preserved, since
 they are independent pipes. The harness does not depend on it — it collects stdout and
 replays both to `onData` — but interleaving is not a guarantee this worker makes.
 
@@ -238,12 +238,12 @@ answered twice — once by the original's own terminal frame, once by the cache,
 completed-only lookup below cannot see while that window is still open.
 
 **Abort reaches queued execs.** An `inflight` map `req_id → cancel` is populated at
-*enqueue*, not at start, so aborting a not-yet-started exec cancels its context and the
+_enqueue_, not at start, so aborting a not-yet-started exec cancels its context and the
 pool drops it without spawning `bash`. `Abort` for an unknown `req_id` is a no-op (§8).
 
 **On disconnect, in-flight execs are cancelled.** Their output has nowhere to go and the
 relay has already failed them harness-side (`relay.ts:89-93`); keeping the children alive
-only orphans work. *Consequence, stated plainly:* a killed-in-flight exec leaves no cached
+only orphans work. _Consequence, stated plainly:_ a killed-in-flight exec leaves no cached
 terminal frame, so a redelivery re-runs it. Dedup protects **completed** execs only — which
 is precisely at-least-once, and honest about it.
 
@@ -256,24 +256,24 @@ of today's hardcoded `["hello-world"]`.
 Bounded LRU, 256 entries, `req_id → {fingerprint, terminal frame}` where fingerprint is
 SHA-256 over `command` + `stdin`.
 
-| Case | Behavior |
-|---|---|
-| unknown `req_id` | run it |
-| known `req_id`, fingerprint matches | re-emit cached terminal frame, do **not** run |
-| known `req_id`, fingerprint differs, original completed | run it fresh, log a warning (§3.1 collision) |
+| Case                                                          | Behavior                                                                                            |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| unknown `req_id`                                              | run it                                                                                              |
+| known `req_id`, fingerprint matches                           | re-emit cached terminal frame, do **not** run                                                       |
+| known `req_id`, fingerprint differs, original completed       | run it fresh, log a warning (§3.1 collision)                                                        |
 | known `req_id`, fingerprint differs, original still in flight | refuse it with `ExecError`, log a warning — running it would mean two concurrent execs under one id |
 
 ### 6.4 `cmd/worker` — wiring
 
-| Env var | Default | Feeds |
-|---|---|---|
-| `RELAY_ADDR` | `localhost:8443` | dial target |
-| `SANDBOX_ID` | `sbx-laptop-1` | `Hello.sandbox_id` |
-| `SANDBOX_TOKEN` | `dev-token` | `authorization: Bearer …` |
-| `RELAY_TLS` | `0` | TLS vs h2c |
-| `WORKER_MAX_CONCURRENT` | `4` | pool size N, `Hello.capacity_max` |
-| `SANDBOX_IMAGE` | `""` | `Hello.image` |
-| `SANDBOX_TRUST` | `untrusted` | `Hello.trust` |
+| Env var                 | Default          | Feeds                             |
+| ----------------------- | ---------------- | --------------------------------- |
+| `RELAY_ADDR`            | `localhost:8443` | dial target                       |
+| `SANDBOX_ID`            | `sbx-laptop-1`   | `Hello.sandbox_id`                |
+| `SANDBOX_TOKEN`         | `dev-token`      | `authorization: Bearer …`         |
+| `RELAY_TLS`             | `0`              | TLS vs h2c                        |
+| `WORKER_MAX_CONCURRENT` | `4`              | pool size N, `Hello.capacity_max` |
+| `SANDBOX_IMAGE`         | `""`             | `Hello.image`                     |
+| `SANDBOX_TRUST`         | `untrusted`      | `Hello.trust`                     |
 
 `Hello.arch` comes from `runtime.GOARCH`, `Hello.capabilities` from `exec.LookPath` (§6.2).
 `Hello.labels` is left empty: nothing consumes it yet (`relay.ts:74` defers `capacityMax`
@@ -303,14 +303,14 @@ one chunk per stream.
 
 **Contract — real runner, real gRPC, `relaytest`** — the acceptance battery:
 
-| Item | Shape |
-|---|---|
-| read | `cat f` → stdout bytes, `End{0}` |
-| write | `base64 -d > f` + stdin → content on disk, `End{0}` |
-| bash | `echo hi; echo oops >&2; exit 7` → STDOUT chunk + STDERR chunk + `End{7}` |
-| grep | `rg pat f` (falls back to `grep` when `rg` is absent) → multiple STDOUT chunks |
-| abort mid-stream | emitter, `Abort` after chunk 1 → `End{-1}`, no further chunks, group gone |
-| timeout | `sleep 30`, `timeout_s: 1` → `ExecError{"timeout:1"}` |
+| Item              | Shape                                                                                                                                                                                                                           |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| read              | `cat f` → stdout bytes, `End{0}`                                                                                                                                                                                                |
+| write             | `base64 -d > f` + stdin → content on disk, `End{0}`                                                                                                                                                                             |
+| bash              | `echo hi; echo oops >&2; exit 7` → STDOUT chunk + STDERR chunk + `End{7}`                                                                                                                                                       |
+| grep              | `rg pat f` (falls back to `grep` when `rg` is absent) → multiple STDOUT chunks                                                                                                                                                  |
+| abort mid-stream  | emitter, `Abort` after chunk 1 → `End{-1}`, no further chunks, group gone                                                                                                                                                       |
+| timeout           | `sleep 30`, `timeout_s: 1` → `ExecError{"timeout:1"}`                                                                                                                                                                           |
 | reconnect → dedup | `req_id 4` runs `echo x >> log` and completes; drop the stream; re-Attach; resend `req_id 4` → cached `End` re-emitted **and `log` still has one line** — the marker is what proves "no re-run" rather than merely "same frame" |
 
 **Gated live** — `SH_LIVE_RELAY=1` runs read/write/bash/grep/abort against the real TS relay
@@ -342,9 +342,9 @@ covered by the fallback.
 
 ## 10. Risks
 
-| Risk | Mitigation |
-|---|---|
-| Fake relay encodes *my reading* of the contract, not the relay's behavior | The `SH_LIVE_RELAY=1` tier runs the same battery against the real relay; ST5 (#88) is the true interop gate. |
-| `req_id` collision persists until ST1/ST3 fix it | Fingerprint guard converts a silent wrong result into a correct re-run plus a warning (§3.1). |
-| Worker runs arbitrary commands — that is the job | No credentials and no orchestration in the worker (§7); bounded concurrency and queue caps limit resource exhaustion; trust boundary is the sandbox itself, unchanged. |
-| `ubi-micro` may lack `bash`, blocking the demo image | Verified empirically as an explicit plan step before choosing the base (§3.3). |
+| Risk                                                                      | Mitigation                                                                                                                                                             |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fake relay encodes _my reading_ of the contract, not the relay's behavior | The `SH_LIVE_RELAY=1` tier runs the same battery against the real relay; ST5 (#88) is the true interop gate.                                                           |
+| `req_id` collision persists until ST1/ST3 fix it                          | Fingerprint guard converts a silent wrong result into a correct re-run plus a warning (§3.1).                                                                          |
+| Worker runs arbitrary commands — that is the job                          | No credentials and no orchestration in the worker (§7); bounded concurrency and queue caps limit resource exhaustion; trust boundary is the sandbox itself, unchanged. |
+| `ubi-micro` may lack `bash`, blocking the demo image                      | Verified empirically as an explicit plan step before choosing the base (§3.3).                                                                                         |

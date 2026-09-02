@@ -26,4 +26,4 @@ We will build a new in-process TypeScript `experiments/` vitest workspace where 
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

@@ -14,7 +14,7 @@
   value: ghcr.io/rossoctl/serverless-harness-sandbox:latest
 - op: replace
   path: /spec/podTemplate/spec/containers/0/command
-  value: ["sleep", "infinity"]
+  value: ['sleep', 'infinity']
 - op: add
   path: /spec/podTemplate/spec/serviceAccountName
   value: serverless-harness-sandbox
@@ -31,4 +31,4 @@
   value:
     allowPrivilegeEscalation: false
     capabilities:
-      drop: ["ALL"]
+      drop: ['ALL']

@@ -1,11 +1,22 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
-import { runTurn, executeTurn, type TurnConfig } from "@sh/harness/run-turn";
-import { terminalFrame, type TurnStreamFrame } from "@sh/harness/turn-stream";
-import { runLeaf, leafSessionId, validateItem, type LeafEnvelope, type LeafResult } from "@sh/harness/run-leaf";
-import { RedisWorkQueue } from "@sh/work-queue";
-import { RedisResultStore, toResultRecord, writeResult, readResult } from "@sh/harness/leaf-result-store";
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { runTurn, executeTurn, type TurnConfig } from '@sh/harness/run-turn';
+import { terminalFrame, type TurnStreamFrame } from '@sh/harness/turn-stream';
+import {
+  runLeaf,
+  leafSessionId,
+  validateItem,
+  type LeafEnvelope,
+  type LeafResult,
+} from '@sh/harness/run-leaf';
+import { RedisWorkQueue } from '@sh/work-queue';
+import {
+  RedisResultStore,
+  toResultRecord,
+  writeResult,
+  readResult,
+} from '@sh/harness/leaf-result-store';
 import {
   contextServiceConfigured,
   createWorkload,
@@ -13,17 +24,17 @@ import {
   getWorkload,
   type WorkloadRecord,
   type WorkloadRequest,
-} from "./context-service.js";
+} from './context-service.js';
 
-const PORT = parseInt(process.env.PORT || "8080", 10);
-const JSON_HEADERS = { "Content-Type": "application/json" };
+const PORT = parseInt(process.env.PORT || '8080', 10);
+const JSON_HEADERS = { 'Content-Type': 'application/json' };
 const SSE_HEADERS = {
-  "Content-Type": "text/event-stream",
-  "Cache-Control": "no-cache",
-  Connection: "keep-alive",
-  "X-Accel-Buffering": "no", // belt-and-suspenders for any nginx fronting Kourier (Envoy ignores it)
+  'Content-Type': 'text/event-stream',
+  'Cache-Control': 'no-cache',
+  Connection: 'keep-alive',
+  'X-Accel-Buffering': 'no', // belt-and-suspenders for any nginx fronting Kourier (Envoy ignores it)
 };
-const RESULT_TTL_SECONDS = parseInt(process.env.LEAF_RESULT_TTL_SECONDS ?? "86400", 10);
+const RESULT_TTL_SECONDS = parseInt(process.env.LEAF_RESULT_TTL_SECONDS ?? '86400', 10);
 const WORKLOAD_NAME = /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -43,14 +54,14 @@ function intEnv(name: string, def: number): number {
 // request so overrides take effect without a restart (and so tests can shrink the budget).
 function saturationWaitConfig() {
   return {
-    waitMs: intEnv("KAGENTI_SYNC_SATURATION_WAIT_MS", 30000),
-    backoffMs: intEnv("KAGENTI_SYNC_SATURATION_BACKOFF_MS", 250),
-    maxBackoffMs: intEnv("KAGENTI_SYNC_SATURATION_MAX_BACKOFF_MS", 5000),
-    retryAfterS: intEnv("KAGENTI_SYNC_SATURATION_RETRY_AFTER_S", 5),
+    waitMs: intEnv('KAGENTI_SYNC_SATURATION_WAIT_MS', 30000),
+    backoffMs: intEnv('KAGENTI_SYNC_SATURATION_BACKOFF_MS', 250),
+    maxBackoffMs: intEnv('KAGENTI_SYNC_SATURATION_MAX_BACKOFF_MS', 5000),
+    retryAfterS: intEnv('KAGENTI_SYNC_SATURATION_RETRY_AFTER_S', 5),
   };
 }
 
-const isSaturated = (r: LeafResult): boolean => r.status === "failed" && r.reason === "saturated";
+const isSaturated = (r: LeafResult): boolean => r.status === 'failed' && r.reason === 'saturated';
 
 function buildConfig(): TurnConfig {
   return {
@@ -64,9 +75,9 @@ function buildConfig(): TurnConfig {
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString()));
-    req.on("error", reject);
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString()));
+    req.on('error', reject);
   });
 }
 
@@ -75,7 +86,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
   try {
     body = await readBody(req);
   } catch {
-    res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: "read_error" }));
+    res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: 'read_error' }));
     return;
   }
 
@@ -83,17 +94,17 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
   try {
     parsed = JSON.parse(body);
   } catch {
-    res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: "invalid_json" }));
+    res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: 'invalid_json' }));
     return;
   }
 
   const { sessionId, prompt } = parsed;
   if (!prompt) {
-    res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: "prompt_required" }));
+    res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: 'prompt_required' }));
     return;
   }
 
-  const wantsStream = /text\/event-stream/i.test(req.headers.accept ?? "");
+  const wantsStream = /text\/event-stream/i.test(req.headers.accept ?? '');
   if (wantsStream) return handleTurnStream(prompt, sessionId, req, res);
 
   try {
@@ -101,10 +112,10 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
     res.writeHead(200, JSON_HEADERS).end(JSON.stringify(result));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const status = message.includes("no session in backend") ? 404 : 500;
+    const status = message.includes('no session in backend') ? 404 : 500;
     res.writeHead(status, JSON_HEADERS).end(
       JSON.stringify({
-        error: status === 404 ? "session_not_found" : message,
+        error: status === 404 ? 'session_not_found' : message,
         ...(sessionId ? { sessionId } : {}),
       }),
     );
@@ -120,7 +131,7 @@ function makeFrameWriter(res: ServerResponse, keepaliveMs: number) {
     if (keepaliveMs <= 0) return;
     if (heartbeat) clearInterval(heartbeat);
     heartbeat = setInterval(() => {
-      if (!res.writableEnded) res.write(": keepalive\n\n"); // SSE comment — invisible to EventSource
+      if (!res.writableEnded) res.write(': keepalive\n\n'); // SSE comment — invisible to EventSource
     }, keepaliveMs);
   };
   const writeFrame = (frame: TurnStreamFrame) => {
@@ -148,14 +159,14 @@ async function handleTurnStream(
   // normal completion (res.end() already called) is a no-op; only a premature close aborts. On
   // Node 22 the reliable disconnect signal for a half-consumed streaming request is the RESPONSE's
   // 'close' (the request's own 'close' fires with request-body end, not on socket teardown here).
-  res.on("close", () => {
+  res.on('close', () => {
     if (!res.writableEnded) {
       clientGone = true;
       ac.abort();
     }
   });
 
-  const { writeFrame, stop } = makeFrameWriter(res, intEnv("SH_TURN_STREAM_KEEPALIVE_MS", 20000));
+  const { writeFrame, stop } = makeFrameWriter(res, intEnv('SH_TURN_STREAM_KEEPALIVE_MS', 20000));
   try {
     const result = await executeTurn({
       prompt,
@@ -173,10 +184,10 @@ async function handleTurnStream(
       // Pre-first-frame: nothing streamed yet, so reuse the EXACT sync mapping — a bad sessionId
       // still returns real 404 JSON, byte-identical to the sync path (§3.4 regime 2).
       const message = err instanceof Error ? err.message : String(err);
-      const status = message.includes("no session in backend") ? 404 : 500;
+      const status = message.includes('no session in backend') ? 404 : 500;
       res.writeHead(status, JSON_HEADERS).end(
         JSON.stringify({
-          error: status === 404 ? "session_not_found" : message,
+          error: status === 404 ? 'session_not_found' : message,
           ...(sessionId ? { sessionId } : {}),
         }),
       );
@@ -189,9 +200,9 @@ async function handleTurnStream(
       const message = err instanceof Error ? err.message : String(err);
       res.write(
         `event: error\ndata: ${JSON.stringify({
-          type: "error",
-          sessionId: sessionId ?? "",
-          stopReason: "error",
+          type: 'error',
+          sessionId: sessionId ?? '',
+          stopReason: 'error',
           errorMessage: message,
         })}\n\n`,
       );
@@ -203,18 +214,24 @@ async function handleTurnStream(
 }
 
 export function isLeafEnvelope(o: any): o is LeafEnvelope {
-  return o && typeof o.sessionId === "string" && validateItem(o.item) !== null;
+  return o && typeof o.sessionId === 'string' && validateItem(o.item) !== null;
 }
 
 export function isSolveEnvelope(o: any): boolean {
-  return o && typeof o.sessionId === "string" && o.kind === "solve"
-    && typeof o.problemStatement === "string"
-    && typeof o.repoUrl === "string" && typeof o.ref === "string";
+  return (
+    o &&
+    typeof o.sessionId === 'string' &&
+    o.kind === 'solve' &&
+    typeof o.problemStatement === 'string' &&
+    typeof o.repoUrl === 'string' &&
+    typeof o.ref === 'string'
+  );
 }
 
 export function isPromptEnvelope(o: any): boolean {
-  return o && typeof o.sessionId === "string" && o.kind === "prompt"
-    && typeof o.prompt === "string";
+  return (
+    o && typeof o.sessionId === 'string' && o.kind === 'prompt' && typeof o.prompt === 'string'
+  );
 }
 
 export function isRunEnvelope(o: any): boolean {
@@ -242,28 +259,32 @@ async function saveWorkload(record: WorkloadRecord): Promise<void> {
 async function findWorkload(id: string): Promise<WorkloadRecord | null> {
   const raw = await getResultStore().get(workloadKey(id));
   if (!raw) return null;
-  try { return JSON.parse(raw) as WorkloadRecord; } catch { return null; }
+  try {
+    return JSON.parse(raw) as WorkloadRecord;
+  } catch {
+    return null;
+  }
 }
 
 function requireContextService(res: ServerResponse): boolean {
   if (contextServiceConfigured()) return true;
-  res.writeHead(501, JSON_HEADERS).end(JSON.stringify({ error: "context_service_not_configured" }));
+  res.writeHead(501, JSON_HEADERS).end(JSON.stringify({ error: 'context_service_not_configured' }));
   return false;
 }
 
 function contextServiceFailure(operation: string, err: unknown, res: ServerResponse): void {
   console.error(`Context Service ${operation} failed:`, err);
-  res.writeHead(502, JSON_HEADERS).end(JSON.stringify({ error: "context_service_error" }));
+  res.writeHead(502, JSON_HEADERS).end(JSON.stringify({ error: 'context_service_error' }));
 }
 
 async function resolveRunWorkload(body: any, res: ServerResponse): Promise<any | null> {
   if (!body?.workloadId) return body;
   const record = await findWorkload(body.workloadId);
-  if (!record || record.status === "deleted") {
-    res.writeHead(404, JSON_HEADERS).end(JSON.stringify({ error: "workload_not_found" }));
+  if (!record || record.status === 'deleted') {
+    res.writeHead(404, JSON_HEADERS).end(JSON.stringify({ error: 'workload_not_found' }));
     return null;
   }
-  if (body.kind === "prompt") {
+  if (body.kind === 'prompt') {
     // A prompt leaf DOES lease a pool sandbox now, and honors an envelope `sandboxPoolSelector`
     // (ADR 0028 amendment, 2026-09-01) — but a *workload-addressed* one still ignores the
     // workload's own selector. The workloadId gates existence (404 above) and nothing more.
@@ -272,7 +293,9 @@ async function resolveRunWorkload(body: any, res: ServerResponse): Promise<any |
     if (record.sandboxSelector) {
       // Log the resolved record.workloadId (the exact key findWorkload matched, validated against
       // WORKLOAD_NAME at creation) rather than the raw request field — self-evidently not log-injectable.
-      console.warn(`workload '${record.workloadId}': sandbox pool selector ignored for kind:prompt leaf (ADR 0028)`);
+      console.warn(
+        `workload '${record.workloadId}': sandbox pool selector ignored for kind:prompt leaf (ADR 0028)`,
+      );
     }
     return body;
   }
@@ -282,11 +305,15 @@ async function resolveRunWorkload(body: any, res: ServerResponse): Promise<any |
 async function handleCreateWorkload(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!requireContextService(res)) return;
   let spec: WorkloadRequest;
-  try { spec = JSON.parse(await readBody(req)) as WorkloadRequest; }
-  catch { res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: "invalid_json" })); return; }
+  try {
+    spec = JSON.parse(await readBody(req)) as WorkloadRequest;
+  } catch {
+    res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: 'invalid_json' }));
+    return;
+  }
   const workloadId = spec.name ?? `wl-${randomUUID().slice(0, 8)}`;
   if (workloadId.length > 50 || !WORKLOAD_NAME.test(workloadId)) {
-    res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: "workload_name_invalid" }));
+    res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: 'workload_name_invalid' }));
     return;
   }
   try {
@@ -294,14 +321,14 @@ async function handleCreateWorkload(req: IncomingMessage, res: ServerResponse): 
     await saveWorkload(record);
     res.writeHead(201, JSON_HEADERS).end(JSON.stringify(record));
   } catch (err) {
-    contextServiceFailure("create", err, res);
+    contextServiceFailure('create', err, res);
   }
 }
 
 async function handleGetWorkload(id: string, res: ServerResponse): Promise<void> {
   if (!requireContextService(res)) return;
-  if (!await findWorkload(id)) {
-    res.writeHead(404, JSON_HEADERS).end(JSON.stringify({ error: "workload_not_found" }));
+  if (!(await findWorkload(id))) {
+    res.writeHead(404, JSON_HEADERS).end(JSON.stringify({ error: 'workload_not_found' }));
     return;
   }
   try {
@@ -309,38 +336,46 @@ async function handleGetWorkload(id: string, res: ServerResponse): Promise<void>
     await saveWorkload(record);
     res.writeHead(200, JSON_HEADERS).end(JSON.stringify(record));
   } catch (err) {
-    contextServiceFailure("get", err, res);
+    contextServiceFailure('get', err, res);
   }
 }
 
 async function handleDeleteWorkload(id: string, res: ServerResponse): Promise<void> {
   if (!requireContextService(res)) return;
   const record = await findWorkload(id);
-  if (!record || record.status === "deleted") {
-    res.writeHead(404, JSON_HEADERS).end(JSON.stringify({ error: "workload_not_found" }));
+  if (!record || record.status === 'deleted') {
+    res.writeHead(404, JSON_HEADERS).end(JSON.stringify({ error: 'workload_not_found' }));
     return;
   }
   try {
     await deleteWorkload(id);
-    await saveWorkload({ ...record, status: "deleted", readyReplicas: 0 });
+    await saveWorkload({ ...record, status: 'deleted', readyReplicas: 0 });
     res.writeHead(204).end();
   } catch (err) {
-    contextServiceFailure("delete", err, res);
+    contextServiceFailure('delete', err, res);
   }
 }
 
 async function handleEnqueueLeafParsed(body: any, res: ServerResponse): Promise<void> {
-  if (!isRunEnvelope(body)) { res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: "envelope_invalid" })); return; }
+  if (!isRunEnvelope(body)) {
+    res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: 'envelope_invalid' }));
+    return;
+  }
   body = await resolveRunWorkload(body, res);
   if (!body) return;
   const q = getQueue();
   await q.ensureGroup();
   await q.enqueue(body);
-  res.writeHead(202, JSON_HEADERS).end(JSON.stringify({ status: "accepted", sessionId: body.sessionId }));
+  res
+    .writeHead(202, JSON_HEADERS)
+    .end(JSON.stringify({ status: 'accepted', sessionId: body.sessionId }));
 }
 
 async function handleRunLeafParsed(body: any, _raw: string, res: ServerResponse): Promise<void> {
-  if (!isRunEnvelope(body)) { res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: "envelope_invalid" })); return; }
+  if (!isRunEnvelope(body)) {
+    res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: 'envelope_invalid' }));
+    return;
+  }
   body = await resolveRunWorkload(body, res);
   if (!body) return;
 
@@ -361,26 +396,61 @@ async function handleRunLeafParsed(body: any, _raw: string, res: ServerResponse)
   if (isSaturated(result)) {
     // Still saturated after the budget: tell the client to retry. Do NOT persist a result record —
     // a 503 is "retry", not a terminal failure, and /runs/status must not report it as one.
-    res.writeHead(503, { ...JSON_HEADERS, "Retry-After": String(cfg.retryAfterS) })
-      .end(JSON.stringify({ status: "failed", reason: "saturated" }));
+    res
+      .writeHead(503, { ...JSON_HEADERS, 'Retry-After': String(cfg.retryAfterS) })
+      .end(JSON.stringify({ status: 'failed', reason: 'saturated' }));
     return;
   }
 
-  await writeResult(getResultStore(), leafSessionId(body), toResultRecord(result, body.sessionId, new Date().toISOString()), RESULT_TTL_SECONDS);
+  await writeResult(
+    getResultStore(),
+    leafSessionId(body),
+    toResultRecord(result, body.sessionId, new Date().toISOString()),
+    RESULT_TTL_SECONDS,
+  );
   res.writeHead(200, JSON_HEADERS).end(JSON.stringify(result));
 }
 
 async function handleLeafStatus(url: URL, res: ServerResponse): Promise<void> {
-  const sessionId = url.searchParams.get("sessionId");
-  if (!sessionId) { res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: "sessionId_required" })); return; }
-  const tenant = url.searchParams.get("tenant") ?? undefined;
+  const sessionId = url.searchParams.get('sessionId');
+  if (!sessionId) {
+    res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: 'sessionId_required' }));
+    return;
+  }
+  const tenant = url.searchParams.get('tenant') ?? undefined;
   const record = await readResult(getResultStore(), leafSessionId({ sessionId, tenant }));
-  if (!record) { res.writeHead(200, JSON_HEADERS).end(JSON.stringify({ status: "queued" })); return; }
-  if (record.status === "done") { res.writeHead(200, JSON_HEADERS).end(JSON.stringify({ status: "done", verdict: record.verdict })); return; }
-  if (record.status === "solved") { res.writeHead(200, JSON_HEADERS).end(JSON.stringify({ status: "solved", patch: record.patch })); return; }
-  if (record.status === "paused") { res.writeHead(200, JSON_HEADERS).end(JSON.stringify({ status: "paused", gateId: record.gate?.gateId, gate: record.gate })); return; }
-  if (record.status === "failed") { res.writeHead(200, JSON_HEADERS).end(JSON.stringify({ status: "failed", reason: record.reason ?? undefined })); return; }
-  if (record.status === "responded") { res.writeHead(200, JSON_HEADERS).end(JSON.stringify({ status: "responded", text: record.text })); return; }
+  if (!record) {
+    res.writeHead(200, JSON_HEADERS).end(JSON.stringify({ status: 'queued' }));
+    return;
+  }
+  if (record.status === 'done') {
+    res
+      .writeHead(200, JSON_HEADERS)
+      .end(JSON.stringify({ status: 'done', verdict: record.verdict }));
+    return;
+  }
+  if (record.status === 'solved') {
+    res.writeHead(200, JSON_HEADERS).end(JSON.stringify({ status: 'solved', patch: record.patch }));
+    return;
+  }
+  if (record.status === 'paused') {
+    res
+      .writeHead(200, JSON_HEADERS)
+      .end(JSON.stringify({ status: 'paused', gateId: record.gate?.gateId, gate: record.gate }));
+    return;
+  }
+  if (record.status === 'failed') {
+    res
+      .writeHead(200, JSON_HEADERS)
+      .end(JSON.stringify({ status: 'failed', reason: record.reason ?? undefined }));
+    return;
+  }
+  if (record.status === 'responded') {
+    res
+      .writeHead(200, JSON_HEADERS)
+      .end(JSON.stringify({ status: 'responded', text: record.text }));
+    return;
+  }
   res.writeHead(200, JSON_HEADERS).end(JSON.stringify({ status: record.status }));
 }
 
@@ -388,8 +458,8 @@ async function handleLeafStatus(url: URL, res: ServerResponse): Promise<void> {
 // industry-standard "run" noun (`/runs`); the internal `runLeaf`/`LeafEnvelope` vocabulary is
 // unchanged. Aliases warn once per path and are removed in a later release.
 const DEPRECATED_ROUTE_ALIASES: Record<string, string> = {
-  "/run-leaf": "/runs",
-  "/run-leaf/status": "/runs/status",
+  '/run-leaf': '/runs',
+  '/run-leaf/status': '/runs/status',
 };
 const warnedDeprecatedRoutes = new Set<string>();
 function warnDeprecatedRoute(oldPath: string): void {
@@ -401,66 +471,78 @@ function warnDeprecatedRoute(oldPath: string): void {
 }
 
 function handler(req: IncomingMessage, res: ServerResponse): void {
-  const url = req.url ?? "";
+  const url = req.url ?? '';
 
-  if (req.method === "GET" && url === "/health") {
-    res.writeHead(200).end("ok");
+  if (req.method === 'GET' && url === '/health') {
+    res.writeHead(200).end('ok');
     return;
   }
 
-  if (req.method === "POST" && url === "/workloads") {
+  if (req.method === 'POST' && url === '/workloads') {
     handleCreateWorkload(req, res).catch((err) => {
-      if (!res.headersSent) res.writeHead(500, JSON_HEADERS).end(JSON.stringify({ error: String(err) }));
+      if (!res.headersSent)
+        res.writeHead(500, JSON_HEADERS).end(JSON.stringify({ error: String(err) }));
     });
     return;
   }
 
   const workloadMatch = url.match(/^\/workloads\/([^/?]+)$/);
-  if (workloadMatch && req.method === "GET") {
+  if (workloadMatch && req.method === 'GET') {
     handleGetWorkload(decodeURIComponent(workloadMatch[1]), res).catch((err) => {
-      if (!res.headersSent) res.writeHead(500, JSON_HEADERS).end(JSON.stringify({ error: String(err) }));
+      if (!res.headersSent)
+        res.writeHead(500, JSON_HEADERS).end(JSON.stringify({ error: String(err) }));
     });
     return;
   }
-  if (workloadMatch && req.method === "DELETE") {
+  if (workloadMatch && req.method === 'DELETE') {
     handleDeleteWorkload(decodeURIComponent(workloadMatch[1]), res).catch((err) => {
-      if (!res.headersSent) res.writeHead(500, JSON_HEADERS).end(JSON.stringify({ error: String(err) }));
+      if (!res.headersSent)
+        res.writeHead(500, JSON_HEADERS).end(JSON.stringify({ error: String(err) }));
     });
     return;
   }
 
   // Run-status endpoint: canonical `/runs/status`, plus the deprecated `/run-leaf/status` alias.
-  if (req.method === "GET" && (url.startsWith("/runs/status") || url.startsWith("/run-leaf/status"))) {
-    if (url.startsWith("/run-leaf/status")) warnDeprecatedRoute("/run-leaf/status");
-    handleLeafStatus(new URL(url, "http://localhost"), res).catch((err) => {
-      if (!res.headersSent) res.writeHead(500, JSON_HEADERS).end(JSON.stringify({ error: String(err) }));
+  if (
+    req.method === 'GET' &&
+    (url.startsWith('/runs/status') || url.startsWith('/run-leaf/status'))
+  ) {
+    if (url.startsWith('/run-leaf/status')) warnDeprecatedRoute('/run-leaf/status');
+    handleLeafStatus(new URL(url, 'http://localhost'), res).catch((err) => {
+      if (!res.headersSent)
+        res.writeHead(500, JSON_HEADERS).end(JSON.stringify({ error: String(err) }));
     });
     return;
   }
 
   // Run endpoint: canonical `POST /runs`, plus the deprecated `POST /run-leaf` alias.
-  if (req.method === "POST" && (url === "/runs" || url === "/run-leaf")) {
-    if (url === "/run-leaf") warnDeprecatedRoute("/run-leaf");
+  if (req.method === 'POST' && (url === '/runs' || url === '/run-leaf')) {
+    if (url === '/run-leaf') warnDeprecatedRoute('/run-leaf');
     const route = async () => {
       const raw = await readBody(req);
       let parsed: any = {};
-      try { parsed = JSON.parse(raw); } catch { /* handled below */ }
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        /* handled below */
+      }
       // Pool selection is internal routing state. Never accept a Kubernetes selector directly
       // from an external run request; a workload resolver may add one after this boundary.
-      if (parsed && typeof parsed === "object") delete parsed.sandboxPoolSelector;
+      if (parsed && typeof parsed === 'object') delete parsed.sandboxPoolSelector;
       if (parsed && parsed.async === true) return handleEnqueueLeafParsed(parsed, res);
       return handleRunLeafParsed(parsed, raw, res);
     };
-    route().catch((err) => { if (!res.headersSent) res.writeHead(500, JSON_HEADERS).end(JSON.stringify({ error: String(err) })); });
+    route().catch((err) => {
+      if (!res.headersSent)
+        res.writeHead(500, JSON_HEADERS).end(JSON.stringify({ error: String(err) }));
+    });
     return;
   }
 
-  if (req.method === "POST" && req.url === "/turn") {
+  if (req.method === 'POST' && req.url === '/turn') {
     handleTurn(req, res).catch((err) => {
       if (!res.headersSent) {
-        res.writeHead(500, JSON_HEADERS).end(
-          JSON.stringify({ error: String(err) }),
-        );
+        res.writeHead(500, JSON_HEADERS).end(JSON.stringify({ error: String(err) }));
       }
     });
     return;
@@ -472,7 +554,7 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
 export function startServer(port = PORT): ReturnType<typeof createServer> {
   const server = createServer(handler);
 
-  process.on("SIGTERM", () => {
+  process.on('SIGTERM', () => {
     server.close(() => process.exit(0));
   });
 

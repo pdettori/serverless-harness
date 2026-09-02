@@ -42,9 +42,12 @@ describe('swebench-sandbox-pool manifest', () => {
     }
   });
 
-  it.each(sandboxes.map((s, i) => [i, s]))('sandbox %s: carries the CR-level app=sandbox label', (_i, sandbox: any) => {
-    expect(sandbox.metadata?.labels?.app).toBe('sandbox');
-  });
+  it.each(sandboxes.map((s, i) => [i, s]))(
+    'sandbox %s: carries the CR-level app=sandbox label',
+    (_i, sandbox: any) => {
+      expect(sandbox.metadata?.labels?.app).toBe('sandbox');
+    },
+  );
 
   it.each(sandboxes.map((s, i) => [i, s]))(
     'sandbox %s: podTemplate pool-discovery label is exactly swebench (not default)',
@@ -55,48 +58,73 @@ describe('swebench-sandbox-pool manifest', () => {
     },
   );
 
-  it.each(sandboxes.map((s, i) => [i, s]))('sandbox %s: container uses the Task-3 baked internal-registry image', (_i, sandbox: any) => {
-    const containers = sandbox.spec?.podTemplate?.spec?.containers ?? [];
-    expect(containers[0]?.image).toBe(SWEBENCH_IMAGE);
-    expect(containers[0]?.imagePullPolicy).toBe('IfNotPresent');
-  });
+  it.each(sandboxes.map((s, i) => [i, s]))(
+    'sandbox %s: container uses the Task-3 baked internal-registry image',
+    (_i, sandbox: any) => {
+      const containers = sandbox.spec?.podTemplate?.spec?.containers ?? [];
+      expect(containers[0]?.image).toBe(SWEBENCH_IMAGE);
+      expect(containers[0]?.imagePullPolicy).toBe('IfNotPresent');
+    },
+  );
 
-  it.each(sandboxes.map((s, i) => [i, s]))('sandbox %s: container command is exactly sleep infinity (no apk/startup install)', (_i, sandbox: any) => {
-    const containers = sandbox.spec?.podTemplate?.spec?.containers ?? [];
-    expect(containers[0]?.command).toEqual(['sleep', 'infinity']);
-  });
+  it.each(sandboxes.map((s, i) => [i, s]))(
+    'sandbox %s: container command is exactly sleep infinity (no apk/startup install)',
+    (_i, sandbox: any) => {
+      const containers = sandbox.spec?.podTemplate?.spec?.containers ?? [];
+      expect(containers[0]?.command).toEqual(['sleep', 'infinity']);
+    },
+  );
 
-  it.each(sandboxes.map((s, i) => [i, s]))('sandbox %s: container workingDir and workspace volumeMount are /workspace', (_i, sandbox: any) => {
-    const containers = sandbox.spec?.podTemplate?.spec?.containers ?? [];
-    const container = containers[0] ?? {};
-    expect(container.workingDir).toBe('/workspace');
-    const workspaceMount = (container.volumeMounts ?? []).find((m: any) => m.name === 'workspace');
-    expect(workspaceMount?.mountPath).toBe('/workspace');
-  });
+  it.each(sandboxes.map((s, i) => [i, s]))(
+    'sandbox %s: container workingDir and workspace volumeMount are /workspace',
+    (_i, sandbox: any) => {
+      const containers = sandbox.spec?.podTemplate?.spec?.containers ?? [];
+      const container = containers[0] ?? {};
+      expect(container.workingDir).toBe('/workspace');
+      const workspaceMount = (container.volumeMounts ?? []).find(
+        (m: any) => m.name === 'workspace',
+      );
+      expect(workspaceMount?.mountPath).toBe('/workspace');
+    },
+  );
 
-  it.each(sandboxes.map((s, i) => [i, s]))('sandbox %s: volumeClaimTemplate requests a 50Gi RWO PVC named workspace', (_i, sandbox: any) => {
-    const vct = (sandbox.spec?.volumeClaimTemplates ?? [])[0] ?? {};
-    expect(vct.metadata?.name).toBe('workspace');
-    expect(vct.spec?.accessModes).toEqual(['ReadWriteOnce']);
-    expect(vct.spec?.resources?.requests?.storage).toBe('50Gi');
-  });
+  it.each(sandboxes.map((s, i) => [i, s]))(
+    'sandbox %s: volumeClaimTemplate requests a 50Gi RWO PVC named workspace',
+    (_i, sandbox: any) => {
+      const vct = (sandbox.spec?.volumeClaimTemplates ?? [])[0] ?? {};
+      expect(vct.metadata?.name).toBe('workspace');
+      expect(vct.spec?.accessModes).toEqual(['ReadWriteOnce']);
+      expect(vct.spec?.resources?.requests?.storage).toBe('50Gi');
+    },
+  );
 
-  it.each(sandboxes.map((s, i) => [i, s]))('sandbox %s: podTemplate uses the serverless-harness-sandbox SA', (_i, sandbox: any) => {
-    expect(sandbox.spec?.podTemplate?.spec?.serviceAccountName).toBe('serverless-harness-sandbox');
-  });
+  it.each(sandboxes.map((s, i) => [i, s]))(
+    'sandbox %s: podTemplate uses the serverless-harness-sandbox SA',
+    (_i, sandbox: any) => {
+      expect(sandbox.spec?.podTemplate?.spec?.serviceAccountName).toBe(
+        'serverless-harness-sandbox',
+      );
+    },
+  );
 
-  it.each(sandboxes.map((s, i) => [i, s]))('sandbox %s: pod-level securityContext is OCP nonroot', (_i, sandbox: any) => {
-    const podSecurityContext = sandbox.spec?.podTemplate?.spec?.securityContext ?? {};
-    expect(podSecurityContext.runAsUser).toBe(65532);
-    expect(podSecurityContext.runAsNonRoot).toBe(true);
-    expect(podSecurityContext.fsGroup).toBe(65532);
-    expect(podSecurityContext.seccompProfile?.type).toBe('RuntimeDefault');
-  });
+  it.each(sandboxes.map((s, i) => [i, s]))(
+    'sandbox %s: pod-level securityContext is OCP nonroot',
+    (_i, sandbox: any) => {
+      const podSecurityContext = sandbox.spec?.podTemplate?.spec?.securityContext ?? {};
+      expect(podSecurityContext.runAsUser).toBe(65532);
+      expect(podSecurityContext.runAsNonRoot).toBe(true);
+      expect(podSecurityContext.fsGroup).toBe(65532);
+      expect(podSecurityContext.seccompProfile?.type).toBe('RuntimeDefault');
+    },
+  );
 
-  it.each(sandboxes.map((s, i) => [i, s]))('sandbox %s: container-level securityContext drops all capabilities', (_i, sandbox: any) => {
-    const containers = sandbox.spec?.podTemplate?.spec?.containers ?? [];
-    const containerSecurityContext = containers[0]?.securityContext ?? {};
-    expect(containerSecurityContext.allowPrivilegeEscalation).toBe(false);
-    expect(containerSecurityContext.capabilities?.drop).toContain('ALL');
-  });
+  it.each(sandboxes.map((s, i) => [i, s]))(
+    'sandbox %s: container-level securityContext drops all capabilities',
+    (_i, sandbox: any) => {
+      const containers = sandbox.spec?.podTemplate?.spec?.containers ?? [];
+      const containerSecurityContext = containers[0]?.securityContext ?? {};
+      expect(containerSecurityContext.allowPrivilegeEscalation).toBe(false);
+      expect(containerSecurityContext.capabilities?.drop).toContain('ALL');
+    },
+  );
 });

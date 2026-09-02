@@ -4,7 +4,7 @@
 // base64-encoded. base64's alphabet ([A-Za-z0-9+/=] + "\n") cannot contain the
 // \x01-prefixed markers, so framing is collision-proof and binary-safe.
 
-const SOH = "\x01"; // marker lead byte; never appears in base64 output
+const SOH = '\x01'; // marker lead byte; never appears in base64 output
 
 /**
  * Reported in place of the command's exit code when a stage of the wrapper pipeline
@@ -81,13 +81,13 @@ export function wrapCommand(
     // use a delimiter containing '_', which the standard base64 alphabet
     // (A-Za-z0-9+/=) never emits, so it can never collide with a body line.
     const h = `KAGENTI_EOF_${nonce}`;
-    return `${begin}{ ${command} <<'${h}'\n${stdin.toString("latin1")}\n${h}\n} | ${cap} | base64; ${end}`;
+    return `${begin}{ ${command} <<'${h}'\n${stdin.toString('latin1')}\n${h}\n} | ${cap} | base64; ${end}`;
   }
   return `${begin}{ ${command}; } | ${cap} | base64; ${end}`;
 }
 
 function escapeRe(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /** Chunk-fed parser that emits complete frames as bytes arrive. */
@@ -99,7 +99,7 @@ export class FrameParser {
     const frames: Frame[] = [];
     for (;;) {
       // latin1 keeps bytes 1:1 for the marker scan; payload is ASCII base64.
-      const text = this.buf.toString("latin1");
+      const text = this.buf.toString('latin1');
       const begin = text.match(/\x01B(\S+)\n/);
       if (!begin) break;
       const nonce = begin[1];
@@ -111,7 +111,7 @@ export class FrameParser {
       const b64 = after.slice(0, end.index!);
       frames.push({
         nonce,
-        stdout: Buffer.from(b64.replace(/\s/g, ""), "base64"),
+        stdout: Buffer.from(b64.replace(/\s/g, ''), 'base64'),
         exitCode: parseInt(end[1], 10),
       });
       this.buf = this.buf.subarray(bodyStart + end.index! + end[0].length);

@@ -26,4 +26,4 @@ We will defend the harness by making any local execution unrewarding and unable 
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

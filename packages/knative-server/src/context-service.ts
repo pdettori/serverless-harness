@@ -31,7 +31,7 @@ interface ContextPool {
   replicas: number;
   readyReplicas: number;
   sandboxSelector: string;
-  workspace: WorkloadRecord["workspace"];
+  workspace: WorkloadRecord['workspace'];
 }
 
 export function contextServiceConfigured(): boolean {
@@ -40,19 +40,20 @@ export function contextServiceConfigured(): boolean {
 
 function baseUrl(): string {
   const configured = process.env.CONTEXT_SERVICE_URL?.trim();
-  if (!configured) throw new Error("Context Service is not configured");
-  return configured.replace(/\/$/, "");
+  if (!configured) throw new Error('Context Service is not configured');
+  return configured.replace(/\/$/, '');
 }
 
 async function request(path: string, init?: RequestInit): Promise<Response> {
-  const configuredTimeout = Number.parseInt(process.env.CONTEXT_SERVICE_TIMEOUT_MS ?? "5000", 10);
-  const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 5000;
+  const configuredTimeout = Number.parseInt(process.env.CONTEXT_SERVICE_TIMEOUT_MS ?? '5000', 10);
+  const timeoutMs =
+    Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 5000;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(`${baseUrl()}${path}`, { ...init, signal: controller.signal });
     if (response.ok) return response;
-    const body = await response.json().catch(() => ({})) as { message?: string };
+    const body = (await response.json().catch(() => ({}))) as { message?: string };
     throw new Error(body.message ?? `Context Service returned ${response.status}`);
   } finally {
     clearTimeout(timeout);
@@ -70,33 +71,36 @@ function workload(pool: ContextPool): WorkloadRecord {
   };
 }
 
-export async function createWorkload(workloadId: string, spec: WorkloadRequest): Promise<WorkloadRecord> {
+export async function createWorkload(
+  workloadId: string,
+  spec: WorkloadRequest,
+): Promise<WorkloadRecord> {
   const shared = spec.workspace?.shared === true;
   const claimName = spec.workspace?.claimName;
   const workspace = claimName
     ? { claimName, readOnly: spec.workspace?.readOnly }
     : {
-        size: spec.workspace?.size ?? "1Gi",
-        accessMode: shared ? "ReadWriteMany" : "ReadWriteOnce",
+        size: spec.workspace?.size ?? '1Gi',
+        accessMode: shared ? 'ReadWriteMany' : 'ReadWriteOnce',
         ...(spec.workspace?.storageClass ? { storageClass: spec.workspace.storageClass } : {}),
       };
-  const response = await request("/v1/sandbox-pools", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
+  const response = await request('/v1/sandbox-pools', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       name: workloadId,
       replicas: spec.sandboxes ?? (shared ? 2 : 1),
       workspace,
     }),
   });
-  return workload(await response.json() as ContextPool);
+  return workload((await response.json()) as ContextPool);
 }
 
 export async function getWorkload(workloadId: string): Promise<WorkloadRecord> {
   const response = await request(`/v1/sandbox-pools/${encodeURIComponent(workloadId)}`);
-  return workload(await response.json() as ContextPool);
+  return workload((await response.json()) as ContextPool);
 }
 
 export async function deleteWorkload(workloadId: string): Promise<void> {
-  await request(`/v1/sandbox-pools/${encodeURIComponent(workloadId)}`, { method: "DELETE" });
+  await request(`/v1/sandbox-pools/${encodeURIComponent(workloadId)}`, { method: 'DELETE' });
 }

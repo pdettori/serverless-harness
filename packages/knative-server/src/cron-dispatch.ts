@@ -1,11 +1,14 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 /** Replace every __FIRE__ in each string field with fireId; non-strings pass through. Pure, non-mutating. */
-export function applyFire(envelope: Record<string, unknown>, fireId: string): Record<string, unknown> {
+export function applyFire(
+  envelope: Record<string, unknown>,
+  fireId: string,
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(envelope)) {
-    out[k] = typeof v === "string" ? v.split("__FIRE__").join(fireId) : v;
+    out[k] = typeof v === 'string' ? v.split('__FIRE__').join(fireId) : v;
   }
   return out;
 }
@@ -38,7 +41,7 @@ export function exitCodeFor(result: { failed: number }): number {
 }
 
 export function loadConfig(path: string): Record<string, unknown>[] {
-  const parsed = JSON.parse(readFileSync(path, "utf8"));
+  const parsed = JSON.parse(readFileSync(path, 'utf8'));
   if (!Array.isArray(parsed?.items)) throw new Error("cron config: 'items' must be an array");
   return parsed.items as Record<string, unknown>[];
 }
@@ -50,11 +53,11 @@ export function loadConfig(path: string): Record<string, unknown>[] {
  * passes whatever the config provides through unchanged (after __FIRE__ substitution).
  */
 function buildPost(): (env: Record<string, unknown>) => Promise<boolean> {
-  const base = process.env.SH_SERVICE_URL ?? "http://serverless-harness.default.svc.cluster.local";
+  const base = process.env.SH_SERVICE_URL ?? 'http://serverless-harness.default.svc.cluster.local';
   return async (env) => {
     const res = await fetch(`${base}/runs`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify(env),
     });
     if (res.status !== 202) {
@@ -62,17 +65,20 @@ function buildPost(): (env: Record<string, unknown>) => Promise<boolean> {
       return false;
     }
     const body = await res.json().catch(() => ({}) as Record<string, unknown>);
-    return (body as Record<string, unknown>).status === "accepted";
+    return (body as Record<string, unknown>).status === 'accepted';
   };
 }
 
 async function main(): Promise<void> {
   const fireId = process.env.JOB_NAME ?? `manual-${process.pid}`;
-  const configPath = process.env.CRON_CONFIG ?? "/config/schedule.json";
+  const configPath = process.env.CRON_CONFIG ?? '/config/schedule.json';
   const items = loadConfig(configPath);
-  if (items.length === 0) console.warn(`cron-dispatch: config has no items — nothing to dispatch (fire=${fireId})`);
+  if (items.length === 0)
+    console.warn(`cron-dispatch: config has no items — nothing to dispatch (fire=${fireId})`);
   const result = await dispatchAll(items, fireId, buildPost());
-  console.log(`cron-dispatch: ${result.accepted}/${result.total} accepted, ${result.failed} failed (fire=${fireId})`);
+  console.log(
+    `cron-dispatch: ${result.accepted}/${result.total} accepted, ${result.failed} failed (fire=${fireId})`,
+  );
   process.exit(exitCodeFor(result));
 }
 
@@ -80,7 +86,7 @@ async function main(): Promise<void> {
 const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
 if (isMainModule) {
   main().catch((err) => {
-    console.error("cron-dispatch error:", err);
+    console.error('cron-dispatch error:', err);
     process.exit(1);
   });
 }

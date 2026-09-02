@@ -49,7 +49,7 @@ curl -H 'Host: serverless-harness.default.example.com' \
 
 `POST /turn` also streams the turn live when the client asks for it with
 `Accept: text/event-stream`. The default (no `Accept`, or any other value) is unchanged — the same
-single JSON body. Streaming is a *representation* of `/turn` chosen by content negotiation, not a
+single JSON body. Streaming is a _representation_ of `/turn` chosen by content negotiation, not a
 separate route.
 
 ```bash
@@ -102,13 +102,13 @@ loads it into the cluster, falling back to a local build only if the pull is una
 
 Environment variables:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CLUSTER_NAME` | `sh-knative` | Kind cluster name |
-| `KNATIVE_VERSION` | `v1.14.0` | Knative Serving version |
-| `SH_IMAGE` | `ghcr.io/rossoctl/serverless-harness:latest` | Published harness image pulled by default (same as `--image`) |
-| `FORCE_BUILD` | `false` | Force a local build (same as `--build`) |
-| `KEDA_VERSION` | `v2.14.0` | KEDA version |
+| Variable          | Default                                      | Description                                                   |
+| ----------------- | -------------------------------------------- | ------------------------------------------------------------- |
+| `CLUSTER_NAME`    | `sh-knative`                                 | Kind cluster name                                             |
+| `KNATIVE_VERSION` | `v1.14.0`                                    | Knative Serving version                                       |
+| `SH_IMAGE`        | `ghcr.io/rossoctl/serverless-harness:latest` | Published harness image pulled by default (same as `--image`) |
+| `FORCE_BUILD`     | `false`                                      | Force a local build (same as `--build`)                       |
+| `KEDA_VERSION`    | `v2.14.0`                                    | KEDA version                                                  |
 
 ## Choosing the model
 
@@ -119,7 +119,7 @@ To use a different model, edit `service.yaml` before running the setup script:
 
 ```yaml
 - name: SH_MODEL
-  value: "claude-sonnet-4-6"   # or claude-opus-4-6, claude-haiku-4-5, etc.
+  value: 'claude-sonnet-4-6' # or claude-opus-4-6, claude-haiku-4-5, etc.
 ```
 
 Or patch the running Knative Service after deployment:
@@ -130,11 +130,11 @@ kubectl set env ksvc/serverless-harness SH_MODEL=claude-sonnet-4-6
 
 This triggers an automatic revision rollout. Available model IDs:
 
-| Model | ID | Notes |
-|-------|----|-------|
-| Haiku 4.5 | `claude-haiku-4-5` | Default — fast, low cost |
-| Sonnet 4.6 | `claude-sonnet-4-6` | Balanced |
-| Opus 4.6 | `claude-opus-4-6` | Most capable |
+| Model      | ID                  | Notes                    |
+| ---------- | ------------------- | ------------------------ |
+| Haiku 4.5  | `claude-haiku-4-5`  | Default — fast, low cost |
+| Sonnet 4.6 | `claude-sonnet-4-6` | Balanced                 |
+| Opus 4.6   | `claude-opus-4-6`   | Most capable             |
 
 When using a gateway (LiteLLM, etc.), the model ID must match what the gateway
 accepts — consult your gateway's model routing configuration.
@@ -151,15 +151,15 @@ protocol with `SH_MODEL_API`:
 
 ```yaml
 - name: SH_MODEL
-  value: "ibm-granite/granite-4.1-8b"
+  value: 'ibm-granite/granite-4.1-8b'
 - name: SH_MODEL_CUSTOM
-  value: "1"
+  value: '1'
 - name: SH_MODEL_API
-  value: "openai-completions"
+  value: 'openai-completions'
 - name: SH_MODEL_BASE_URL
-  value: "https://<host>/granite-4-1-8b/v1"
+  value: 'https://<host>/granite-4-1-8b/v1'
 - name: OPENAI_API_KEY
-  value: "<key>"                            # standard Bearer auth (default)
+  value: '<key>' # standard Bearer auth (default)
 ```
 
 For custom-header auth (e.g. IBM RITS's `RITS_API_KEY`), keep the secret in a `secretKeyRef`
@@ -167,9 +167,9 @@ env and reference it from `SH_MODEL_HEADERS` via `${VAR}` (the default Bearer is
 
 ```yaml
 - name: SH_MODEL_AUTH
-  value: "custom-header"
+  value: 'custom-header'
 - name: SH_MODEL_HEADERS
-  value: '{"RITS_API_KEY":"${RITS_API_KEY}"}'   # RITS_API_KEY from a secretKeyRef env
+  value: '{"RITS_API_KEY":"${RITS_API_KEY}"}' # RITS_API_KEY from a secretKeyRef env
 ```
 
 > Tool-calling is a per-endpoint capability: only routes with the vLLM tool-call parser
@@ -177,16 +177,16 @@ env and reference it from `SH_MODEL_HEADERS` via `${VAR}` (the default Bearer is
 
 ## What it installs
 
-| Component | How |
-|-----------|-----|
-| Knative Serving + Kourier | Direct YAML apply from upstream releases |
-| KEDA | Direct YAML apply (async leaf ScaledJob support) |
-| Knative config | Autoscaler tuning (20s stable-window), PVC feature flags, security-context flag |
-| Redis | Lightweight in-repo Deployment (`redis:7-alpine`) |
-| Sandbox | Pre-baked image (`sandbox.yaml`, `USER 65532`) |
-| `leaf-work` PVC | `ReadWriteOnce`, default StorageClass |
-| Harness | Knative Service (`service.yaml`) |
-| Ingress | Kourier + port-forward from host |
+| Component                 | How                                                                             |
+| ------------------------- | ------------------------------------------------------------------------------- |
+| Knative Serving + Kourier | Direct YAML apply from upstream releases                                        |
+| KEDA                      | Direct YAML apply (async leaf ScaledJob support)                                |
+| Knative config            | Autoscaler tuning (20s stable-window), PVC feature flags, security-context flag |
+| Redis                     | Lightweight in-repo Deployment (`redis:7-alpine`)                               |
+| Sandbox                   | Pre-baked image (`sandbox.yaml`, `USER 65532`)                                  |
+| `leaf-work` PVC           | `ReadWriteOnce`, default StorageClass                                           |
+| Harness                   | Knative Service (`service.yaml`)                                                |
+| Ingress                   | Kourier + port-forward from host                                                |
 
 ## Smoke test
 
@@ -204,12 +204,12 @@ injection + allow/deny control on both harness egress hops — see
 
 ## Troubleshooting
 
-| Symptom | Cause / fix |
-|---------|-------------|
-| `ksvc` never Ready, pod `CrashLoopBackOff` | Check `kubectl logs` — likely missing `llm-credentials` secret or broken image. |
-| `/turn` returns `"Connection error"` | The harness can't reach its Anthropic endpoint from the cluster (gateway unreachable). `/health` still works. |
-| Image not found after `--skip-build` | Load the image manually: `kind load docker-image dev.local/serverless-harness:local --name sh-knative` |
-| Scale-to-zero doesn't happen | Verify `config-autoscaler` settings: `kubectl get cm config-autoscaler -n knative-serving -o yaml` |
+| Symptom                                    | Cause / fix                                                                                                   |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| `ksvc` never Ready, pod `CrashLoopBackOff` | Check `kubectl logs` — likely missing `llm-credentials` secret or broken image.                               |
+| `/turn` returns `"Connection error"`       | The harness can't reach its Anthropic endpoint from the cluster (gateway unreachable). `/health` still works. |
+| Image not found after `--skip-build`       | Load the image manually: `kind load docker-image dev.local/serverless-harness:local --name sh-knative`        |
+| Scale-to-zero doesn't happen               | Verify `config-autoscaler` settings: `kubectl get cm config-autoscaler -n knative-serving -o yaml`            |
 
 ## Cleanup
 

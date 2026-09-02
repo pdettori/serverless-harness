@@ -27,4 +27,4 @@ We will ship a `@sh/k8s-sandbox` package that routes all seven Pi Operations (re
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

@@ -1,13 +1,13 @@
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { credentials } from "@grpc/grpc-js";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { GrpcRelayTransport, type ExecClientLike } from "../src/grpc-relay-transport.js";
-import { OUTPUT_TRUNCATED_MARKER } from "../src/transport.js";
-import { SandboxExecClient } from "../src/gen/sandbox/v1/sandbox.js";
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { credentials } from '@grpc/grpc-js';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { GrpcRelayTransport, type ExecClientLike } from '../src/grpc-relay-transport.js';
+import { OUTPUT_TRUNCATED_MARKER } from '../src/transport.js';
+import { SandboxExecClient } from '../src/gen/sandbox/v1/sandbox.js';
 
 /**
  * Live counterpart to the hermetic conformance battery. The battery's fakes are
@@ -30,10 +30,10 @@ import { SandboxExecClient } from "../src/gen/sandbox/v1/sandbox.js";
  * (worker-disconnect) spawns and kills its OWN worker process under a distinct
  * sandbox id, so the test is self-contained and repeatable — see makeSelfManagedWorker.
  */
-const LIVE = process.env.SH_LIVE_RELAY === "1";
-const SANDBOX_ID = process.env.SANDBOX_ID ?? "sbx-dev-1";
-const RELAY_ADDR = process.env.SH_RELAY_ADDR ?? "localhost:8443";
-const SANDBOX_TOKEN = process.env.SANDBOX_TOKEN ?? "dev-token";
+const LIVE = process.env.SH_LIVE_RELAY === '1';
+const SANDBOX_ID = process.env.SANDBOX_ID ?? 'sbx-dev-1';
+const RELAY_ADDR = process.env.SH_RELAY_ADDR ?? 'localhost:8443';
+const SANDBOX_TOKEN = process.env.SANDBOX_TOKEN ?? 'dev-token';
 
 /** Same two-line construction as select-sandbox.ts:52's defaultExecClient — one dialing idiom in the repo. */
 function makeExecClient(addr: string): ExecClientLike {
@@ -55,13 +55,16 @@ function makeLiveTransport(opts: { outputCapBytes?: number } = {}, sandboxId: st
 let workerBinDir: string | undefined;
 let workerBinPath: string | undefined;
 
-const remoteWorkerDir = fileURLToPath(new URL("../../../remote-worker", import.meta.url));
+const remoteWorkerDir = fileURLToPath(new URL('../../../remote-worker', import.meta.url));
 
 beforeAll(() => {
   if (!LIVE) return;
-  workerBinDir = mkdtempSync(path.join(tmpdir(), "sh-live-relay-worker-"));
-  workerBinPath = path.join(workerBinDir, "worker");
-  execFileSync("go", ["build", "-o", workerBinPath, "./cmd/worker"], { cwd: remoteWorkerDir, stdio: "pipe" });
+  workerBinDir = mkdtempSync(path.join(tmpdir(), 'sh-live-relay-worker-'));
+  workerBinPath = path.join(workerBinDir, 'worker');
+  execFileSync('go', ['build', '-o', workerBinPath, './cmd/worker'], {
+    cwd: remoteWorkerDir,
+    stdio: 'pipe',
+  });
 });
 
 afterAll(() => {
@@ -71,7 +74,7 @@ afterAll(() => {
 /** Waits for a line matching `pattern` on the child's stdout or stderr (Go's `log` writes to stderr). */
 function waitForLine(child: ChildProcess, pattern: RegExp, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    let buf = "";
+    let buf = '';
     const onData = (d: Buffer) => {
       buf += d.toString();
       if (pattern.test(buf)) {
@@ -89,19 +92,19 @@ function waitForLine(child: ChildProcess, pattern: RegExp, timeoutMs: number): P
     }, timeoutMs);
     const cleanup = () => {
       clearTimeout(timer);
-      child.stdout?.removeListener("data", onData);
-      child.stderr?.removeListener("data", onData);
-      child.removeListener("exit", onExit);
+      child.stdout?.removeListener('data', onData);
+      child.stderr?.removeListener('data', onData);
+      child.removeListener('exit', onExit);
     };
-    child.stdout?.on("data", onData);
-    child.stderr?.on("data", onData);
-    child.on("exit", onExit);
+    child.stdout?.on('data', onData);
+    child.stderr?.on('data', onData);
+    child.on('exit', onExit);
   });
 }
 
 /** Spawns the compiled worker binary attached under `sandboxId` and waits for it to attach to the relay. */
 async function spawnSelfManagedWorker(sandboxId: string): Promise<ChildProcess> {
-  if (!workerBinPath) throw new Error("worker binary not built — beforeAll did not run");
+  if (!workerBinPath) throw new Error('worker binary not built — beforeAll did not run');
   const child = spawn(workerBinPath, [], {
     env: {
       ...process.env,
@@ -113,14 +116,14 @@ async function spawnSelfManagedWorker(sandboxId: string): Promise<ChildProcess> 
   try {
     await waitForLine(child, /attached, serving execs/, 10_000);
   } catch (err) {
-    child.kill("SIGKILL");
+    child.kill('SIGKILL');
     throw err;
   }
   return child;
 }
 
-describe.skipIf(!LIVE)("GrpcRelayTransport against a live relay + worker", () => {
-  it("enforces the dual-ended timeout against a real long-running command", async () => {
+describe.skipIf(!LIVE)('GrpcRelayTransport against a live relay + worker', () => {
+  it('enforces the dual-ended timeout against a real long-running command', async () => {
     const t = makeLiveTransport();
     // The worker kills its own child at timeout_s AND the harness has its own deadline;
     // whichever fires, the caller must see timeout:2 rather than hang (spec §8). Asserting
@@ -129,19 +132,19 @@ describe.skipIf(!LIVE)("GrpcRelayTransport against a live relay + worker", () =>
     // via the transport's own 120s default deadline, but it would blow past this bound.
     const started = Date.now();
     try {
-      await expect(t.exec("sleep 30", { timeout: 2 })).rejects.toThrow("timeout:2");
+      await expect(t.exec('sleep 30', { timeout: 2 })).rejects.toThrow('timeout:2');
       expect(Date.now() - started).toBeLessThan(10_000);
     } finally {
       await t.close();
     }
   }, 30_000);
 
-  it("truncates a real flood at the cap and marks it", async () => {
+  it('truncates a real flood at the cap and marks it', async () => {
     const t = makeLiveTransport({ outputCapBytes: 64 * 1024 });
     // yes | head -c is a genuine multi-chunk flood through real 32 KiB Chunk frames,
     // which is the path the hermetic test's scripted frames only imitate.
     try {
-      const r = await t.exec("yes AAAAAAAA | head -c 1000000");
+      const r = await t.exec('yes AAAAAAAA | head -c 1000000');
       expect(r.stdout.toString()).toContain(OUTPUT_TRUNCATED_MARKER);
       // Near the 64 KiB cap, not the full ~1MB the command produced.
       expect(r.stdout.length).toBeLessThan(200 * 1024);
@@ -150,7 +153,7 @@ describe.skipIf(!LIVE)("GrpcRelayTransport against a live relay + worker", () =>
     }
   }, 30_000);
 
-  it("fails an in-flight exec when the worker disconnects, rather than hanging", async () => {
+  it('fails an in-flight exec when the worker disconnects, rather than hanging', async () => {
     // relay.ts's Attach teardown pushes {error: "worker disconnected"} into every live
     // sink. That is what lets run-leaf retry onto a healthy sandbox instead of blocking
     // on a dead one (§10: no mid-exec durability).
@@ -162,17 +165,17 @@ describe.skipIf(!LIVE)("GrpcRelayTransport against a live relay + worker", () =>
     const worker = await spawnSelfManagedWorker(disconnectId);
     try {
       const t = makeLiveTransport({}, disconnectId);
-      const p = t.exec("sleep 20");
+      const p = t.exec('sleep 20');
       // Let the exec actually land: the relay must have parked the sink and written
       // ServerFrame{exec} to the worker before we kill it, or we'd just be testing
       // "Attach never happened," not "Attach was torn down mid-exec".
       await new Promise((r) => setTimeout(r, 1000));
-      worker.kill("SIGKILL");
+      worker.kill('SIGKILL');
       await expect(p).rejects.toThrow(/worker disconnected|timeout|CANCELLED|UNAVAILABLE/);
       await t.close();
     } finally {
       // Idempotent safety net: a process already dead ignores a second SIGKILL.
-      worker.kill("SIGKILL");
+      worker.kill('SIGKILL');
     }
   }, 60_000);
 });

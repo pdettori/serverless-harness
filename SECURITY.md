@@ -36,7 +36,7 @@ disclosure. We aim to publish fixes and advisories within 90 days of the initial
 ## Supported Versions
 
 | Version | Supported          |
-|---------|--------------------|
+| ------- | ------------------ |
 | main    | :white_check_mark: |
 
 Only the latest release and the `main` branch receive security updates.

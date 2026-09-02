@@ -1,18 +1,18 @@
-import { DEFAULT_OUTPUT_CAP, OUTPUT_TRUNCATED_MARKER, type SandboxTransport } from "./transport.js";
-import { makeReqIdSource } from "./req-id.js";
+import { DEFAULT_OUTPUT_CAP, OUTPUT_TRUNCATED_MARKER, type SandboxTransport } from './transport.js';
+import { makeReqIdSource } from './req-id.js';
 import {
   Stream,
   type AbortRequest,
   type ExecEvent,
   type ExecRequest,
-} from "./gen/sandbox/v1/sandbox.js";
+} from './gen/sandbox/v1/sandbox.js';
 
 /** Minimal surface of the generated SandboxExecClient the transport needs. */
 export interface ExecClientLike {
   exec(request: ExecRequest): {
-    on(event: "data", cb: (ev: ExecEvent) => void): unknown;
-    on(event: "end", cb: () => void): unknown;
-    on(event: "error", cb: (err: Error) => void): unknown;
+    on(event: 'data', cb: (ev: ExecEvent) => void): unknown;
+    on(event: 'end', cb: () => void): unknown;
+    on(event: 'error', cb: (err: Error) => void): unknown;
     cancel(): void;
   };
   abort(request: AbortRequest, cb: (err: Error | null) => void): unknown;
@@ -38,7 +38,7 @@ export function GrpcRelayTransport(
   const nextReqId = opts.reqIdSource ?? defaultReqIdSource;
   let closed = false;
 
-  const exec: SandboxTransport["exec"] = (command, execOpts = {}) =>
+  const exec: SandboxTransport['exec'] = (command, execOpts = {}) =>
     new Promise((resolve, reject) => {
       const reqId = nextReqId();
       const call = client.exec({
@@ -61,27 +61,32 @@ export function GrpcRelayTransport(
         if (settled) return; // dedup: drop late frames for a settled reqId
         settled = true;
         clearTimeout(timer);
-        if (execOpts.signal) execOpts.signal.removeEventListener("abort", onAbort);
+        if (execOpts.signal) execOpts.signal.removeEventListener('abort', onAbort);
         fn();
       };
 
-      const timer = setTimeout(() => {
-        call.cancel();
-        client.abort({ sandboxId, reqId }, () => {});
-        finish(() => reject(new Error(`timeout:${execOpts.timeout ?? Math.round(deadlineMs / 1000)}`)));
-      }, execOpts.timeout ? execOpts.timeout * 1000 : deadlineMs);
+      const timer = setTimeout(
+        () => {
+          call.cancel();
+          client.abort({ sandboxId, reqId }, () => {});
+          finish(() =>
+            reject(new Error(`timeout:${execOpts.timeout ?? Math.round(deadlineMs / 1000)}`)),
+          );
+        },
+        execOpts.timeout ? execOpts.timeout * 1000 : deadlineMs,
+      );
 
       const onAbort = () => {
         call.cancel();
         client.abort({ sandboxId, reqId }, () => {});
-        finish(() => reject(new Error("aborted")));
+        finish(() => reject(new Error('aborted')));
       };
       if (execOpts.signal) {
         if (execOpts.signal.aborted) return onAbort();
-        execOpts.signal.addEventListener("abort", onAbort);
+        execOpts.signal.addEventListener('abort', onAbort);
       }
 
-      call.on("data", (ev: ExecEvent) => {
+      call.on('data', (ev: ExecEvent) => {
         if (settled) return;
         if (ev.chunk) {
           const data = Buffer.from(ev.chunk.data);
@@ -95,20 +100,26 @@ export function GrpcRelayTransport(
                 stdout.push(Buffer.from(OUTPUT_TRUNCATED_MARKER));
                 call.cancel();
                 client.abort({ sandboxId, reqId }, () => {});
-                finish(() => resolve({ stdout: Buffer.concat(stdout), exitCode: null, truncated: true }));
+                finish(() =>
+                  resolve({ stdout: Buffer.concat(stdout), exitCode: null, truncated: true }),
+                );
               }
             }
           }
         } else if (ev.end) {
           const code = ev.end.exitCode < 0 ? null : ev.end.exitCode;
-          finish(() => resolve({ stdout: Buffer.concat(stdout), exitCode: code, truncated: false }));
+          finish(() =>
+            resolve({ stdout: Buffer.concat(stdout), exitCode: code, truncated: false }),
+          );
         } else if (ev.error) {
           finish(() => reject(new Error(ev.error!.message)));
         }
       });
-      call.on("error", (err: Error) => finish(() => reject(err)));
+      call.on('error', (err: Error) => finish(() => reject(err)));
       // Stream ended with no End frame: no exit status, and NOT our cap.
-      call.on("end", () => finish(() => resolve({ stdout: Buffer.concat(stdout), exitCode: null, truncated: false })));
+      call.on('end', () =>
+        finish(() => resolve({ stdout: Buffer.concat(stdout), exitCode: null, truncated: false })),
+      );
     });
 
   return {

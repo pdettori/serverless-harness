@@ -1,7 +1,7 @@
 # Serverless Harness — Experiment Results (E1–E5)
 
-*Consolidated findings, June 2026. Source data: `experiments/RESULTS.md` (E2, E5),
-`deploy/knative/EXPERIMENTS.md` (E1, E3, E4). Designs: `docs/specs/2026-06-{23,24,25}-*.md`.*
+_Consolidated findings, June 2026. Source data: `experiments/RESULTS.md` (E2, E5),
+`deploy/knative/EXPERIMENTS.md` (E1, E3, E4). Designs: `docs/specs/2026-06-{23,24,25}-*.md`._
 
 ## The thesis under test
 
@@ -10,13 +10,13 @@ The serverless harness runs a [Pi](https://github.com/earendil-works) coding age
 **remote sandbox**, so a session is durable infrastructure rather than a long-lived process.
 The five experiments test whether that architecture pays off without breaking correctness:
 
-| # | Claim | Verdict | Headline result |
-|---|-------|---------|-----------------|
-| **E1** | Scale-to-zero is cheaper than always-on for idle-heavy use | ✅ PASS | serverless **0.25×** the pod-seconds (~75% cheaper) |
-| **E2** | Compaction-checkpoint keeps cold-start reconstruction O(tail), not O(total) | ✅ PASS | checkpoint reads **constant 6 entries** vs backend's 53→5003; ratio **8.8→833.8** |
-| **E3** | A session is portable: a fresh instance reconstructs equivalent context from the log | ✅ PASS | fidelity (≡ full replay) + mobility (fresh pod recalled the planted token) |
-| **E4** | Crash recovery is a byproduct of the externalized log | ✅ PASS | pod force-killed mid-session → next turn recovered all completed turns |
-| **E5** | Per-turn token spend can be capped and enforced | ✅ PASS | tool call blocked + exactly one `abort` past the cap; inert when unset |
+| #      | Claim                                                                                | Verdict | Headline result                                                                   |
+| ------ | ------------------------------------------------------------------------------------ | ------- | --------------------------------------------------------------------------------- |
+| **E1** | Scale-to-zero is cheaper than always-on for idle-heavy use                           | ✅ PASS | serverless **0.25×** the pod-seconds (~75% cheaper)                               |
+| **E2** | Compaction-checkpoint keeps cold-start reconstruction O(tail), not O(total)          | ✅ PASS | checkpoint reads **constant 6 entries** vs backend's 53→5003; ratio **8.8→833.8** |
+| **E3** | A session is portable: a fresh instance reconstructs equivalent context from the log | ✅ PASS | fidelity (≡ full replay) + mobility (fresh pod recalled the planted token)        |
+| **E4** | Crash recovery is a byproduct of the externalized log                                | ✅ PASS | pod force-killed mid-session → next turn recovered all completed turns            |
+| **E5** | Per-turn token spend can be capped and enforced                                      | ✅ PASS | tool call blocked + exactly one `abort` past the cap; inert when unset            |
 
 All five pass. Together they validate the economic case (E1), the optimization that makes
 scale-to-zero practical at length (E2), the correctness guarantees that make it safe (E3, E4),
@@ -36,18 +36,18 @@ A sampler polls running pods every 5s; **pod-seconds = Σ(running pods × 5s)** 
 **Result.** `persistent=380s`, `serverless=95s`, **ratio 0.25** — serverless used a quarter of
 the pod-runtime (~75% cheaper). Gate: serverless ≤ 0.6 × persistent. **PASS.**
 
-**Caveat / methodology.** Serverless pod-seconds are roughly *constant per turn* (cold-start +
+**Caveat / methodology.** Serverless pod-seconds are roughly _constant per turn_ (cold-start +
 work + ~30s scale-to-zero retention), independent of idle length, while persistent grows with the
 window — so the saving widens with idle time. A short idle (≈120s) does **not** clear the gate
 (ratio ~0.78); the result reflects a genuinely idle-heavy pattern. pod-seconds is a runtime proxy,
-not a billing model. *Reproduce:* `deploy/knative/e1-economics.sh`.
+not a billing model. _Reproduce:_ `deploy/knative/e1-economics.sh`.
 
 ## E2 — Local reconstruction cost (the compaction-checkpoint fast path)
 
 **Claim.** On cold start, the M5 `openFromCheckpoint` loader reconstructs a session in **O(tail)**
 (read only the latest-compaction-forward slice) rather than **O(total)** (full-log replay).
 
-**Honest framing.** Pi's native compaction already bounds the *LLM* context, so this is **not** an
+**Honest framing.** Pi's native compaction already bounds the _LLM_ context, so this is **not** an
 LLM-latency win — it is a **local** cost win (Redis read volume, indexing, the leaf→root walk).
 E2 measures exactly that, in-process, with a counting backend.
 
@@ -55,20 +55,21 @@ E2 measures exactly that, in-process, with a counting backend.
 reads a **constant 6 entries / ~900 bytes**, while `openFromBackend` reads the whole log
 (53→5003 entries, 7.5KB→707KB). The backend/checkpoint ratio rises **8.8 → 33.8 → 167.2 → 833.8**,
 and `buildSessionContext()` is byte-identical under both loaders at every N (correctness preserved).
-**PASS.** *Reproduce:* `pnpm -C experiments test e2-reconstruction-cost`.
+**PASS.** _Reproduce:_ `pnpm -C experiments test e2-reconstruction-cost`.
 
 ## E3 — Session fidelity + mobility
 
-**Claim.** A session's state lives in the log, so any fresh instance can reconstruct *equivalent*
+**Claim.** A session's state lives in the log, so any fresh instance can reconstruct _equivalent_
 context — the basis for scale-to-zero and for moving a session between pods.
 
 **Two halves.**
+
 - **Fidelity** (M5): the checkpoint-reconstructed `buildSessionContext()` deep-equals a full
   replay — proven by the M5 parity gate (`checkpoint.test.ts`) and re-confirmed at every N in E2.
 - **Mobility** (M7, cluster): plant a fact, force the pod to zero (confirmed gone), then a
   follow-up on a **fresh** pod recalled the planted token (`ZEBRA42`) from the Redis log.
 
-**Result.** Both hold. **PASS.** *Reproduce:* `deploy/knative/e3-mobility.sh` (mobility);
+**Result.** Both hold. **PASS.** _Reproduce:_ `deploy/knative/e3-mobility.sh` (mobility);
 `harness/test/checkpoint.test.ts` (fidelity).
 
 ## E4 — Crash recovery as a byproduct
@@ -80,7 +81,7 @@ mid-session loses no committed work.
 --force` mid-session, then issue a recovery turn on the freshly-started pod.
 
 **Result.** The post-crash turn recalled all three planted facts (APPLE/BANANA/CHERRY) — zero
-completed-turn loss. **PASS.** *Reproduce:* `deploy/knative/e4-recovery.sh`.
+completed-turn loss. **PASS.** _Reproduce:_ `deploy/knative/e4-recovery.sh`.
 
 ## E5 — Budget-voter enforcement
 
@@ -91,7 +92,7 @@ baseline) and blocks the next `tool_call` once over cap, appending one `abort` l
 
 **Result.** Over cap → tool call blocked and **exactly one** `abort` persisted to real Redis;
 cap unset → inert (no block, no `abort`). A key-gated live run confirms the same end-to-end with a
-real model. **PASS.** *Reproduce:* `pnpm -C experiments test e5-budget-structural` (gate);
+real model. **PASS.** _Reproduce:_ `pnpm -C experiments test e5-budget-structural` (gate);
 `e5-budget-live.test.ts` (live, `SH_RUN_LIVE=1`).
 
 ---
@@ -106,7 +107,7 @@ real model. **PASS.** *Reproduce:* `pnpm -C experiments test e5-budget-structura
   surfaced three real defects that static review missed and that were then fixed at root cause:
   a `start_sampler` command-substitution hang, an E3 scale-to-zero fall-through (false-pass risk),
   and an orchestrator `set -e` abort that skipped result-writing. The passing results below were
-  produced *after* those fixes, on green re-runs.
+  produced _after_ those fixes, on green re-runs.
 
 ## How to reproduce everything
 
@@ -128,4 +129,4 @@ cold-start reconstruction (E2)**, while **preserving session fidelity and mobili
 to the agent's own logic (Pi is forked only for the pluggable storage backend). This completes the
 pi-track plan's E1–E5 experiment set.
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

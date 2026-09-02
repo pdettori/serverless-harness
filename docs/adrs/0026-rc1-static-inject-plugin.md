@@ -13,7 +13,7 @@ new **`static-broker` HTTP service** (`POST /sessions/token`, keyed by `X-Server
 token). Two facts surfaced during RC1-0 planning made that a poor fit for a single-tenant, static PoC:
 
 1. The shipped `token-broker` contract is **OAuth-issuance-shaped** — it forwards the caller's inbound JWT
-   and expects the broker to *issue* a target-service token. That is heavier than a static single-tenant
+   and expects the broker to _issue_ a target-service token. That is heavier than a static single-tenant
    swap, and `token-broker` is not even present in the `authbridge-lite` binary.
 2. A separate `static-broker` HTTP service adds a moving part whose only job is to hand back a static
    secret — a network hop and a deployment surface with no PoC value.
@@ -61,4 +61,4 @@ is the only place the real credential lives.
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

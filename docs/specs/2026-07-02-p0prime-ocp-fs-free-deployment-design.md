@@ -52,6 +52,7 @@ sandbox will too — §5.2). No `anyuid`, no privileged pods.
 Verified against `main` @ `d199484` and a read-only inspection of the live cluster.
 
 ### 3.1 Live cluster (ready substrate)
+
 - OCP **4.20.8** / k8s 1.33.6; kubeconfig authenticates as cluster-admin.
 - OpenShift Serverless **KnativeServing v1.17 Ready**; KEDA Ready (`openshift-keda`).
 - StorageClasses `gp3-csi` (default) + `gp2-csi` — both AWS EBS, **RWO, `WaitForFirstConsumer`**, no RWX.
@@ -60,6 +61,7 @@ Verified against `main` @ `d199484` and a read-only inspection of the live clust
 - No existing harness namespace — clean slate.
 
 ### 3.2 The four breakages (post-P1)
+
 1. **Stale resource reference.** `deploy/knative/overlays/ocp/kustomization.yaml` still lists the
    **deleted** `../../leaf-pvc.yaml` → `kustomize build` fails outright. (P1 removed `leaf-pvc.yaml`.)
 2. **Wrong patch target.** `overlays/ocp/patch-sandbox.yaml` is `kind: Pod, name: sandbox-0`, but the
@@ -71,12 +73,13 @@ Verified against `main` @ `d199484` and a read-only inspection of the live clust
    `volumeClaimTemplates` (RWO 1Gi) must back `/workspace`. `emptyDir` also silently breaks the
    smoke's crash/resume claim (a pod restart would wipe the seeded repo).
 4. **Missing `ripgrep`.** `deploy/knative/sandbox.Dockerfile` installs `bash coreutils findutils
-   grep` but **not `ripgrep`**. The leaf's `find`/`grep` tools route to `rg` inside the sandbox
+grep` but **not `ripgrep`**. The leaf's `find`/`grep` tools route to `rg` inside the sandbox
    (`packages/k8s-sandbox/src/operations.ts`, `grep-tool.ts`), so the full leaf smoke crashes on the
    first search. Kind avoids this because its base `sandbox.yaml` does `apk add … ripgrep` at startup;
    the OCP image pre-bakes tools (no root `apk add` under `restricted-v2`) and omitted `rg`.
 
 ### 3.3 `setup-ocp.sh` gaps (vs. the working `setup-kind.sh`)
+
 - **Never installs the agent-sandbox controller** (Kind applies the v0.5.0 `manifest.yaml` +
   `kubectl wait` the CRD Established).
 - **Never applies/awaits the Sandbox CR** — no `.status.selector` poll → pod-Ready (Kind polls up to
@@ -103,10 +106,11 @@ GHCR-pulled (`ghcr.io/rossoctl/serverless-harness:latest`, auto-published post-P
 ## 5. Design
 
 ### 5.1 Target topology (P1 architecture, realized on OCP)
+
 - **Harness** — Knative Service, image `ghcr.io/rossoctl/serverless-harness:latest`, runs **non-root**
   (UID 65532, `nonroot-v2`), mounts only `/tmp` (emptyDir). Resolves the sandbox pod via
   `KAGENTI_SANDBOX_NAME=sandbox-0` → the `Sandbox` CR's `.status.selector` label query → `kubectl
-  exec`s all 7 Pi tool ops into it. External access via the Knative **Route** (`KSVC_URL` contract in
+exec`s all 7 Pi tool ops into it. External access via the Knative **Route** (`KSVC_URL` contract in
   `lib.sh`: Route host, `-k`, no Host header).
 - **Sandbox** — one `Sandbox` CR (`sandbox-0`, `agents.x-k8s.io`), managed by the agent-sandbox
   **v0.5.0** controller. `/workspace` backed by a **durable RWO EBS PVC** from the CR's
@@ -115,8 +119,10 @@ GHCR-pulled (`ghcr.io/rossoctl/serverless-harness:latest`, auto-published post-P
 - **Redis** — `deploy/knative/redis.yaml` (result record + async queue), unchanged.
 
 ### 5.2 Sandbox SCC / non-root model (the OCP-specific core)
+
 Chosen approach: **non-root + `fsGroup`, bound under `nonroot-v2`.** Realized by patching the
 **`Sandbox` CR `podTemplate`** in `overlays/ocp/patch-sandbox.yaml`:
+
 - Pod `securityContext`: `runAsUser: 65532`, `runAsNonRoot: true`, **`fsGroup: 65532`**,
   `seccompProfile.type: RuntimeDefault`.
 - Container `securityContext`: `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`.
@@ -124,7 +130,7 @@ Chosen approach: **non-root + `fsGroup`, bound under `nonroot-v2`.** Realized by
   granted `nonroot-v2` (`oc adm policy add-scc-to-user nonroot-v2 -z serverless-harness-sandbox …` in
   `setup-ocp.sh`).
 - **Keep** the durable PVC from `volumeClaimTemplates` (remove the `emptyDir` override). `fsGroup:
-  65532` makes the EBS volume group-owned/writable, so the sandbox — and the smoke's `sexec`
+65532` makes the EBS volume group-owned/writable, so the sandbox — and the smoke's `sexec`
   repo-seeding (`leaf-smoke.sh` writes `/workspace/<run>/repo` via `kubectl exec`) — writes as 65532.
 
 **Kustomize mechanism.** Patching a container inside a CRD's `podTemplate` via strategic-merge is a
@@ -134,17 +140,19 @@ strategic-merge patch of `kind: Sandbox` (not `Pod`) if the field-level merge is
 The plan picks one after a quick render check; either way the patch is **onto the `Sandbox` CR**.
 
 ### 5.3 Concrete changeset (P1-slice only)
-| File | Change |
-|------|--------|
-| `deploy/knative/sandbox.Dockerfile` | Add `ripgrep` to the `apk add` line. |
-| `deploy/knative/overlays/ocp/kustomization.yaml` | Remove the `../../leaf-pvc.yaml` resource; keep the `images:` transformer (alpine → internal-registry image); wire the corrected sandbox patch. |
-| `deploy/knative/overlays/ocp/patch-sandbox.yaml` | Rewrite to patch the **`Sandbox` CR** `podTemplate` (§5.2): security context, `serviceAccountName`, `command: [sleep infinity]`; **drop the `emptyDir` override** so `volumeClaimTemplates` backs `/workspace`. |
-| `deploy/knative/setup-ocp.sh` | Add: agent-sandbox v0.5.0 controller install (`kubectl apply --server-side -f …/v0.5.0/manifest.yaml` + `kubectl wait --for=condition=Established crd/sandboxes.agents.x-k8s.io`); Sandbox CR apply + `.status.selector` poll → pod Ready; sandbox SA + `nonroot-v2` grant; pre-smoke check that `llm-credentials` exists. |
-| `deploy/knative/README-ocp.md` | Remove `leaf-work` PVC references; document durable-PVC-via-CR + in-cluster sandbox image + the controller-install step. |
+
+| File                                             | Change                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deploy/knative/sandbox.Dockerfile`              | Add `ripgrep` to the `apk add` line.                                                                                                                                                                                                                                                                                       |
+| `deploy/knative/overlays/ocp/kustomization.yaml` | Remove the `../../leaf-pvc.yaml` resource; keep the `images:` transformer (alpine → internal-registry image); wire the corrected sandbox patch.                                                                                                                                                                            |
+| `deploy/knative/overlays/ocp/patch-sandbox.yaml` | Rewrite to patch the **`Sandbox` CR** `podTemplate` (§5.2): security context, `serviceAccountName`, `command: [sleep infinity]`; **drop the `emptyDir` override** so `volumeClaimTemplates` backs `/workspace`.                                                                                                            |
+| `deploy/knative/setup-ocp.sh`                    | Add: agent-sandbox v0.5.0 controller install (`kubectl apply --server-side -f …/v0.5.0/manifest.yaml` + `kubectl wait --for=condition=Established crd/sandboxes.agents.x-k8s.io`); Sandbox CR apply + `.status.selector` poll → pod Ready; sandbox SA + `nonroot-v2` grant; pre-smoke check that `llm-credentials` exists. |
+| `deploy/knative/README-ocp.md`                   | Remove `leaf-work` PVC references; document durable-PVC-via-CR + in-cluster sandbox image + the controller-install step.                                                                                                                                                                                                   |
 
 Log output for all long commands → `/tmp/sh/p0prime/*.log` (per repo Context Budget rules).
 
 ### 5.4 Deploy sequence (`setup-ocp.sh`, post-change)
+
 1. OpenShift Serverless operator + `KnativeServing` CR (PVC/securitycontext feature flags) — **exists**.
 2. **NEW:** agent-sandbox v0.5.0 controller + CRD (`kubectl wait … Established`).
 3. Optional KEDA (`--with-keda`) — exists; **not required** for this slice (sync `/runs` smoke).
@@ -161,7 +169,7 @@ Log output for all long commands → `/tmp/sh/p0prime/*.log` (per repo Context B
 
 Executed in two stages to de-risk the largest unknown first:
 
-**Stage 1 — walking skeleton (sandbox tier alone).** Install the controller and apply *only* the
+**Stage 1 — walking skeleton (sandbox tier alone).** Install the controller and apply _only_ the
 Sandbox CR. Confirm: the PVC binds (`gp3-csi`, `WaitForFirstConsumer` → binds on pod schedule); the
 pod runs **non-root** as 65532; `/workspace` is writable (`kubectl exec sandbox-0 -- sh -c 'touch
 /workspace/.probe'`). This proves the v0.5.0 controller propagates `volumeClaimTemplates` + the
@@ -178,15 +186,17 @@ All long smoke/kubectl output → `/tmp/sh/p0prime/*.log`, analyzed via subagent
 logs into the main context).
 
 ## 7. Risks & mitigations
-| Risk | Mitigation |
-|------|-----------|
+
+| Risk                                                                                                                   | Mitigation                                                                                                                                                                                |
+| ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | agent-sandbox v0.5.0 controller may not propagate `podTemplate` `fsGroup`/`runAsUser`/`serviceAccountName` from the CR | **Stage-1 walking skeleton catches it first**, before any harness work. If not propagated, patch the generated pod directly or fall back to a Sandbox-CR field the controller does honor. |
-| Kustomize can't cleanly merge a container inside a CRD `podTemplate` | Use a **JSON6902** patch with explicit paths (§5.2); verify with `kustomize build` render before applying. |
-| EBS `WaitForFirstConsumer` → PVC `Pending` until pod schedules | The readiness poll tolerates the `Pending` → `Bound` window (matches Kind's selector-then-Ready poll shape). |
-| GHCR harness image stale (pre-P1) | `build.yaml` publishes `serverless-harness` on **every push to `main`**; P1 is merged, so `:latest` is post-P1. Confirm image digest/date in Stage 2 if the smoke misbehaves. |
-| `restricted-v2` didn't cleanly inject a UID for the harness (ocp-setup memory) | We **pin** `runAsUser: 65532` and bind under **`nonroot-v2`** (not `restricted-v2`), sidestepping SCC UID injection entirely. |
+| Kustomize can't cleanly merge a container inside a CRD `podTemplate`                                                   | Use a **JSON6902** patch with explicit paths (§5.2); verify with `kustomize build` render before applying.                                                                                |
+| EBS `WaitForFirstConsumer` → PVC `Pending` until pod schedules                                                         | The readiness poll tolerates the `Pending` → `Bound` window (matches Kind's selector-then-Ready poll shape).                                                                              |
+| GHCR harness image stale (pre-P1)                                                                                      | `build.yaml` publishes `serverless-harness` on **every push to `main`**; P1 is merged, so `:latest` is post-P1. Confirm image digest/date in Stage 2 if the smoke misbehaves.             |
+| `restricted-v2` didn't cleanly inject a UID for the harness (ocp-setup memory)                                         | We **pin** `runAsUser: 65532` and bind under **`nonroot-v2`** (not `restricted-v2`), sidestepping SCC UID injection entirely.                                                             |
 
 ## 8. Out of scope / explicit non-goals
+
 - Shared sandbox pool, N:M routing, RWX on the sandbox tier (P2, #46).
 - Kata isolation, ratio experiments (P3, #48).
 - `leaf-orchestrator.yaml`, gate/cron smokes (separate P1 follow-up).
@@ -195,4 +205,4 @@ logs into the main context).
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

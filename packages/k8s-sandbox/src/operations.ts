@@ -5,13 +5,13 @@ import type {
   LsOperations,
   ReadOperations,
   WriteOperations,
-} from "@earendil-works/pi-coding-agent";
-import type { K8sSandboxConfig } from "./config.js";
-import type { ExecInPod } from "./exec.js";
-import { mapPath, shQuote } from "./paths.js";
-import { DEFAULT_OUTPUT_CAP } from "./transport.js";
+} from '@earendil-works/pi-coding-agent';
+import type { K8sSandboxConfig } from './config.js';
+import type { ExecInPod } from './exec.js';
+import { mapPath, shQuote } from './paths.js';
+import { DEFAULT_OUTPUT_CAP } from './transport.js';
 
-const IMAGE_MIMES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+const IMAGE_MIMES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
 function mapper(cfg: K8sSandboxConfig) {
   return (p: string) => shQuote(mapPath(p, cfg.headCwd, cfg.podCwd));
@@ -35,7 +35,7 @@ export function createPodReadOps(exec: ExecInPod, cfg: K8sSandboxConfig): ReadOp
         const size = stat && stat.exitCode === 0 ? stat.stdout.toString().trim() : null;
         throw new Error(
           `Read exceeds the ${DEFAULT_OUTPUT_CAP} byte sandbox output cap` +
-            `${size ? ` (file is ${size} bytes)` : ""}: ${p}. ` +
+            `${size ? ` (file is ${size} bytes)` : ''}: ${p}. ` +
             `Read a range with bash instead, e.g. sed -n '1,500p' <file>.`,
         );
       }
@@ -63,7 +63,7 @@ export function createPodWriteOps(exec: ExecInPod, cfg: K8sSandboxConfig): Write
   const q = mapper(cfg);
   return {
     writeFile: async (p, content) => {
-      const b64 = Buffer.from(content).toString("base64");
+      const b64 = Buffer.from(content).toString('base64');
       const r = await exec(`base64 -d > ${q(p)}`, { stdin: Buffer.from(b64) });
       if (r.exitCode !== 0) throw new Error(`Write failed in pod: ${p}`);
     },
@@ -103,7 +103,7 @@ export function createPodBashOps(exec: ExecInPod, cfg: K8sSandboxConfig): BashOp
             .map(([k, v]) => `${k}=${shQuote(String(v))}`)
         : [];
       const wrapped = pairs.length
-        ? `cd ${q(cwd)} && env ${pairs.join(" ")} bash -c ${shQuote(command)}`
+        ? `cd ${q(cwd)} && env ${pairs.join(' ')} bash -c ${shQuote(command)}`
         : `cd ${q(cwd)} && ${command}`; // M2's exact form — unchanged when no env
       const r = await exec(wrapped, { onData, signal, timeout });
       // A cap trip means the command was SIGKILLed mid-flight with no exit status. Pi
@@ -129,7 +129,7 @@ export function createPodLsOps(exec: ExecInPod, cfg: K8sSandboxConfig): LsOperat
     stat: async (p) => {
       const r = await exec(`test -e ${q(p)} && (test -d ${q(p)} && echo DIR || echo FILE)`);
       if (r.exitCode !== 0) throw new Error(`Path not found in pod: ${p}`);
-      const isDir = r.stdout.toString().trim() === "DIR";
+      const isDir = r.stdout.toString().trim() === 'DIR';
       return { isDirectory: () => isDir };
     },
     readdir: async (p) => {
@@ -144,7 +144,10 @@ export function createPodLsOps(exec: ExecInPod, cfg: K8sSandboxConfig): LsOperat
         );
       }
       if (r.exitCode !== 0) throw new Error(`readdir failed in pod: ${p}`);
-      return r.stdout.toString().split("\n").filter((x) => x.length > 0);
+      return r.stdout
+        .toString()
+        .split('\n')
+        .filter((x) => x.length > 0);
     },
   };
 }
@@ -164,7 +167,7 @@ export function createPodFindOps(exec: ExecInPod, cfg: K8sSandboxConfig): FindOp
     glob: async (pattern, cwd, { ignore, limit }) => {
       const globs = [`-g ${shQuote(pattern)}`, ...ignore.map((ig) => `-g ${shQuote(`!${ig}`)}`)];
       const r = await exec(
-        `cd ${q(cwd)} && rg --files --hidden ${globs.join(" ")} | head -n ${limit}; ` +
+        `cd ${q(cwd)} && rg --files --hidden ${globs.join(' ')} | head -n ${limit}; ` +
           `rc=\${PIPESTATUS[0]}; [ "\$rc" = 0 ] || [ "\$rc" = 1 ] || [ "\$rc" = 141 ] || exit "\$rc"`,
       );
       // Two independent concerns, checked in order.
@@ -193,9 +196,9 @@ export function createPodFindOps(exec: ExecInPod, cfg: K8sSandboxConfig): FindOp
       }
       return r.stdout
         .toString()
-        .split("\n")
+        .split('\n')
         .filter((x) => x.length > 0)
-        .map((rel) => rel.replace(/^\.\//, ""));
+        .map((rel) => rel.replace(/^\.\//, ''));
     },
   };
 }

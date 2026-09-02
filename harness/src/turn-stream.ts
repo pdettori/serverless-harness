@@ -1,6 +1,6 @@
-import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import type { LeafUsage } from "./run-leaf.js";
-import type { TurnResult } from "./run-turn.js";
+import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
+import type { LeafUsage } from './run-leaf.js';
+import type { TurnResult } from './run-turn.js';
 
 /**
  * Neutral, transport-agnostic frames the turn core emits during a streamed turn. A discriminated
@@ -8,12 +8,18 @@ import type { TurnResult } from "./run-turn.js";
  * Fidelity B: tool_use carries verbatim args; tool_result carries isError + a clipped preview.
  */
 export type TurnStreamFrame =
-  | { type: "text"; delta: string } // assistant-text token
-  | { type: "thinking"; delta: string } // reasoning token (optional; may never fire — §3.5)
-  | { type: "tool_use"; id: string; name: string; args: unknown } // tool call started (args verbatim)
-  | { type: "tool_result"; id: string; isError: boolean; preview: string } // tool call ended (clipped)
-  | { type: "done"; sessionId: string; stopReason: string; usage?: LeafUsage }
-  | { type: "error"; sessionId: string; stopReason: string; errorMessage?: string; usage?: LeafUsage };
+  | { type: 'text'; delta: string } // assistant-text token
+  | { type: 'thinking'; delta: string } // reasoning token (optional; may never fire — §3.5)
+  | { type: 'tool_use'; id: string; name: string; args: unknown } // tool call started (args verbatim)
+  | { type: 'tool_result'; id: string; isError: boolean; preview: string } // tool call ended (clipped)
+  | { type: 'done'; sessionId: string; stopReason: string; usage?: LeafUsage }
+  | {
+      type: 'error';
+      sessionId: string;
+      stopReason: string;
+      errorMessage?: string;
+      usage?: LeafUsage;
+    };
 
 const DEFAULT_PREVIEW_BYTES = 2048;
 
@@ -37,10 +43,10 @@ export function previewCap(override?: number): number {
  */
 export function clip(result: unknown, previewBytes?: number): string {
   const cap = previewCap(previewBytes);
-  const text = typeof result === "string" ? result : (JSON.stringify(result) ?? "");
-  const buf = Buffer.from(text, "utf8");
+  const text = typeof result === 'string' ? result : (JSON.stringify(result) ?? '');
+  const buf = Buffer.from(text, 'utf8');
   if (buf.byteLength <= cap) return text;
-  return buf.subarray(0, cap).toString("utf8") + "…[truncated]";
+  return buf.subarray(0, cap).toString('utf8') + '…[truncated]';
 }
 
 /**
@@ -53,17 +59,18 @@ export function sseExtension(
   opts?: { previewBytes?: number },
 ): ExtensionFactory {
   return (pi) => {
-    pi.on("message_update", (e) => {
+    pi.on('message_update', (e) => {
       const a = e.assistantMessageEvent;
-      if (a.type === "text_delta" && a.delta) onEvent({ type: "text", delta: a.delta });
-      else if (a.type === "thinking_delta" && a.delta) onEvent({ type: "thinking", delta: a.delta });
+      if (a.type === 'text_delta' && a.delta) onEvent({ type: 'text', delta: a.delta });
+      else if (a.type === 'thinking_delta' && a.delta)
+        onEvent({ type: 'thinking', delta: a.delta });
     });
-    pi.on("tool_execution_start", (e) =>
-      onEvent({ type: "tool_use", id: e.toolCallId, name: e.toolName, args: e.args }),
+    pi.on('tool_execution_start', (e) =>
+      onEvent({ type: 'tool_use', id: e.toolCallId, name: e.toolName, args: e.args }),
     );
-    pi.on("tool_execution_end", (e) =>
+    pi.on('tool_execution_end', (e) =>
       onEvent({
-        type: "tool_result",
+        type: 'tool_result',
         id: e.toolCallId,
         isError: e.isError,
         preview: clip(e.result, opts?.previewBytes),
@@ -78,17 +85,17 @@ export function sseExtension(
  * streamed client ends with the same facts a sync client reads; only the event NAME differs.
  */
 export function terminalFrame(result: TurnResult): TurnStreamFrame {
-  const clean = result.stopReason === "end_turn" || result.stopReason === "max_tokens";
+  const clean = result.stopReason === 'end_turn' || result.stopReason === 'max_tokens';
   if (clean) {
     return {
-      type: "done",
+      type: 'done',
       sessionId: result.sessionId,
       stopReason: result.stopReason,
       ...(result.usage ? { usage: result.usage } : {}),
     };
   }
   return {
-    type: "error",
+    type: 'error',
     sessionId: result.sessionId,
     stopReason: result.stopReason,
     ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),

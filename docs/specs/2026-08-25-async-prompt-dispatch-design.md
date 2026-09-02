@@ -46,18 +46,18 @@ and share the turn-execution core with `/turn` rather than forking it.
 
 ## 2. Current state — the seams we extend
 
-| Seam | Today | This slice |
-|---|---|---|
-| `LeafEnvelope` (`harness/src/run-leaf.ts`) | `kind?: "converge" \| "solve"`, `problemStatement?` | `+ "prompt"`, `+ prompt?: string` |
-| `LeafResult` union | `done→verdict`, `paused→gate`, `aborted`, `solved→patch`, `failed→reason` | `+ { status:"responded"; text; usage? }` |
-| `runLeaf` dispatch | `if (env.kind === "solve") return runSolveLeaf(...)` | `+ if (env.kind === "prompt") return runPromptLeaf(...)` |
-| `runTurn` (`harness/src/run-turn.ts`) | one function: create-or-404, wire extensions, run, extract text | factor a shared `executeTurn` core (both callers use it); `TurnResult += usage?` |
-| `LeafResultRecord` (`leaf-result-store.ts`) | `status ∈ {done,failed,aborted,paused,solved}`, `verdict/gate/reason/patch/usage` | `+ "responded"` status, `+ text: string \| null` |
-| `toResultRecord` | branch per status | `+ responded` branch |
-| `isRunEnvelope` (`knative-server/src/server.ts`) | `isLeafEnvelope(o) \|\| isSolveEnvelope(o)` | `+ \|\| isPromptEnvelope(o)` |
-| `handleLeafStatus` | wire cases for done/solved/paused/failed | `+ responded` case → `{ status:"responded", text }` |
-| `classify-outcome`, `/runs` route, KEDA `ScaledJob` | kind-agnostic | **no change** |
-| `leaf-job-runner` (`processOne`) | returns the leaf status union | type-level only: `+ "responded"` in the return union + doc comment; no behavioral change (a terminal `responded` acks like `solved`) |
+| Seam                                                | Today                                                                             | This slice                                                                                                                           |
+| --------------------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `LeafEnvelope` (`harness/src/run-leaf.ts`)          | `kind?: "converge" \| "solve"`, `problemStatement?`                               | `+ "prompt"`, `+ prompt?: string`                                                                                                    |
+| `LeafResult` union                                  | `done→verdict`, `paused→gate`, `aborted`, `solved→patch`, `failed→reason`         | `+ { status:"responded"; text; usage? }`                                                                                             |
+| `runLeaf` dispatch                                  | `if (env.kind === "solve") return runSolveLeaf(...)`                              | `+ if (env.kind === "prompt") return runPromptLeaf(...)`                                                                             |
+| `runTurn` (`harness/src/run-turn.ts`)               | one function: create-or-404, wire extensions, run, extract text                   | factor a shared `executeTurn` core (both callers use it); `TurnResult += usage?`                                                     |
+| `LeafResultRecord` (`leaf-result-store.ts`)         | `status ∈ {done,failed,aborted,paused,solved}`, `verdict/gate/reason/patch/usage` | `+ "responded"` status, `+ text: string \| null`                                                                                     |
+| `toResultRecord`                                    | branch per status                                                                 | `+ responded` branch                                                                                                                 |
+| `isRunEnvelope` (`knative-server/src/server.ts`)    | `isLeafEnvelope(o) \|\| isSolveEnvelope(o)`                                       | `+ \|\| isPromptEnvelope(o)`                                                                                                         |
+| `handleLeafStatus`                                  | wire cases for done/solved/paused/failed                                          | `+ responded` case → `{ status:"responded", text }`                                                                                  |
+| `classify-outcome`, `/runs` route, KEDA `ScaledJob` | kind-agnostic                                                                     | **no change**                                                                                                                        |
+| `leaf-job-runner` (`processOne`)                    | returns the leaf status union                                                     | type-level only: `+ "responded"` in the return union + doc comment; no behavioral change (a terminal `responded` acks like `solved`) |
 
 The invariant that shapes everything below: `LeafResult` is a discriminated union where **each
 `status` discriminant maps to exactly one payload field** (`done`→`verdict`, `solved`→`patch`, …).
@@ -97,8 +97,9 @@ best-effort — a usage hiccup never fails an otherwise-`responded` leaf.
 
 ```ts
 export function isPromptEnvelope(o: any): boolean {
-  return o && typeof o.sessionId === "string" && o.kind === "prompt"
-    && typeof o.prompt === "string";
+  return (
+    o && typeof o.sessionId === 'string' && o.kind === 'prompt' && typeof o.prompt === 'string'
+  );
 }
 export function isRunEnvelope(o: any): boolean {
   return isLeafEnvelope(o) || isSolveEnvelope(o) || isPromptEnvelope(o);
@@ -110,13 +111,13 @@ export function isRunEnvelope(o: any): boolean {
 their kinds). `toResultRecord` gains one branch:
 
 ```ts
-if (result.status === "responded")
-  return { ...base, status: "responded", text: result.text, usage: result.usage ?? null };
+if (result.status === 'responded')
+  return { ...base, status: 'responded', text: result.text, usage: result.usage ?? null };
 ```
 
 ### 3.2 Runner — share the `/turn` core, don't fork it
 
-The cleanest way to give a prompt leaf **full `/turn` parity** is to run *the same code* `/turn`
+The cleanest way to give a prompt leaf **full `/turn` parity** is to run _the same code_ `/turn`
 runs. `runTurn` today is a single function that (a) opens-or-404s a session, (b) wires
 `flushExtension` + `k8sSandboxExtension(resolveSandboxConfig(...))` + `checkpointExtension` +
 `toolChoiceExtension` (+ optional `budgetVoterExtension`), (c) resolves the model, (d) runs one
@@ -129,8 +130,8 @@ interface ExecuteTurnInput {
   prompt: string;
   sessionId?: string;
   config?: TurnConfig;
-  createIfAbsent: boolean;     // session-open policy — see below
-  selection?: ModelSelection;  // pre-resolved model/provider (leaf precedence); default: resolveModelSelection(config)
+  createIfAbsent: boolean; // session-open policy — see below
+  selection?: ModelSelection; // pre-resolved model/provider (leaf precedence); default: resolveModelSelection(config)
 }
 async function executeTurn(input: ExecuteTurnInput): Promise<TurnResult>;
 ```
@@ -149,7 +150,7 @@ callers see a superset. A usage hiccup leaves `usage` undefined and never fails 
 
 **The create-or-resume wrinkle.** `runTurn` today throws `"no session in backend"` when a
 `sessionId` is given but no checkpoint exists — that is `/turn`'s deliberate `404` contract. But a
-*fresh* prompt leaf's `sessionId` has no prior checkpoint, and must **create**. This is the one
+_fresh_ prompt leaf's `sessionId` has no prior checkpoint, and must **create**. This is the one
 behavioral difference between the two callers, so it is the one parameter:
 
 Session-open policy (design-level; the concrete checkpoint-existence probe follows whatever
@@ -163,7 +164,7 @@ Session-open policy (design-level; the concrete checkpoint-existence probe follo
 
 So `/turn` keeps its 404, and a prompt leaf gets create-or-resume — the same pattern `runSolveLeaf`
 already implements, giving prompt leaves free at-least-once **resumability** on the async queue. This
-`createIfAbsent` flag is the *only* behavioral parameter distinguishing the two callers; everything
+`createIfAbsent` flag is the _only_ behavioral parameter distinguishing the two callers; everything
 else in the core is shared verbatim.
 
 **`runPromptLeaf`.** A thin adapter that resolves the leaf-family model selection, runs the core,
@@ -171,23 +172,30 @@ and maps `TurnResult → LeafResult`:
 
 ```ts
 async function runPromptLeaf(env, config, deps?): Promise<LeafResult> {
-  if (!env.prompt) return { status: "failed", reason: "bad_inputs" };
+  if (!env.prompt) return { status: 'failed', reason: 'bad_inputs' };
   const selection = resolveModelSelection({
     model: env.model ?? config?.model,
     provider: env.provider ?? config?.provider,
   });
-  const exec = deps?.executeTurn ?? executeTurn;   // injectable seam for unit tests
-  const r = await exec({ prompt: env.prompt, sessionId: env.sessionId, config, createIfAbsent: true, selection });
-  if (r.stopReason === "aborted") return { status: "aborted" };
-  if (r.stopReason === "error") return { status: "failed", reason: "error", message: r.errorMessage };
-  return { status: "responded", text: r.response, usage: r.usage };
+  const exec = deps?.executeTurn ?? executeTurn; // injectable seam for unit tests
+  const r = await exec({
+    prompt: env.prompt,
+    sessionId: env.sessionId,
+    config,
+    createIfAbsent: true,
+    selection,
+  });
+  if (r.stopReason === 'aborted') return { status: 'aborted' };
+  if (r.stopReason === 'error')
+    return { status: 'failed', reason: 'error', message: r.errorMessage };
+  return { status: 'responded', text: r.response, usage: r.usage };
 }
 ```
 
 Dispatch in `runLeaf`, alongside the solve line:
 
 ```ts
-if (env.kind === "prompt") return runPromptLeaf(env, config, deps);
+if (env.kind === 'prompt') return runPromptLeaf(env, config, deps);
 ```
 
 **Model precedence** is the clean superset already used by solve: `env.model ?? config?.model →
@@ -216,8 +224,10 @@ The only wire addition is one status case:
 
 ```ts
 // handleLeafStatus
-if (record.status === "responded")
-  return res.writeHead(200, JSON_HEADERS).end(JSON.stringify({ status: "responded", text: record.text }));
+if (record.status === 'responded')
+  return res
+    .writeHead(200, JSON_HEADERS)
+    .end(JSON.stringify({ status: 'responded', text: record.text }));
 ```
 
 Full async lifecycle, end to end:
@@ -295,4 +305,4 @@ existing dispatch/poll helpers — no new script.
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

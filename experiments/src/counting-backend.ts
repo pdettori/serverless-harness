@@ -1,4 +1,4 @@
-import type { FileEntry, SessionStorageBackend } from "@earendil-works/pi-coding-agent";
+import type { FileEntry, SessionStorageBackend } from '@earendil-works/pi-coding-agent';
 
 export interface ReadCounts {
   reads: number;

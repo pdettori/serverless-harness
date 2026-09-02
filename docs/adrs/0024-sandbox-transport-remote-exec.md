@@ -7,7 +7,7 @@
 
 ## Context
 
-The harness runs every Pi tool call inside a sandbox pod via `kubectl exec`, so it must dial *into* the pod through the kube API. That rules out any sandbox behind NAT, on-prem, on a laptop, or in another cloud — and blocks the top driver, bring-your-own (untrusted third-party) sandboxes. Reaching those requires inverting connectivity (the sandbox dials *out*) with a contract that is language-neutral (any runtime can host a worker) and firewall-friendly (one outbound TLS connection on `:443`), without touching the Pi loop, the session backend, or the leaf queue. An earlier revision of this PR got the outbound-dial direction right but carried the RPC over Redis Streams behind a TypeScript interface — locking workers to TS via JSON+base64 frames and forcing Redis (a port `:443`-only egress commonly blocks) into the exec path.
+The harness runs every Pi tool call inside a sandbox pod via `kubectl exec`, so it must dial _into_ the pod through the kube API. That rules out any sandbox behind NAT, on-prem, on a laptop, or in another cloud — and blocks the top driver, bring-your-own (untrusted third-party) sandboxes. Reaching those requires inverting connectivity (the sandbox dials _out_) with a contract that is language-neutral (any runtime can host a worker) and firewall-friendly (one outbound TLS connection on `:443`), without touching the Pi loop, the session backend, or the leaf queue. An earlier revision of this PR got the outbound-dial direction right but carried the RPC over Redis Streams behind a TypeScript interface — locking workers to TS via JSON+base64 frames and forcing Redis (a port `:443`-only egress commonly blocks) into the exec path.
 
 ## Decision
 
@@ -70,7 +70,7 @@ is a third `SandboxTransport`,
 Read/Write/Edit/Ls/Find, so the file-reading tools are exactly the ones running without a
 cap. The battery therefore covers two of three implementations, and Pi can still tell the
 backends apart on output volume. Capping the Read path is a production behaviour change and is tracked
-separately. What *is* closed here is the damaging consequence: because that transport falls
+separately. What _is_ closed here is the damaging consequence: because that transport falls
 back to the capped `KubectlTransport` on channel death, a truncated read could reach Pi's
 Edit tool and be written back over the file, so `createPodReadOps.readFile` now throws
 instead of returning bytes it cannot vouch for.
@@ -128,4 +128,4 @@ than silently skipped, because quietly omitting a case for one implementation is
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

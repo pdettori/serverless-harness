@@ -24,15 +24,15 @@ serverless-harness/
 
 ## Key Commands
 
-| Task | Command |
-|------|---------|
-| Install deps | `pnpm install` |
+| Task                | Command                                 |
+| ------------------- | --------------------------------------- |
+| Install deps        | `pnpm install`                          |
 | Build pi-fork types | `cd pi-fork && npm ci && npm run build` |
-| Lint | `make lint` |
-| Format | `make fmt` |
-| Test (all) | `make test` |
-| Typecheck | `make typecheck` |
-| Pre-commit install | `pre-commit install` |
+| Lint                | `make lint`                             |
+| Format              | `make fmt`                              |
+| Test (all)          | `make test`                             |
+| Typecheck           | `make typecheck`                        |
+| Pre-commit install  | `pre-commit install`                    |
 
 ## Development Setup
 

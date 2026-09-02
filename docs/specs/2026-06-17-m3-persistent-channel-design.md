@@ -26,7 +26,7 @@ M3 closes all three, **harness-side only** (`pi-fork` untouched, as in M2):
    inside the pod.
 3. **find ignore-list** — find honours the `ignore` patterns (negated globs) AND `.gitignore`
    for ignored **directories** (verified on the pod's ripgrep 14.1.0). Minor divergence from
-   Pi's `fd`: an individually-gitignored *file* matching the positive `-g <pattern>` is
+   Pi's `fd`: an individually-gitignored _file_ matching the positive `-g <pattern>` is
    re-included by the glob whitelist — see D5 caveat below.
 
 M3 is **done** when: a burst of fast ops in one agent turn is served by a single reused
@@ -60,16 +60,16 @@ backed by cluster-free unit tests plus one real kind smoke.
 
 ## 2. Key decisions (resolved during brainstorming)
 
-| # | Decision | Choice |
-|---|----------|--------|
-| D1 | Persistent transport | **T1 — long-lived `kubectl exec -i … -- bash`** with a framed stdin/stdout protocol. Zero new deps/infra; same kubectl shell-out and same injectable `ExecInPod` seam as M2. (Rejected: T2 pod-side RPC server + port-forward — breaks the plain-Deployment posture; T3 SPDY via `@kubernetes/client-node` — heavy dep, same framing problem.) |
-| D2 | Channel scope | **S-fast — persistent channel for the small request/response ops only** (read, write, edit, ls, stat, mkdir, find, mime). **bash, grep, and `user_bash` keep M2's per-call `kubectl exec`** — they stream via `onData`, honour `signal` abort, run long, and already amortize the exec overhead. Captures the bulk of the latency win while the framing protocol only ever handles the simple case. |
-| D3 | Wire framing | **Sentinel-bracketed, base64-encoded payload + trailing exit code.** base64's alphabet cannot contain the marker bytes ⇒ collision-free framing and binary-safe stdout. One command in flight at a time (a queue), since the ops are synchronous request/response. |
-| D4 | Env injection site | **Bash-ops layer, as an `env VAR=val … bash -c <cmd>` prefix** — transport-agnostic (works for both kubectl and persistent transports) and non-leaking (scoped to the one invocation). **No `ExecInPod` signature change.** |
-| D5 | find implementation | **`rg --files -g <pattern> -g '!<ignore>'`** — reuses the ripgrep already in the image, honours `.gitignore`, and applies the `ignore` negations. **Verified behavior on rg 14.1.0 (nuanced):** gitignored *directories* (e.g. `node_modules/`, `dist/`) are pruned and stay excluded even when `-g` matches files inside them; but an individually-gitignored *file* matching the positive `-g <pattern>` IS re-included (the glob whitelist-overrides a file-level ignore) — a minor divergence from Pi's `fd --glob`. The `ignore` list (negated `-g '!<ig>'`) always excludes its entries. Accepted for M3; closing the individual-file edge is a low-priority follow-up. (Rejected: keep `find` + translate globs to `-path -prune` — brittle.) |
-| D6 | Resilience | **Transparent fallback.** A failed spawn or a session that dies mid-command degrades that op to a one-shot `kubectl exec` (`kubectlExecInPod`), and the session re-spawns lazily. A dead channel never hard-fails — it reverts to M2 behavior. |
-| D7 | Lifecycle | **Dispose on `session_shutdown`** (fires on quit/reload/new/resume/fork) — end stdin and kill the kubectl process so it is never leaked. Spawn is **lazy** (first fast op), so an inert run spawns nothing. |
-| D8 | Verification gate | **Pure framing unit tests + fake-`spawn` persistent-exec tests + operations tests + one real kind smoke.** Direct mirror of M2's D4 — cluster-free and build-free except the single smoke. |
+| #   | Decision             | Choice                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| --- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | Persistent transport | **T1 — long-lived `kubectl exec -i … -- bash`** with a framed stdin/stdout protocol. Zero new deps/infra; same kubectl shell-out and same injectable `ExecInPod` seam as M2. (Rejected: T2 pod-side RPC server + port-forward — breaks the plain-Deployment posture; T3 SPDY via `@kubernetes/client-node` — heavy dep, same framing problem.)                                                                                                                                                                                                                                                                                                                                                                                                       |
+| D2  | Channel scope        | **S-fast — persistent channel for the small request/response ops only** (read, write, edit, ls, stat, mkdir, find, mime). **bash, grep, and `user_bash` keep M2's per-call `kubectl exec`** — they stream via `onData`, honour `signal` abort, run long, and already amortize the exec overhead. Captures the bulk of the latency win while the framing protocol only ever handles the simple case.                                                                                                                                                                                                                                                                                                                                                  |
+| D3  | Wire framing         | **Sentinel-bracketed, base64-encoded payload + trailing exit code.** base64's alphabet cannot contain the marker bytes ⇒ collision-free framing and binary-safe stdout. One command in flight at a time (a queue), since the ops are synchronous request/response.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| D4  | Env injection site   | **Bash-ops layer, as an `env VAR=val … bash -c <cmd>` prefix** — transport-agnostic (works for both kubectl and persistent transports) and non-leaking (scoped to the one invocation). **No `ExecInPod` signature change.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| D5  | find implementation  | **`rg --files -g <pattern> -g '!<ignore>'`** — reuses the ripgrep already in the image, honours `.gitignore`, and applies the `ignore` negations. **Verified behavior on rg 14.1.0 (nuanced):** gitignored _directories_ (e.g. `node_modules/`, `dist/`) are pruned and stay excluded even when `-g` matches files inside them; but an individually-gitignored _file_ matching the positive `-g <pattern>` IS re-included (the glob whitelist-overrides a file-level ignore) — a minor divergence from Pi's `fd --glob`. The `ignore` list (negated `-g '!<ig>'`) always excludes its entries. Accepted for M3; closing the individual-file edge is a low-priority follow-up. (Rejected: keep `find` + translate globs to `-path -prune` — brittle.) |
+| D6  | Resilience           | **Transparent fallback.** A failed spawn or a session that dies mid-command degrades that op to a one-shot `kubectl exec` (`kubectlExecInPod`), and the session re-spawns lazily. A dead channel never hard-fails — it reverts to M2 behavior.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| D7  | Lifecycle            | **Dispose on `session_shutdown`** (fires on quit/reload/new/resume/fork) — end stdin and kill the kubectl process so it is never leaked. Spawn is **lazy** (first fast op), so an inert run spawns nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| D8  | Verification gate    | **Pure framing unit tests + fake-`spawn` persistent-exec tests + operations tests + one real kind smoke.** Direct mirror of M2's D4 — cluster-free and build-free except the single smoke.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ---
 
@@ -129,7 +129,7 @@ cluster** — so the gnarly parsing is unit-tested in isolation.
 ```ts
 export function persistentExecInPod(
   config: K8sSandboxConfig,
-  deps: { fallback: ExecInPod; spawn?: typeof import("node:child_process").spawn },
+  deps: { fallback: ExecInPod; spawn?: typeof import('node:child_process').spawn },
 ): ExecInPod & { dispose: () => void };
 ```
 
@@ -146,7 +146,7 @@ transport it gets. Internals:
   paths with no `cd`), exactly as M2's `kubectlExecInPod` runs `bash -c <command>` verbatim.
 - **Per-command stdin via heredoc.** The `ExecInPod` contract carries `opts.stdin` (used only
   by `writeFile`'s `base64 -d > <path>`). A per-call `kubectl exec -i` feeds that as the
-  command's stdin, but a shared session's stdin *is* the command stream. So when `opts.stdin`
+  command's stdin, but a shared session's stdin _is_ the command stream. So when `opts.stdin`
   is set, the transport appends a nonce-delimited heredoc to the command — `<command> <<'<H>'\n<stdin>\n<H>` — and bash reads the heredoc body from the same stream and feeds it to
   the command. Binary-safe (writeFile's payload is already base64) and ARG_MAX-safe (data is
   not an argv). Contract: when `stdin` is provided, `command` must be a single pipeline whose
@@ -160,7 +160,7 @@ transport it gets. Internals:
 
 Crucially, the persistent transport is wrapped so that **any rejection caused by channel
 unavailability is retried once via `deps.fallback`** (D6) — the file op still succeeds via
-a one-shot `kubectl exec`. Genuine command failures (non-zero exit codes) are *not* retried;
+a one-shot `kubectl exec`. Genuine command failures (non-zero exit codes) are _not_ retried;
 they pass through unchanged.
 
 ### 3.3 No new config
@@ -179,24 +179,29 @@ nothing for an operator to tune or disable.)
 M2 built one `exec` and gave it to all seven tools. M3 builds two and routes by op shape:
 
 ```ts
-const streamExec = opts?.exec ?? kubectlExecInPod(config);              // M2 path (per-call)
-const fastExec   = opts?.exec ?? persistentExecInPod(config, {          // M3 path (persistent)
-  fallback: kubectlExecInPod(config),
-});
+const streamExec = opts?.exec ?? kubectlExecInPod(config); // M2 path (per-call)
+const fastExec =
+  opts?.exec ??
+  persistentExecInPod(config, {
+    // M3 path (persistent)
+    fallback: kubectlExecInPod(config),
+  });
 
 // fast request/response ops → persistent channel
-registerTool(createReadTool (localCwd, { operations: createPodReadOps (fastExec, config) }));
+registerTool(createReadTool(localCwd, { operations: createPodReadOps(fastExec, config) }));
 registerTool(createWriteTool(localCwd, { operations: createPodWriteOps(fastExec, config) }));
-registerTool(createEditTool (localCwd, { operations: createPodEditOps (fastExec, config) }));
-registerTool(createLsTool   (localCwd, { operations: createPodLsOps   (fastExec, config) }));
-registerTool(createFindTool (localCwd, { operations: createPodFindOps (fastExec, config) }));
+registerTool(createEditTool(localCwd, { operations: createPodEditOps(fastExec, config) }));
+registerTool(createLsTool(localCwd, { operations: createPodLsOps(fastExec, config) }));
+registerTool(createFindTool(localCwd, { operations: createPodFindOps(fastExec, config) }));
 
 // streaming / long-running ops → per-call kubectl exec (unchanged from M2)
-registerTool(createBashTool (localCwd, { operations: createPodBashOps (streamExec, config) }));
+registerTool(createBashTool(localCwd, { operations: createPodBashOps(streamExec, config) }));
 registerTool(createPodGrepTool(localCwd, streamExec, config));
-pi.on("user_bash", () => ({ operations: createPodBashOps(streamExec, config) }));
+pi.on('user_bash', () => ({ operations: createPodBashOps(streamExec, config) }));
 
-pi.on("session_shutdown", () => { if ("dispose" in fastExec) fastExec.dispose(); });
+pi.on('session_shutdown', () => {
+  if ('dispose' in fastExec) fastExec.dispose();
+});
 ```
 
 When `opts.exec` is supplied (tests / alternate auth), it is used for **both** tiers, so
@@ -211,13 +216,16 @@ Pi passes `env` only to the bash tool. When present, prefix a non-leaking, per-i
 ```ts
 exec: async (command, cwd, { onData, signal, timeout, env }) => {
   const prefix = env
-    ? "env " + Object.entries(env)
+    ? 'env ' +
+      Object.entries(env)
         .filter(([, v]) => v !== undefined)
-        .map(([k, v]) => `${k}=${shQuote(String(v))}`).join(" ") + " "
-    : "";
+        .map(([k, v]) => `${k}=${shQuote(String(v))}`)
+        .join(' ') +
+      ' '
+    : '';
   const wrapped = prefix
     ? `cd ${q(cwd)} && ${prefix}bash -c ${shQuote(command)}`
-    : `cd ${q(cwd)} && ${command}`;          // M2's exact form when env is absent (no behavior change)
+    : `cd ${q(cwd)} && ${command}`; // M2's exact form when env is absent (no behavior change)
   const r = await exec(wrapped, { onData, signal, timeout });
   return { exitCode: r.exitCode };
 };
@@ -233,16 +241,20 @@ Replace `find . -type f -name <pattern>` with `rg --files`:
 
 ```ts
 glob: async (pattern, cwd, { ignore, limit }) => {
-  const globs = [`-g ${shQuote(pattern)}`, ...ignore.map((ig) => `-g ${shQuote("!" + ig)}`)];
-  const r = await exec(`cd ${q(cwd)} && rg --files --hidden ${globs.join(" ")} | head -n ${limit}`);
-  return r.stdout.toString().split("\n").filter((x) => x.length > 0).map((rel) => rel.replace(/^\.\//, ""));
+  const globs = [`-g ${shQuote(pattern)}`, ...ignore.map((ig) => `-g ${shQuote('!' + ig)}`)];
+  const r = await exec(`cd ${q(cwd)} && rg --files --hidden ${globs.join(' ')} | head -n ${limit}`);
+  return r.stdout
+    .toString()
+    .split('\n')
+    .filter((x) => x.length > 0)
+    .map((rel) => rel.replace(/^\.\//, ''));
 };
 ```
 
 `rg --files` lists files under cwd honouring `.gitignore`; `--hidden` keeps dotfiles in
 view; each `ignore` pattern becomes a negated glob. **Verified nuance (rg 14.1.0):**
-gitignored *directories* (e.g. `node_modules/`, `dist/`) are pruned and stay excluded even
-when `-g` matches files inside; but an individually-gitignored *file* matching the positive
+gitignored _directories_ (e.g. `node_modules/`, `dist/`) are pruned and stay excluded even
+when `-g` matches files inside; but an individually-gitignored _file_ matching the positive
 `-g <pattern>` is re-included (the glob whitelist-overrides a file-level ignore) — a minor
 divergence from Pi's `fd --glob`. The `ignore`-list negated globs (`-g '!<ig>'`) always
 exclude their entries. Output shape (relative paths, `./` stripped, `limit`-capped) matches
@@ -252,14 +264,14 @@ M2. `exists` is unchanged.
 
 ## 5. Error handling & resilience
 
-| Condition | Behavior |
-|-----------|----------|
+| Condition                                        | Behavior                                                                                              |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
 | Persistent spawn fails (no kubectl, bad context) | Op transparently retried via `fallback` (one-shot exec); session re-spawn attempted lazily next call. |
-| Session dies mid-command (pod restart, net blip) | In-flight command rejects → retried once via `fallback`; session marked dead and re-spawned lazily. |
-| `opts.timeout` on a fast op | Kill + re-spawn session; reject `timeout:<n>` (M2-compatible). |
-| `opts.signal` aborted | Kill + re-spawn session; reject `aborted` (M2-compatible). |
-| Genuine non-zero exit code | Passed through unchanged (**not** treated as channel failure; no retry). |
-| `session_shutdown` | `dispose()` — end stdin, kill child; no leaked process. |
+| Session dies mid-command (pod restart, net blip) | In-flight command rejects → retried once via `fallback`; session marked dead and re-spawned lazily.   |
+| `opts.timeout` on a fast op                      | Kill + re-spawn session; reject `timeout:<n>` (M2-compatible).                                        |
+| `opts.signal` aborted                            | Kill + re-spawn session; reject `aborted` (M2-compatible).                                            |
+| Genuine non-zero exit code                       | Passed through unchanged (**not** treated as channel failure; no retry).                              |
+| `session_shutdown`                               | `dispose()` — end stdin, kill child; no leaked process.                                               |
 
 Streaming ops (bash/grep) retain M2's exact error handling because their transport is
 unchanged.
@@ -289,22 +301,22 @@ unchanged.
 
 ## 7. Residual risks
 
-| Risk | Mitigation |
-|------|------------|
-| Framing parser mis-handles an edge (huge output, marker-like bytes) | base64 makes payloads marker-free by construction; `FrameParser` is pure and exhaustively unit-tested incl. chunk-boundary splits and large/binary payloads. |
-| Shared bash accumulates state across commands (cwd drift, leaked vars) | Each fast op is fully self-contained (`cd <qcwd> && …`); env is injected per-command via `env …`, never `export`. No op relies on prior-command state. |
-| Persistent session masks a real connectivity problem by always falling back | Fallback is logged; the smoke asserts the channel is actually used (single process), so a silent permanent-fallback regression is caught. |
-| `rg --files` semantics differ subtly from `fd`/`find` (e.g. symlinks, no-match exit) | Output shape pinned by unit tests; no-match returns empty list (rg `--files` exits 0 with no output); smoke verifies gitignore + ignore-list behavior end-to-end. |
-| `head -n <limit>` closing the pipe early sends SIGPIPE to `rg` | Acceptable — rg's partial output is the intended truncation; exit status of the op is the wrapper's `$?` of the pipeline's last stage, which M2 already tolerates for capped output. |
-| Per-call streaming bash still pays per-op exec cost | Accepted (D2): bash amortizes exec over real work; S-all (stream over the channel) is a deferred follow-up if profiling shows bash exec overhead dominates. |
+| Risk                                                                                 | Mitigation                                                                                                                                                                           |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Framing parser mis-handles an edge (huge output, marker-like bytes)                  | base64 makes payloads marker-free by construction; `FrameParser` is pure and exhaustively unit-tested incl. chunk-boundary splits and large/binary payloads.                         |
+| Shared bash accumulates state across commands (cwd drift, leaked vars)               | Each fast op is fully self-contained (`cd <qcwd> && …`); env is injected per-command via `env …`, never `export`. No op relies on prior-command state.                               |
+| Persistent session masks a real connectivity problem by always falling back          | Fallback is logged; the smoke asserts the channel is actually used (single process), so a silent permanent-fallback regression is caught.                                            |
+| `rg --files` semantics differ subtly from `fd`/`find` (e.g. symlinks, no-match exit) | Output shape pinned by unit tests; no-match returns empty list (rg `--files` exits 0 with no output); smoke verifies gitignore + ignore-list behavior end-to-end.                    |
+| `head -n <limit>` closing the pipe early sends SIGPIPE to `rg`                       | Acceptable — rg's partial output is the intended truncation; exit status of the op is the wrapper's `$?` of the pipeline's last stage, which M2 already tolerates for capped output. |
+| Per-call streaming bash still pays per-op exec cost                                  | Accepted (D2): bash amortizes exec over real work; S-all (stream over the channel) is a deferred follow-up if profiling shows bash exec overhead dominates.                          |
 
 ---
 
 ## 8. Relationship to the parent plan
 
-The parent plan flagged exactly this work in M2's residual-risk table (§8): *"Per-op
+The parent plan flagged exactly this work in M2's residual-risk table (§8): _"Per-op
 `kubectl exec` latency … flagged for M3 — a persistent in-pod channel or API-exec is the
-upgrade path."* M3 takes the **persistent in-pod channel** branch (T1), not API-exec,
+upgrade path."_ M3 takes the **persistent in-pod channel** branch (T1), not API-exec,
 because it preserves M2's whole posture (kubectl shell-out, no pod server, no new deps).
 
 This is a **sandbox-track hardening increment** that makes Config B (persistent decoupled:
@@ -314,4 +326,4 @@ session layers and adds no new external surface.
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

@@ -1,4 +1,4 @@
-import { randomInt } from "node:crypto";
+import { randomInt } from 'node:crypto';
 
 const SALT_BITS = 21; // 2^21 ≈ 2.1M distinct replica spaces
 const COUNTER_SPACE = 2 ** 32;

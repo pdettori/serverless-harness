@@ -60,7 +60,7 @@ spec:
           # fidelity fixes), digest sha256:c809d5edad2ae41d132328a8e9cdcf5e1924008830f0e73782b1d110154e362a.
           image: ghcr.io/rossoctl/kagenti-extensions/authbridge:main-9c131ee
           imagePullPolicy: IfNotPresent
-          args: ["--config", "/etc/authbridge/config.yaml"]
+          args: ['--config', '/etc/authbridge/config.yaml']
           ports:
             - containerPort: 8080
           volumeMounts:
@@ -72,10 +72,10 @@ spec:
               readOnly: true
           resources:
             requests:
-              memory: "64Mi"
-              cpu: "50m"
+              memory: '64Mi'
+              cpu: '50m'
             limits:
-              memory: "128Mi"
+              memory: '128Mi'
       volumes:
         - name: config
           configMap:

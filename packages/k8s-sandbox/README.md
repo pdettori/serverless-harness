@@ -10,12 +10,12 @@ the serverless harness (Milestone 2). See
 `harness/cli.ts` registers `k8sSandboxExtension()`. It is **inert unless
 `KAGENTI_SANDBOX_POD` is set**:
 
-| Env var | Default | Meaning |
-|---------|---------|---------|
-| `KAGENTI_SANDBOX_POD` | (unset → off) | pod to exec into |
-| `KAGENTI_SANDBOX_NAMESPACE` | `default` | namespace |
-| `KAGENTI_SANDBOX_CONTEXT` | current-context | kube context |
-| `KAGENTI_SANDBOX_CWD` | `/workspace` | pod working dir (announced to the model) |
+| Env var                     | Default         | Meaning                                  |
+| --------------------------- | --------------- | ---------------------------------------- |
+| `KAGENTI_SANDBOX_POD`       | (unset → off)   | pod to exec into                         |
+| `KAGENTI_SANDBOX_NAMESPACE` | `default`       | namespace                                |
+| `KAGENTI_SANDBOX_CONTEXT`   | current-context | kube context                             |
+| `KAGENTI_SANDBOX_CWD`       | `/workspace`    | pod working dir (announced to the model) |
 
 Apply the fixture pod first: `kubectl apply -f deploy/sandbox.yaml`.
 See `SMOKE.md` for the end-to-end runbook.

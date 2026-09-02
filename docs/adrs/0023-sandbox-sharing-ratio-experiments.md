@@ -26,4 +26,4 @@ We will measure the sharing ratio and per-sandbox concurrency cap empirically on
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

@@ -8,8 +8,8 @@
 ## Context
 
 What forces a decision now? The problem, the constraints, the pressures. State the facts and
-the forces at play — not the answer. Enough that a reader a year from now understands *why this
-was even a question*.
+the forces at play — not the answer. Enough that a reader a year from now understands _why this
+was even a question_.
 
 ## Decision
 
@@ -34,4 +34,4 @@ knowingly accepted — the honest ones, not just the upside.
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

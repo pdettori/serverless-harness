@@ -1,4 +1,4 @@
-import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
 
 /**
  * For custom (non-Anthropic) model endpoints reached via SH_MODEL_CUSTOM=1, nudge tool use.
@@ -17,20 +17,20 @@ import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
  */
 export function toolChoiceExtension(): ExtensionFactory {
   return (pi) => {
-    if (process.env.SH_MODEL_CUSTOM !== "1") return;
+    if (process.env.SH_MODEL_CUSTOM !== '1') return;
     let logged = false;
     // Handler receives the event { type, payload }; returning a value replaces the payload
     // (runner.ts before_provider_request contract). Mutate + return event.payload.
-    pi.on("before_provider_request", (event: { payload?: unknown }) => {
+    pi.on('before_provider_request', (event: { payload?: unknown }) => {
       const params = event.payload as Record<string, unknown> | undefined;
-      if (!params || typeof params !== "object") return undefined;
+      if (!params || typeof params !== 'object') return undefined;
       const tools = params.tools as Array<{ name?: string }> | undefined;
       if (Array.isArray(tools) && tools.length > 0 && params.tool_choice == null) {
         // Emit the form the wire protocol accepts: Anthropic wants the object `{type:"auto"}`;
         // OpenAI Chat Completions (vLLM/RITS/OpenAI) wants the bare string "auto" and rejects the
         // object ("Invalid value for `function`: `None`"). Select on SH_MODEL_API (default anthropic).
-        const api = process.env.SH_MODEL_API ?? "anthropic";
-        params.tool_choice = api.startsWith("openai") ? "auto" : { type: "auto" };
+        const api = process.env.SH_MODEL_API ?? 'anthropic';
+        params.tool_choice = api.startsWith('openai') ? 'auto' : { type: 'auto' };
       }
       if (!logged) {
         logged = true;

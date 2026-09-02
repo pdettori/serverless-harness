@@ -1,7 +1,7 @@
 export interface LadderPoint {
-  c: number;          // concurrent leaves at this rung
+  c: number; // concurrent leaves at this rung
   throughput: number; // aggregate leaves/sec
-  p95Ms: number;      // per-leaf p95 latency at this rung
+  p95Ms: number; // per-leaf p95 latency at this rung
 }
 
 /**
@@ -12,7 +12,7 @@ export interface LadderPoint {
  */
 export function detectKnee(points: LadderPoint[], degradeX: number, patience = 2): number {
   const baseline = points.find((p) => p.c === 1);
-  if (!baseline) throw new Error("detectKnee: no c=1 baseline point");
+  if (!baseline) throw new Error('detectKnee: no c=1 baseline point');
   const bound = baseline.p95Ms * degradeX;
   const sorted = [...points].sort((a, b) => a.c - b.c);
   let knee = 1;
@@ -34,13 +34,13 @@ export function detectKnee(points: LadderPoint[], degradeX: number, patience = 2
 
 /** Fraction of wall-clock the sandbox was busy on this leaf's execs; in (0, 1]. */
 export function dutyCycle(execBusyMs: number, wallMs: number): number {
-  if (wallMs <= 0) throw new Error("dutyCycle: wallMs must be > 0");
+  if (wallMs <= 0) throw new Error('dutyCycle: wallMs must be > 0');
   return Math.min(1, execBusyMs / wallMs);
 }
 
 /** How many such leaves time-share one sandbox before it is continuously busy. */
 export function derivedRatio(duty: number): number {
-  if (duty <= 0) throw new Error("derivedRatio: duty must be > 0");
+  if (duty <= 0) throw new Error('derivedRatio: duty must be > 0');
   return Math.round((1 / duty) * 10) / 10;
 }
 
@@ -51,7 +51,7 @@ export function sanityFloorPass(knee: number, minConcurrency: number): boolean {
 
 export interface LeafObservation {
   runId: string;
-  expectedRef: string;   // the ref this leaf's envelope pinned
+  expectedRef: string; // the ref this leaf's envelope pinned
   observedMarker: string; // marker.txt content read from its worktree
 }
 
@@ -66,9 +66,9 @@ export function worktreeConsistent(obs: LeafObservation[]): {
 
 export interface WorkloadPoint {
   label: string;
-  execMs: number;    // sandbox-busy ms attributable to one leaf of this workload
+  execMs: number; // sandbox-busy ms attributable to one leaf of this workload
   execCount: number; // number of sandbox execs the leaf issued
-  wallMs: number;    // leaf wall-clock
+  wallMs: number; // leaf wall-clock
 }
 
 export interface RatioCurvePoint {
@@ -87,7 +87,7 @@ export function buildRatioCurve(points: WorkloadPoint[]): RatioCurvePoint[] {
 }
 
 export interface ArmResult {
-  arm: "dedicated" | "shared";
+  arm: 'dedicated' | 'shared';
   resvSecPerLeaf: number;
   p95Ms: number;
   throughput: number;
@@ -100,7 +100,8 @@ export function reservationBenefit(
   shared: ArmResult,
   degradeX: number,
 ): { ratio: number; withinDegrade: boolean } {
-  if (shared.resvSecPerLeaf <= 0) throw new Error("reservationBenefit: shared resvSecPerLeaf must be > 0");
+  if (shared.resvSecPerLeaf <= 0)
+    throw new Error('reservationBenefit: shared resvSecPerLeaf must be > 0');
   const ratio = Math.round((dedicated.resvSecPerLeaf / shared.resvSecPerLeaf) * 10) / 10;
   return { ratio, withinDegrade: shared.p95Ms <= dedicated.p95Ms * degradeX };
 }

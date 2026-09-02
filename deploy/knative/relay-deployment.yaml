@@ -29,12 +29,12 @@ spec:
           # From the package dir, tsx and all runtime deps (@grpc/grpc-js, @sh/*) resolve
           # locally. Matches the package.json `start` script (`node --import tsx src/main.ts`).
           workingDir: /app/packages/sandbox-relay
-          command: ["node", "--import", "tsx", "src/main.ts"]
+          command: ['node', '--import', 'tsx', 'src/main.ts']
           env:
             - name: REDIS_URL
               value: redis://redis.default.svc.cluster.local:6379
             - name: SH_RELAY_PORT
-              value: "8443"
+              value: '8443'
             # Relay auth is fail-closed (see main.ts's makeDefaultValidateToken): with
             # no token set, every worker Attach is rejected before the stream is parked.
             # MUST equal the worker's SANDBOX_TOKEN (see worker-example.yaml). This
@@ -57,10 +57,10 @@ spec:
           # footprint; the limit leaves headroom for concurrent relayed streams.
           resources:
             requests:
-              memory: "256Mi"
-              cpu: "50m"
+              memory: '256Mi'
+              cpu: '50m'
             limits:
-              memory: "512Mi"
+              memory: '512Mi'
 ---
 apiVersion: v1
 kind: Service

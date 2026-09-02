@@ -21,11 +21,11 @@ We will have the model author and run scripts in the sandbox that call MCP over 
 
 ## Consequences
 
-- Supersedes: the parent research doc's MCP *gateway* (M10) — MCP becomes code run in the sandbox, not a harness-forwarded gateway call.
+- Supersedes: the parent research doc's MCP _gateway_ (M10) — MCP becomes code run in the sandbox, not a harness-forwarded gateway call.
 - Positive: Near-zero Pi surface; large token savings (progressive disclosure + filter-in-code); credentials confined to the waypoint.
 - Negative / accepted cost: Isolation relaxes to "reachable only through the mediating waypoint"; static MCP roster per sandbox image; HTTP/SSE-only.
 - Follow-up owed: The unattended actor-token delegation plane (M7–M9) is a hard dependency AuthBridge has not yet wired.
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

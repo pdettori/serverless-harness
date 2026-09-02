@@ -22,9 +22,9 @@ We will introduce an upstreamable `SessionStorageBackend` seam in Pi core (defau
 ## Consequences
 
 - Positive: A completed turn is durable in Redis; a fresh process resumes by `session_id`; the seam mirrors Pi issue #2032 and stays upstreamable.
-- Negative / accepted cost: Fire-and-forget writes can lose an *in-flight* turn on hard kill; durability boundary is the completed turn (flush at `turn_end`/`session_shutdown`).
+- Negative / accepted cost: Fire-and-forget writes can lose an _in-flight_ turn on hard kill; durability boundary is the completed turn (flush at `turn_end`/`session_shutdown`).
 - Follow-up owed: Checkpoint write / compaction path deferred to M4 (M1 implements only the read side).
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

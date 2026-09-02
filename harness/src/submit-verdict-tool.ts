@@ -1,12 +1,12 @@
-import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { validateVerdict, type Verdict } from "./verdict.js";
+import type { ExtensionAPI, ExtensionFactory } from '@earendil-works/pi-coding-agent';
+import { validateVerdict, type Verdict } from './verdict.js';
 
 export interface VerdictCapture {
   verdict?: Verdict;
 }
 
 /** Custom session-entry type used to persist a captured verdict durably (for resume recovery). */
-export const VERDICT_ENTRY_TYPE = "verdict";
+export const VERDICT_ENTRY_TYPE = 'verdict';
 
 /** Minimal slice of SessionManager the tool needs to persist the verdict durably. */
 export interface VerdictSink {
@@ -16,16 +16,19 @@ export interface VerdictSink {
 // Inline TypeBox-compatible schema (avoids importing typebox which is only in pi-fork's node_modules).
 // The `as any` cast on registerTool bypasses the TSchema constraint at compile time.
 const params = {
-  type: "object",
+  type: 'object',
   properties: {
-    item_id: { type: "string", description: "The id of the item being judged (echo the input item_id)" },
-    verdict: {
-      anyOf: [{ const: "FLAGGED" }, { const: "CLEAR" }],
-      description: "FLAGGED if the pattern is present and relevant; CLEAR otherwise",
+    item_id: {
+      type: 'string',
+      description: 'The id of the item being judged (echo the input item_id)',
     },
-    reason: { type: "string", description: "One sentence justifying the verdict" },
+    verdict: {
+      anyOf: [{ const: 'FLAGGED' }, { const: 'CLEAR' }],
+      description: 'FLAGGED if the pattern is present and relevant; CLEAR otherwise',
+    },
+    reason: { type: 'string', description: 'One sentence justifying the verdict' },
   },
-  required: ["item_id", "verdict", "reason"],
+  required: ['item_id', 'verdict', 'reason'],
 };
 
 /**
@@ -34,19 +37,25 @@ const params = {
  * session entry, so a session resumed after a crash can recover the verdict without re-running
  * the agent (mirrors the checkpoint-marker pattern).
  */
-export function submitVerdictExtension(capture: VerdictCapture, sink?: VerdictSink): ExtensionFactory {
+export function submitVerdictExtension(
+  capture: VerdictCapture,
+  sink?: VerdictSink,
+): ExtensionFactory {
   return (pi: ExtensionAPI) => {
     pi.registerTool({
-      name: "submit_verdict",
-      label: "Submit verdict",
+      name: 'submit_verdict',
+      label: 'Submit verdict',
       description:
-        "Submit your final verdict for the item. Call this exactly once when you are done. " +
-        "After calling it, stop.",
+        'Submit your final verdict for the item. Call this exactly once when you are done. ' +
+        'After calling it, stop.',
       parameters: params,
       async execute(_id: string, args: unknown) {
         const r = validateVerdict(args);
         if (!r.ok) {
-          return { isError: true, content: [{ type: "text", text: `Invalid verdict: ${r.error}` }] };
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Invalid verdict: ${r.error}` }],
+          };
         }
         capture.verdict = r.value;
         sink?.appendCustomEntry(VERDICT_ENTRY_TYPE, r.value);
@@ -54,7 +63,7 @@ export function submitVerdictExtension(capture: VerdictCapture, sink?: VerdictSi
         // (AgentToolResult.terminate) — without it the model just keeps getting re-prompted
         // and calls submit_verdict again, sometimes thousands of times, until something
         // external kills the pod.
-        return { content: [{ type: "text", text: "Verdict recorded." }], terminate: true };
+        return { content: [{ type: 'text', text: 'Verdict recorded.' }], terminate: true };
       },
     } as any);
   };

@@ -1,11 +1,11 @@
-import { createClient, type RedisClientType } from "redis";
+import { createClient, type RedisClientType } from 'redis';
 
 export interface SandboxRecord {
   sandboxId: string;
   labels: Record<string, string>;
   capabilities: string[];
   capacityMax: number;
-  transport: "grpc";
+  transport: 'grpc';
 }
 
 export interface RecordStore {
@@ -16,14 +16,14 @@ export interface RecordStore {
 
 /** Redis hash of grpc presence records: field = sandboxId, value = JSON(SandboxRecord). */
 export function recordsKey(): string {
-  return "sh:sandbox:records";
+  return 'sh:sandbox:records';
 }
 
 /** node-redis-backed record store. Connects lazily; reuses REDIS_URL. */
 export class RedisRecordStore implements RecordStore {
   private client: RedisClientType;
   private ready: Promise<void>;
-  constructor(url = process.env.REDIS_URL ?? "redis://127.0.0.1:6379") {
+  constructor(url = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379') {
     this.client = createClient({ url }) as RedisClientType;
     this.ready = this.client.connect().then(() => undefined);
   }

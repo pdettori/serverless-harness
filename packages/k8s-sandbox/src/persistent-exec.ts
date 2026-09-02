@@ -1,14 +1,14 @@
-import { type ChildProcess, spawn as nodeSpawn } from "node:child_process";
-import type { K8sSandboxConfig } from "./config.js";
-import type { ExecInPod, SandboxTransport } from "./transport.js";
-import { DEFAULT_OUTPUT_CAP, OUTPUT_TRUNCATED_MARKER } from "./transport.js";
-import { CAP_STAGE_FAILED, FrameParser, wrapCommand } from "./framing.js";
+import { type ChildProcess, spawn as nodeSpawn } from 'node:child_process';
+import type { K8sSandboxConfig } from './config.js';
+import type { ExecInPod, SandboxTransport } from './transport.js';
+import { DEFAULT_OUTPUT_CAP, OUTPUT_TRUNCATED_MARKER } from './transport.js';
+import { CAP_STAGE_FAILED, FrameParser, wrapCommand } from './framing.js';
 
 /** argv for the long-lived session: a bare interactive `bash` (NOT `bash -c`). */
 export function buildPersistentKubectlArgs(config: K8sSandboxConfig): string[] {
-  const args = ["exec", "-i", "-n", config.namespace];
-  if (config.context) args.push("--context", config.context);
-  args.push(config.pod, "--", "bash");
+  const args = ['exec', '-i', '-n', config.namespace];
+  if (config.context) args.push('--context', config.context);
+  args.push(config.pod, '--', 'bash');
   return args;
 }
 
@@ -54,7 +54,7 @@ export function persistentExecInPod(
     const c = child;
     child = null;
     try {
-      c.kill("SIGKILL");
+      c.kill('SIGKILL');
     } catch {
       /* already gone */
     }
@@ -77,11 +77,11 @@ export function persistentExecInPod(
 
   const ensureChild = () => {
     if (child || disposed) return;
-    const c = spawnFn("kubectl", buildPersistentKubectlArgs(config), {
-      stdio: ["pipe", "pipe", "pipe"],
+    const c = spawnFn('kubectl', buildPersistentKubectlArgs(config), {
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
     child = c;
-    c.stdout!.on("data", (d: Buffer) => {
+    c.stdout!.on('data', (d: Buffer) => {
       for (const f of parser.push(d)) {
         if (inflight && f.nonce === inflight.nonce) {
           const cur = inflight;
@@ -114,13 +114,16 @@ export function persistentExecInPod(
             );
             killChild();
             parser = new FrameParser();
-            cur.fail(new Error("persistent channel output-cap stage unavailable"));
+            cur.fail(new Error('persistent channel output-cap stage unavailable'));
             pump();
             continue;
           }
           if (f.stdout.length > outputCap) {
             cur.done({
-              stdout: Buffer.concat([f.stdout.subarray(0, outputCap), Buffer.from(OUTPUT_TRUNCATED_MARKER)]),
+              stdout: Buffer.concat([
+                f.stdout.subarray(0, outputCap),
+                Buffer.from(OUTPUT_TRUNCATED_MARKER),
+              ]),
               exitCode: null,
               truncated: true,
             });
@@ -131,9 +134,9 @@ export function persistentExecInPod(
         }
       }
     });
-    c.on("error", (e) => failSession(e instanceof Error ? e : new Error(String(e))));
-    c.on("close", () => {
-      if (inflight || queue.length) failSession(new Error("session closed"));
+    c.on('error', (e) => failSession(e instanceof Error ? e : new Error(String(e))));
+    c.on('close', () => {
+      if (inflight || queue.length) failSession(new Error('session closed'));
       else child = null;
     });
   };
@@ -153,7 +156,7 @@ export function persistentExecInPod(
         let timer: ReturnType<typeof setTimeout> | undefined;
         const cleanup = () => {
           if (timer) clearTimeout(timer);
-          opts.signal?.removeEventListener("abort", onAbort);
+          opts.signal?.removeEventListener('abort', onAbort);
         };
         // timeout / abort: kill+reset the session and reject (NO fallback).
         const killAndReject = (err: Error) => {
@@ -167,12 +170,15 @@ export function persistentExecInPod(
           pump();
         };
         function onAbort() {
-          killAndReject(new Error("aborted"));
+          killAndReject(new Error('aborted'));
         }
-        if (opts.signal?.aborted) return killAndReject(new Error("aborted"));
-        opts.signal?.addEventListener("abort", onAbort, { once: true });
+        if (opts.signal?.aborted) return killAndReject(new Error('aborted'));
+        opts.signal?.addEventListener('abort', onAbort, { once: true });
         if (opts.timeout && opts.timeout > 0) {
-          timer = setTimeout(() => killAndReject(new Error(`timeout:${opts.timeout}`)), opts.timeout * 1000);
+          timer = setTimeout(
+            () => killAndReject(new Error(`timeout:${opts.timeout}`)),
+            opts.timeout * 1000,
+          );
         }
         inflight = {
           nonce,

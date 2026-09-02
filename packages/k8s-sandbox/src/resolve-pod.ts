@@ -1,19 +1,27 @@
-import { spawn } from "node:child_process";
-import { resolveConfig, type K8sSandboxConfig } from "./config.js";
+import { spawn } from 'node:child_process';
+import { resolveConfig, type K8sSandboxConfig } from './config.js';
 
 /** Pure: kubectl args to read a Sandbox's status.selector (a label-selector string). */
 export function buildSelectorArgs(name: string, namespace: string, context?: string): string[] {
-  const args = ["get", "sandbox", name, "-n", namespace];
-  if (context) args.push("--context", context);
-  args.push("-o", "jsonpath={.status.selector}");
+  const args = ['get', 'sandbox', name, '-n', namespace];
+  if (context) args.push('--context', context);
+  args.push('-o', 'jsonpath={.status.selector}');
   return args;
 }
 
 /** Pure: kubectl args to read the first Running pod name matching a label selector. */
 export function buildPodNameArgs(selector: string, namespace: string, context?: string): string[] {
-  const args = ["get", "pod", "-n", namespace, "-l", selector, "--field-selector=status.phase=Running"];
-  if (context) args.push("--context", context);
-  args.push("-o", "jsonpath={.items[0].metadata.name}");
+  const args = [
+    'get',
+    'pod',
+    '-n',
+    namespace,
+    '-l',
+    selector,
+    '--field-selector=status.phase=Running',
+  ];
+  if (context) args.push('--context', context);
+  args.push('-o', 'jsonpath={.items[0].metadata.name}');
   return args;
 }
 
@@ -21,16 +29,20 @@ export type RunKubectl = (args: string[]) => Promise<string>;
 
 export const defaultRunKubectl: RunKubectl = (args) =>
   new Promise((resolve, reject) => {
-    const child = spawn("kubectl", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn('kubectl', args, { stdio: ['ignore', 'pipe', 'pipe'] });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
-    child.stdout.on("data", (d: Buffer) => out.push(d));
-    child.stderr.on("data", (d: Buffer) => err.push(d));
-    child.on("error", reject);
-    child.on("close", (code) =>
+    child.stdout.on('data', (d: Buffer) => out.push(d));
+    child.stderr.on('data', (d: Buffer) => err.push(d));
+    child.on('error', reject);
+    child.on('close', (code) =>
       code === 0
         ? resolve(Buffer.concat(out).toString().trim())
-        : reject(new Error(`kubectl ${args.join(" ")} failed (${code}): ${Buffer.concat(err).toString().trim()}`)),
+        : reject(
+            new Error(
+              `kubectl ${args.join(' ')} failed (${code}): ${Buffer.concat(err).toString().trim()}`,
+            ),
+          ),
     );
   });
 
@@ -53,7 +65,7 @@ export async function resolveSandboxConfig(
   const name = env.KAGENTI_SANDBOX_NAME;
   if (!name) return null;
 
-  const namespace = env.KAGENTI_SANDBOX_NAMESPACE ?? "default";
+  const namespace = env.KAGENTI_SANDBOX_NAMESPACE ?? 'default';
   const context = env.KAGENTI_SANDBOX_CONTEXT || undefined;
 
   const selector = (await run(buildSelectorArgs(name, namespace, context))).trim();
@@ -61,5 +73,5 @@ export async function resolveSandboxConfig(
   const pod = (await run(buildPodNameArgs(selector, namespace, context))).trim();
   if (!pod) throw new Error(`no Running pod for selector '${selector}'`);
 
-  return { pod, namespace, context, podCwd: env.KAGENTI_SANDBOX_CWD ?? "/workspace", headCwd };
+  return { pod, namespace, context, podCwd: env.KAGENTI_SANDBOX_CWD ?? '/workspace', headCwd };
 }

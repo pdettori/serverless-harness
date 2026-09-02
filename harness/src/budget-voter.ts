@@ -1,4 +1,8 @@
-import type { ExtensionContext, ExtensionFactory, SessionManager } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionContext,
+  ExtensionFactory,
+  SessionManager,
+} from '@earendil-works/pi-coding-agent';
 
 export interface BudgetState {
   spent: number;
@@ -6,15 +10,14 @@ export interface BudgetState {
   limit: number;
 }
 export type BudgetDecision =
-  | { decision: "commit" }
-  | { decision: "abort"; reason: "budget_exceeded" };
+  { decision: 'commit' } | { decision: 'abort'; reason: 'budget_exceeded' };
 
 /** Pure policy. Disabled (always commits) when limit is non-finite or <= 0. */
 export function decideBudget(s: BudgetState): BudgetDecision {
-  if (!Number.isFinite(s.limit) || s.limit <= 0) return { decision: "commit" };
+  if (!Number.isFinite(s.limit) || s.limit <= 0) return { decision: 'commit' };
   return s.spent + s.estimated > s.limit
-    ? { decision: "abort", reason: "budget_exceeded" }
-    : { decision: "commit" };
+    ? { decision: 'abort', reason: 'budget_exceeded' }
+    : { decision: 'commit' };
 }
 
 /**
@@ -24,13 +27,16 @@ export function decideBudget(s: BudgetState): BudgetDecision {
  * loaded SessionManager — the voter does not depend on a session_start event (see below).
  */
 export function branchSpend(sm: { getBranch?: () => unknown[] } | undefined): number | null {
-  if (!sm || typeof sm.getBranch !== "function") return null;
+  if (!sm || typeof sm.getBranch !== 'function') return null;
   let total = 0;
   for (const entry of sm.getBranch() as Array<{
     type?: string;
-    message?: { role?: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number } };
+    message?: {
+      role?: string;
+      usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+    };
   }>) {
-    if (entry?.type === "message" && entry.message?.role === "assistant" && entry.message.usage) {
+    if (entry?.type === 'message' && entry.message?.role === 'assistant' && entry.message.usage) {
       const u = entry.message.usage;
       total += u.input + u.output + u.cacheRead + u.cacheWrite;
     }
@@ -60,14 +66,14 @@ export function budgetVoterExtension(
 ): ExtensionFactory {
   const baseline = opts.baseline ?? 0;
   return (pi) => {
-    pi.on("tool_call", (_e, ctx) => {
+    pi.on('tool_call', (_e, ctx) => {
       const total = sessionSpendTotal(ctx);
       if (total == null) return {}; // defensive: don't block when spend is unknown
       const spent = total - baseline;
       const d = decideBudget({ spent, estimated: opts.margin ?? 0, limit: opts.limit });
-      if (d.decision === "abort") {
-        sm.appendCustomEntry("abort", { reason: d.reason, spent, limit: opts.limit });
-        return { block: true, reason: "Session token budget exceeded" };
+      if (d.decision === 'abort') {
+        sm.appendCustomEntry('abort', { reason: d.reason, spent, limit: opts.limit });
+        return { block: true, reason: 'Session token budget exceeded' };
       }
       return {};
     });

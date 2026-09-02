@@ -1,4 +1,4 @@
-import { runTurn } from "./run-turn.js";
+import { runTurn } from './run-turn.js';
 
 async function main() {
   const prompt = process.argv[2];

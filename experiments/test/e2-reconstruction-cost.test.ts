@@ -1,20 +1,15 @@
-import { describe, it, expect, afterAll } from "vitest";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { SessionManager, type FileEntry } from "@earendil-works/pi-coding-agent";
-import { RedisSessionBackend } from "@sh/session-backend";
-import { BufferedRedisBackend } from "@sh/harness/buffered-redis-backend";
-import { CountingBackend } from "../src/counting-backend";
-import { buildCompactedSession } from "../src/session-fixture";
-import {
-  buildResultsMarkdown,
-  deterministicView,
-  parseE2Table,
-  type E2Row,
-} from "../src/report";
+import { describe, it, expect, afterAll } from 'vitest';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { SessionManager, type FileEntry } from '@earendil-works/pi-coding-agent';
+import { RedisSessionBackend } from '@sh/session-backend';
+import { BufferedRedisBackend } from '@sh/harness/buffered-redis-backend';
+import { CountingBackend } from '../src/counting-backend';
+import { buildCompactedSession } from '../src/session-fixture';
+import { buildResultsMarkdown, deterministicView, parseE2Table, type E2Row } from '../src/report';
 
-const REDIS = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
+const REDIS = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
 const store = new RedisSessionBackend<FileEntry>(REDIS);
 const sids: string[] = [];
 const Ns = [50, 200, 1000, 5000];
@@ -51,8 +46,8 @@ async function measure(sessionId: string): Promise<{
   };
 }
 
-describe("E2 — reconstruction cost", () => {
-  it("checkpoint read stays ~constant while backend grows; ratio increases with N", async () => {
+describe('E2 — reconstruction cost', () => {
+  it('checkpoint read stays ~constant while backend grows; ratio increases with N', async () => {
     const rows: E2Row[] = [];
     for (const n of Ns) {
       const fx = await buildCompactedSession(store, { n, tailKept: 4 });
@@ -95,20 +90,20 @@ describe("E2 — reconstruction cost", () => {
     // machine-local wall-clock timings. Override the directory with SH_E2_RESULTS_DIR.
     const outDir = process.env.SH_E2_RESULTS_DIR
       ? resolve(process.env.SH_E2_RESULTS_DIR)
-      : fileURLToPath(new URL("../.results", import.meta.url));
+      : fileURLToPath(new URL('../.results', import.meta.url));
     mkdirSync(outDir, { recursive: true });
-    writeFileSync(join(outDir, "RESULTS.md"), report);
+    writeFileSync(join(outDir, 'RESULTS.md'), report);
 
     // The committed RESULTS.md is a checked-in baseline: assert the reproducible columns
     // still match it, so a change that moves the read counts has to be acknowledged rather
     // than quietly rewriting the recorded result. Only entries + ratio are compared --
     // backendBytes is environment-sensitive (+4 in CI) and the ms columns vary per run.
     // Refresh deliberately with SH_E2_UPDATE_BASELINE=1 when a change legitimately moves them.
-    const baselinePath = fileURLToPath(new URL("../RESULTS.md", import.meta.url));
-    if (process.env.SH_E2_UPDATE_BASELINE === "1") {
+    const baselinePath = fileURLToPath(new URL('../RESULTS.md', import.meta.url));
+    if (process.env.SH_E2_UPDATE_BASELINE === '1') {
       writeFileSync(baselinePath, report);
     } else {
-      const baseline = parseE2Table(readFileSync(baselinePath, "utf8"));
+      const baseline = parseE2Table(readFileSync(baselinePath, 'utf8'));
       expect(deterministicView(rows)).toEqual(deterministicView(baseline));
     }
 

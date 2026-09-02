@@ -1,7 +1,7 @@
 # Demo: "The agent that isn't there"
 
 A 10-minute walkthrough that shows what a **serverless** AI agent does that a
-normal always-on agent *can't*. The task — a small security review of a repo —
+normal always-on agent _can't_. The task — a small security review of a repo —
 is just a vehicle. The real show is in your pod-watch pane: watch the agent
 **cold-start from zero, drop back to zero, resume with full memory, and then
 fan out into a fleet of worker pods that appear on demand and vanish when the
@@ -9,10 +9,10 @@ work drains.**
 
 Two differentiators, two acts:
 
-| Act | What a plain agent does | What the harness does |
-|-----|-------------------------|-----------------------|
-| **1 — Durable resume** | Stays resident (burning compute) or forgets on restart | Scales to **zero**, then cold-starts and **remembers** — state lives in Redis, not the process |
-| **2 — Fan-out from zero** | Grinds a batch serially in one resident process | Materializes **N worker pods on demand**, drains the queue, collapses back to **zero** |
+| Act                       | What a plain agent does                                | What the harness does                                                                          |
+| ------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| **1 — Durable resume**    | Stays resident (burning compute) or forgets on restart | Scales to **zero**, then cold-starts and **remembers** — state lives in Redis, not the process |
+| **2 — Fan-out from zero** | Grinds a batch serially in one resident process        | Materializes **N worker pods on demand**, drains the queue, collapses back to **zero**         |
 
 ---
 
@@ -69,8 +69,8 @@ export BASE="http://localhost:8080"
 
 # Act 1: Durable resume across a true zero
 
-**The claim a plain agent can't make:** *I cost nothing while idle, and I still
-remember everything.*
+**The claim a plain agent can't make:** _I cost nothing while idle, and I still
+remember everything._
 
 ### 1a. Confirm you're at zero
 
@@ -126,14 +126,14 @@ Watch **T1** cold-start a **fresh** pod that answers correctly — it names
 
 > A brand-new pod with no memory of its own just recalled the policy. The state
 > survived the trip to zero in Redis. That's **durable resume across a cold
-> start** — scale-to-zero economics *without* amnesia.
+> start** — scale-to-zero economics _without_ amnesia.
 
 ---
 
 # Act 2: A fleet from zero
 
-**The claim a plain agent can't make:** *I run your batch in parallel by
-conjuring workers on demand, then I disappear.*
+**The claim a plain agent can't make:** _I run your batch in parallel by
+conjuring workers on demand, then I disappear._
 
 We'll review five files in the repo at once. Each file becomes an independent
 **async leaf**: the harness accepts it instantly (`202`), pushes it onto a Redis

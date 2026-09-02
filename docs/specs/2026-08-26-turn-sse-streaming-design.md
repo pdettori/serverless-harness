@@ -11,12 +11,12 @@ Builds on (reuse, no redesign): the shared `executeTurn` turn core and its exten
 [`2026-06-17-m4-knative-serverless-wrapper-design.md`](2026-06-17-m4-knative-serverless-wrapper-design.md)),
 Pi's session event surface (`pi.on(...)`), and the Knative HTTP entrypoint's existing route wiring.
 
-> **What this slice is NOT.** Not a new route — streaming is a *representation* of `/turn`, chosen by
+> **What this slice is NOT.** Not a new route — streaming is a _representation_ of `/turn`, chosen by
 > `Accept`, not a `/turn/stream` alias. Not the async "fire-and-poll" path: that is the companion
 > `kind:"prompt"` leaf ([#168](https://github.com/rossoctl/serverless-harness/issues/168),
 > [ADR-0028](../adrs/0028-async-prompt-dispatch.md)) — orthogonal ("watch live" vs. "background and
 > poll"). Not an auth/credential change. Not a new turn engine: streaming and non-streaming run the
-> **same** `executeTurn`; the only new thing is an event *sink* and its SSE serialization.
+> **same** `executeTurn`; the only new thing is an event _sink_ and its SSE serialization.
 
 ---
 
@@ -44,14 +44,14 @@ share one turn engine rather than fork it.
 
 ## 2. Current state — the seams we extend
 
-| Seam | Today | This slice |
-|---|---|---|
-| `handleTurn` (`packages/knative-server/src/server.ts`) | read body → parse → validate `prompt` → `runTurn(...)` → `res.writeHead(200, JSON_HEADERS).end(JSON.stringify(result))` | branch on `Accept` **after** validation; the sync emission line is untouched |
-| `executeTurn` (`harness/src/run-turn.ts`) | builds `extensionFactories`, opens/creates session, `session.prompt`, extracts text, returns `TurnResult` | `ExecuteTurnInput += onEvent?`, `signal?` (both optional, additive); when present, push `sseExtension` and wire abort |
-| `TurnResult` | `{ sessionId; response; stopReason; errorMessage?; usage? }` | **unchanged** — the terminal SSE frame is derived from it |
-| Pi session events (`pi.on`) | consumed by `flushExtension`, `checkpointExtension`, … | a new `sseExtension` consumes `message_update` / `tool_execution_start` / `tool_execution_end` |
-| `session.abort()` (`pi-fork/.../agent-session.ts`) | invoked on shutdown paths | invoked on client disconnect via an `AbortSignal` |
-| `/turn` route guard (`server.ts`) | wrapper writes `500` only `if (!res.headersSent)` | already correct for streaming — a post-flush throw can't overwrite status |
+| Seam                                                   | Today                                                                                                                   | This slice                                                                                                            |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `handleTurn` (`packages/knative-server/src/server.ts`) | read body → parse → validate `prompt` → `runTurn(...)` → `res.writeHead(200, JSON_HEADERS).end(JSON.stringify(result))` | branch on `Accept` **after** validation; the sync emission line is untouched                                          |
+| `executeTurn` (`harness/src/run-turn.ts`)              | builds `extensionFactories`, opens/creates session, `session.prompt`, extracts text, returns `TurnResult`               | `ExecuteTurnInput += onEvent?`, `signal?` (both optional, additive); when present, push `sseExtension` and wire abort |
+| `TurnResult`                                           | `{ sessionId; response; stopReason; errorMessage?; usage? }`                                                            | **unchanged** — the terminal SSE frame is derived from it                                                             |
+| Pi session events (`pi.on`)                            | consumed by `flushExtension`, `checkpointExtension`, …                                                                  | a new `sseExtension` consumes `message_update` / `tool_execution_start` / `tool_execution_end`                        |
+| `session.abort()` (`pi-fork/.../agent-session.ts`)     | invoked on shutdown paths                                                                                               | invoked on client disconnect via an `AbortSignal`                                                                     |
+| `/turn` route guard (`server.ts`)                      | wrapper writes `500` only `if (!res.headersSent)`                                                                       | already correct for streaming — a post-flush throw can't overwrite status                                             |
 
 The invariant that shapes everything below: **the turn core emits neutral domain frames; the server
 owns the SSE transport.** `runTurn`/`executeTurn` never learn what HTTP or SSE is; they call an
@@ -72,12 +72,18 @@ transport, plus the Pi→frame translator.
 
 ```ts
 export type TurnStreamFrame =
-  | { type: "text"; delta: string }                                  // assistant-text token
-  | { type: "thinking"; delta: string }                              // reasoning token (optional; see §3.5)
-  | { type: "tool_use"; id: string; name: string; args: unknown }    // tool call started (args verbatim)
-  | { type: "tool_result"; id: string; isError: boolean; preview: string }  // tool call ended (clipped)
-  | { type: "done"; sessionId: string; stopReason: string; usage?: LeafUsage }
-  | { type: "error"; sessionId: string; stopReason: string; errorMessage?: string; usage?: LeafUsage };
+  | { type: 'text'; delta: string } // assistant-text token
+  | { type: 'thinking'; delta: string } // reasoning token (optional; see §3.5)
+  | { type: 'tool_use'; id: string; name: string; args: unknown } // tool call started (args verbatim)
+  | { type: 'tool_result'; id: string; isError: boolean; preview: string } // tool call ended (clipped)
+  | { type: 'done'; sessionId: string; stopReason: string; usage?: LeafUsage }
+  | {
+      type: 'error';
+      sessionId: string;
+      stopReason: string;
+      errorMessage?: string;
+      usage?: LeafUsage;
+    };
 ```
 
 **Tool-payload fidelity is level "B"**: `tool_use` carries the tool `name` and its `args` verbatim
@@ -92,22 +98,35 @@ untruncated result.
 `flushExtension` — that registers handlers and translates each Pi event into a frame:
 
 ```ts
-export function sseExtension(onEvent: (f: TurnStreamFrame) => void, opts?: { previewBytes?: number }): ExtensionFactory {
+export function sseExtension(
+  onEvent: (f: TurnStreamFrame) => void,
+  opts?: { previewBytes?: number },
+): ExtensionFactory {
   return (pi) => {
-    pi.on("message_update", (e) => {
+    pi.on('message_update', (e) => {
       const a = e.assistantMessageEvent;
-      if (a.type === "text_delta" && a.delta) onEvent({ type: "text", delta: a.delta });
-      else if (a.type === "thinking_delta" && a.delta) onEvent({ type: "thinking", delta: a.delta });
+      if (a.type === 'text_delta' && a.delta) onEvent({ type: 'text', delta: a.delta });
+      else if (a.type === 'thinking_delta' && a.delta)
+        onEvent({ type: 'thinking', delta: a.delta });
     });
-    pi.on("tool_execution_start", (e) => onEvent({ type: "tool_use", id: e.toolCallId, name: e.toolName, args: e.args }));
-    pi.on("tool_execution_end", (e) => onEvent({ type: "tool_result", id: e.toolCallId, isError: e.isError, preview: clip(e.result, opts?.previewBytes) }));
+    pi.on('tool_execution_start', (e) =>
+      onEvent({ type: 'tool_use', id: e.toolCallId, name: e.toolName, args: e.args }),
+    );
+    pi.on('tool_execution_end', (e) =>
+      onEvent({
+        type: 'tool_result',
+        id: e.toolCallId,
+        isError: e.isError,
+        preview: clip(e.result, opts?.previewBytes),
+      }),
+    );
   };
 }
 ```
 
 `sseExtension` emits **only incremental progress frames** (`text`/`thinking`/`tool_use`/
 `tool_result`). Terminal frames (`done`/`error`) are the server's job (§3.3, §3.4), derived from the
-`TurnResult` the core returns — so the streamed client ends with the *same facts* a sync client reads.
+`TurnResult` the core returns — so the streamed client ends with the _same facts_ a sync client reads.
 
 ### 3.2 Turn core — two additive optional inputs
 
@@ -117,8 +136,8 @@ returns the same `TurnResult` and throws the same errors:
 ```ts
 interface ExecuteTurnInput {
   // ...existing: prompt, sessionId, config, createIfAbsent, selection...
-  onEvent?: (frame: TurnStreamFrame) => void;  // present ⇒ append sseExtension(onEvent) to extensionFactories
-  signal?: AbortSignal;                         // present ⇒ signal.onabort → session.abort()
+  onEvent?: (frame: TurnStreamFrame) => void; // present ⇒ append sseExtension(onEvent) to extensionFactories
+  signal?: AbortSignal; // present ⇒ signal.onabort → session.abort()
 }
 ```
 
@@ -135,24 +154,24 @@ The branch lives inside `handleTurn`, **after** its unchanged front matter (body
 `prompt` validation — all 400 paths preserved), right before the `runTurn` call:
 
 ```ts
-const wantsStream = /text\/event-stream/i.test(req.headers.accept ?? "");
+const wantsStream = /text\/event-stream/i.test(req.headers.accept ?? '');
 if (wantsStream) return handleTurnStream(prompt, sessionId, req, res);
 // unchanged sync path: runTurn(...) → res.writeHead(200, JSON_HEADERS).end(JSON.stringify(result))
 ```
 
-`handleTurnStream` is a new sibling in `server.ts` (transport lives with the server; only the *frame
-types* are imported from `@sh/harness/turn-stream`). Its shape:
+`handleTurnStream` is a new sibling in `server.ts` (transport lives with the server; only the _frame
+types_ are imported from `@sh/harness/turn-stream`). Its shape:
 
 - **Lazy header flush.** It does **not** write the `200` on entry. A single private `writeFrame(res,
-  frame)` helper flushes the SSE headers on the **first** frame and serializes every frame to the SSE
+frame)` helper flushes the SSE headers on the **first** frame and serializes every frame to the SSE
   wire form `event: <type>\ndata: <JSON>\n\n`. Named events (not bare `data:`) so `curl -N` shows
   `event: text` / `event: tool_use` and `EventSource` clients can `addEventListener` per type. The
   lazy flush is what preserves status-code parity for pre-turn failures (§3.4).
 - **SSE headers** (written on first frame): `Content-Type: text/event-stream`, `Cache-Control:
-  no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no`. No `Content-Length` — Node emits
+no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no`. No `Content-Length` — Node emits
   chunked transfer encoding and flushes each frame.
 - **The call:** `executeTurn({ prompt, sessionId, config: buildConfig(), createIfAbsent: false,
-  onEvent: (f) => writeFrame(res, f), signal: ac.signal })`. Progress frames stream as they arrive.
+onEvent: (f) => writeFrame(res, f), signal: ac.signal })`. Progress frames stream as they arrive.
 - **Terminal frame:** on resolve, derive from the returned `TurnResult` — `done` for a clean
   `stopReason`, `error` for `error`/`aborted` — carrying every `TurnResult` field, then `res.end()`.
 - **Heartbeat:** a timer emits an SSE comment (`: keepalive\n\n`) every
@@ -165,7 +184,7 @@ types* are imported from `@sh/harness/turn-stream`). Its shape:
 Lazy header flush partitions failures into three regimes, each mapped to preserve the sync contract:
 
 1. **Pre-flight (before the branch).** Bad JSON, missing `prompt` — handled in `handleTurn`'s front
-   matter *before* `handleTurnStream` is called, so they stay real `400`s with the identical body. No
+   matter _before_ `handleTurnStream` is called, so they stay real `400`s with the identical body. No
    divergence.
 2. **Pre-first-frame (session open fails).** `createIfAbsent:false` with an unknown `sessionId`
    throws `"no session in backend"` at session-open, before any progress frame. Since `writeFrame`
@@ -177,23 +196,24 @@ Lazy header flush partitions failures into three regimes, each mapped to preserv
    codes are spent. The catch emits a terminal `error` frame then `res.end()`s. Guarded by
    `!res.writableEnded` so a concurrent disconnect can't double-write or `EPIPE`.
 
-**Terminal frame selection.** When `executeTurn` *returns* a `TurnResult` (the HTTP-200 equivalent),
+**Terminal frame selection.** When `executeTurn` _returns_ a `TurnResult` (the HTTP-200 equivalent),
 the terminal frame carries **every field the sync `TurnResult` exposes** (`sessionId`, `stopReason`,
 `usage`, and `errorMessage` when present). The only difference between `done` and `error` is the
-*event name*, chosen by whether `stopReason` is a clean finish (`end_turn`/`max_tokens` → `done`;
+_event name_, chosen by whether `stopReason` is a clean finish (`end_turn`/`max_tokens` → `done`;
 `error`/`aborted` → `error`). So a model that ends in an error stop-reason surfaces as an `error`
 frame with the same `errorMessage` a sync caller would read — the frame name is pure sugar over the
 same facts, and resume parity holds because `sessionId`/`stopReason` are always present.
 
 **The guarantee, stated plainly:** the non-streaming response is unchanged because its emission line
-is never edited, *and* every pre-commit failure a sync caller could hit still returns the same status
-+ body on a streaming request. Streaming only *adds* a post-commit `error`-frame surface that has no
-sync equivalent (status codes aren't available after the first byte).
+is never edited, _and_ every pre-commit failure a sync caller could hit still returns the same status
+
+- body on a streaming request. Streaming only _adds_ a post-commit `error`-frame surface that has no
+  sync equivalent (status codes aren't available after the first byte).
 
 ### 3.5 Thinking frames are optional
 
 `thinking` deltas (from `thinking_delta`) are surfaced as their own event so a watcher can render or
-ignore reasoning independently — the distinct event type *is* the opt-out, so no gating query param is
+ignore reasoning independently — the distinct event type _is_ the opt-out, so no gating query param is
 needed. But the frame is **best-effort and may never fire**: synthesized custom models configured
 `reasoning:false`, and some OpenAI-compatible endpoints, emit no thinking stream. Clients MUST treat
 `thinking` (and indeed every progress frame type) as optional and absence as normal.
@@ -225,12 +245,12 @@ all deltas to the end and defeat the feature. Two responses, both part of this d
 - **Mitigation:** annotate the streaming revision with
   `autoscaling.knative.dev/target-burst-capacity: "0"`, which drops the activator from the path once
   the pod is up, giving a direct Kourier→pod stream.
-- **Validation:** the gated smoke (§5) asserts *inter-frame arrival timing*, not just final content —
+- **Validation:** the gated smoke (§5) asserts _inter-frame arrival timing_, not just final content —
   if the activator buffers, deltas arrive clumped and the test fails loudly. "Streaming actually
   streams end-to-end" is proven against a deployed revision, never assumed.
 
 **Timeout ceiling — no new knob.** A streamed turn is bounded by the revision's `timeoutSeconds`
-(default 300s) exactly as the sync `/turn` already is; streaming makes that bound *visible* (frames
+(default 300s) exactly as the sync `/turn` already is; streaming makes that bound _visible_ (frames
 until cutoff) rather than worse. Long-horizon work is the async path's job (#168), not this one.
 
 ---
@@ -254,7 +274,7 @@ until cutoff) rather than worse. Long-horizon work is the async path's job (#168
   - No/other `Accept` → **golden byte-for-byte** assertion against the current JSON response. If a
     future edit perturbs the sync bytes, this fails.
   - `Accept: text/event-stream` → `Content-Type: text/event-stream`, ordered frames, terminal `done`.
-  - Bad `sessionId` + streaming `Accept` → real **404 JSON** (pre-first-frame regime), *not* an error
+  - Bad `sessionId` + streaming `Accept` → real **404 JSON** (pre-first-frame regime), _not_ an error
     frame.
   - Missing `prompt` + streaming `Accept` → **400** (pre-flight).
 - **Disconnect/abort:** destroy the client socket mid-stream → assert the `AbortSignal` handed to
@@ -272,11 +292,11 @@ parity**.
 
 ### 5.4 Acceptance-criteria coverage (issue #167)
 
-| Criterion | Covered by |
-|---|---|
-| Default `/turn` unchanged | §5.2 golden byte-for-byte test |
-| Session persisted/resumable identically | §5.3 live-smoke follow-up turn (real engine) |
-| Client disconnect aborts the turn | §5.2 disconnect/abort |
+| Criterion                                  | Covered by                                                 |
+| ------------------------------------------ | ---------------------------------------------------------- |
+| Default `/turn` unchanged                  | §5.2 golden byte-for-byte test                             |
+| Session persisted/resumable identically    | §5.3 live-smoke follow-up turn (real engine)               |
+| Client disconnect aborts the turn          | §5.2 disconnect/abort                                      |
 | `curl -N` example + smoke asserting deltas | §5.3 + a documented `curl -N` example in the endpoint docs |
 
 ---
@@ -306,4 +326,4 @@ parity**.
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

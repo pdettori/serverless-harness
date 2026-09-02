@@ -53,7 +53,7 @@ does no matching — leasing stays in the harness pool / `select-sandbox`.
 ## Step 1 — Set the relay token (required)
 
 The relay auth is **fail-closed**. It ships with no token set, so until you
-provide one it rejects *every* Attach before parking the stream. Set a token on
+provide one it rejects _every_ Attach before parking the stream. Set a token on
 the relay Deployment:
 
 ```bash
@@ -89,11 +89,11 @@ leaf through `GrpcRelayTransport`.
 Copy [`worker-example.yaml`](worker-example.yaml), drop in your image, and apply
 it. The worker reads three environment variables:
 
-| Variable | Value | Notes |
-|----------|-------|-------|
-| `SANDBOX_ID` | e.g. `sbx-dev-1` | Stable id; the pool record and presence key are keyed on it. |
-| `RELAY_ADDR` | `sandbox-relay.default.svc:8443` | In-cluster relay Service. Plaintext h2c — no TLS in-cluster. |
-| `SANDBOX_TOKEN` | `dev-token` | Sent as `authorization: Bearer <token>`. **Must** match Step 1. |
+| Variable        | Value                            | Notes                                                           |
+| --------------- | -------------------------------- | --------------------------------------------------------------- |
+| `SANDBOX_ID`    | e.g. `sbx-dev-1`                 | Stable id; the pool record and presence key are keyed on it.    |
+| `RELAY_ADDR`    | `sandbox-relay.default.svc:8443` | In-cluster relay Service. Plaintext h2c — no TLS in-cluster.    |
+| `SANDBOX_TOKEN` | `dev-token`                      | Sent as `authorization: Bearer <token>`. **Must** match Step 1. |
 
 ```bash
 # edit worker-example.yaml: set image, SANDBOX_ID, SANDBOX_TOKEN
@@ -106,7 +106,7 @@ same id. To run several, give each its own `SANDBOX_ID` (and matching
 
 ## Step 4 — Verify
 
-**Presence** — the live Attach stream *is* the registration. Once the worker
+**Presence** — the live Attach stream _is_ the registration. Once the worker
 connects, its id appears in the Redis presence hash and disappears when the
 stream closes:
 
@@ -213,10 +213,10 @@ reached through a Route rather than a `kourier` port-forward, and images must co
 from a registry the cluster can pull rather than a kind node's image store. Set three
 overrides:
 
-| Variable | Why |
-|----------|-----|
-| `KSVC_URL` | The harness Route. `lib.sh` then targets it directly, drops the `Host` header, and adds `curl -k` for the router's cert. |
-| `RELAY_IMAGE` | `relay-deployment.yaml` pins `dev.local/serverless-harness:local`, which exists only in kind. Without this the apply **replaces a working relay with an unpullable one** and aborts at the rollout. |
+| Variable       | Why                                                                                                                                                                                                          |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `KSVC_URL`     | The harness Route. `lib.sh` then targets it directly, drops the `Host` header, and adds `curl -k` for the router's cert.                                                                                     |
+| `RELAY_IMAGE`  | `relay-deployment.yaml` pins `dev.local/serverless-harness:local`, which exists only in kind. Without this the apply **replaces a working relay with an unpullable one** and aborts at the rollout.          |
 | `WORKER_IMAGE` | A pre-published worker image; skips the `kind load` path. Build one with [`build-image.sh`](../../remote-worker/build-image.sh), which packages a `linux/amd64` binary into the OpenShift internal registry. |
 
 ```bash
@@ -255,6 +255,7 @@ Four things to know before running it:
     | sed "s#ghcr.io/rossoctl/serverless-harness:latest#<pullable-image>#g" \
     | oc apply -f -
   ```
+
 - **The harness env is flipped, then restored.** The script snapshots the ksvc env,
   points the pool selector at a label matching no pods so only the worker can be
   leased, then restores the snapshot exactly. Restore is `trap`-driven on `EXIT`, so
@@ -289,7 +290,7 @@ expects:
 ## Laptop demo: worker as a host container (one command)
 
 Everything above runs the worker as a **pod**. That demonstrates the plumbing but not the
-driver: the headline claim is a sandbox *outside* the cluster, with **zero inbound rules**,
+driver: the headline claim is a sandbox _outside_ the cluster, with **zero inbound rules**,
 executing a leaf's tool calls. One command shows that on a laptop:
 
 ```bash
@@ -302,7 +303,7 @@ Teardown removes everything the demo creates, but **asks before deleting the kin
 `--reuse-cluster` exists so the demo can run against a long-lived dev cluster, and a fresh
 `--teardown` process cannot know which kind it is looking at. Answer `y`, or pass
 `--yes` to skip the prompt (`DEMO_ARGS=--yes`). With no terminal to ask on, the cluster is
-kept. A run that *did* create the cluster says so on exit and points at `--teardown`; a run
+kept. A run that _did_ create the cluster says so on exit and points at `--teardown`; a run
 against a pre-existing cluster does not.
 
 ```
@@ -316,7 +317,7 @@ laptop
 ```
 
 Neither address is inbound to the laptop. The worker publishes no ports — `docker run` with
-no `-p` at all — and reaches the relay only by dialing *out* through
+no `-p` at all — and reaches the relay only by dialing _out_ through
 `kubectl port-forward`. The demo proves the container can reach the tunnel before it starts
 the worker, and adapts the bind (`--add-host`, then `--address 0.0.0.0`) for runtimes where
 `host.docker.internal` maps to a bridge IP rather than host loopback.
@@ -333,10 +334,10 @@ at the top of this file. The demo defends against it twice:
    leaf grepping `/etc/os-release` flips its verdict with the backend — and both directions
    are asserted, so an exec that landed on a pod fails one check or the other:
 
-   | backend | pattern `Alpine` | pattern `Red Hat` | model's stated reason |
-   |---|---|---|---|
-   | in-cluster sandbox pod | `FLAGGED` | `CLEAR` | "…running Alpine Linux" |
-   | remote host container | `CLEAR` | `FLAGGED` | "…Red Hat Enterprise Linux 9.8" |
+   | backend                | pattern `Alpine` | pattern `Red Hat` | model's stated reason           |
+   | ---------------------- | ---------------- | ----------------- | ------------------------------- |
+   | in-cluster sandbox pod | `FLAGGED`        | `CLEAR`           | "…running Alpine Linux"         |
+   | remote host container  | `CLEAR`          | `FLAGGED`         | "…Red Hat Enterprise Linux 9.8" |
 
 The discriminator itself is verified before anything relies on it, and the summary prints
 the model's own stated reason — so you see the OS it actually read, rather than inferring it
@@ -367,7 +368,7 @@ dev value, so nothing is left patched for other callers.
 
 - `docker` (or `podman`) + `kind` + `kubectl` + `jq`. **No local Go toolchain** —
   `remote-worker/Dockerfile` builds the binary in a builder stage. The image is built for
-  the *host*, never `kind load`ed, so its architecture need not match the kind node.
+  the _host_, never `kind load`ed, so its architecture need not match the kind node.
 - A model the **cluster** can reach (`ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN` +
   `ANTHROPIC_BASE_URL`). The leaf's verdict is a real model call; the demo fails with an
   explicit "model endpoint unreachable" message rather than timing out mysteriously.
@@ -397,10 +398,10 @@ fiddly; start in-cluster and graduate only if you need external reachability.
 
 ## Troubleshooting
 
-| Symptom | Cause / fix |
-|---------|-------------|
-| Worker connects but the Attach is immediately closed | Token unset or mismatched. Set `SH_RELAY_TOKEN` on the relay (Step 1) and give the worker the same value as `SANDBOX_TOKEN`. Auth is fail-closed. |
-| No field in `sh:sandbox:records` | The Attach never succeeded (see above), the worker isn't sending `authorization: Bearer <token>` metadata, or it isn't sending `Hello` with `sandbox_id` as the first frame. |
-| Presence is there but the harness never uses the worker | `SH_REMOTE_SANDBOX` / `SH_RELAY_ADDR` not set on the harness ksvc (Step 2). Confirm with `oc set env ksvc/serverless-harness --list -n default`. |
-| A second worker for the same id won't connect | Expected — one live Attach per `SANDBOX_ID`. Give each worker a distinct id. |
-| `exit_code` comes back `null` | The child was signalled (or the worker sent `exit_code < 0`). Not an error by itself. |
+| Symptom                                                 | Cause / fix                                                                                                                                                                  |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Worker connects but the Attach is immediately closed    | Token unset or mismatched. Set `SH_RELAY_TOKEN` on the relay (Step 1) and give the worker the same value as `SANDBOX_TOKEN`. Auth is fail-closed.                            |
+| No field in `sh:sandbox:records`                        | The Attach never succeeded (see above), the worker isn't sending `authorization: Bearer <token>` metadata, or it isn't sending `Hello` with `sandbox_id` as the first frame. |
+| Presence is there but the harness never uses the worker | `SH_REMOTE_SANDBOX` / `SH_RELAY_ADDR` not set on the harness ksvc (Step 2). Confirm with `oc set env ksvc/serverless-harness --list -n default`.                             |
+| A second worker for the same id won't connect           | Expected — one live Attach per `SANDBOX_ID`. Give each worker a distinct id.                                                                                                 |
+| `exit_code` comes back `null`                           | The child was signalled (or the worker sent `exit_code < 0`). Not an error by itself.                                                                                        |

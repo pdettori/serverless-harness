@@ -19,7 +19,7 @@ That is 1:1.
 
 P2 makes it **N:M**: many short-lived, fresh-context leaf harnesses load-balance across a **static pool of N
 sandbox pods**, so the dense, cheap harness tier is decoupled from the smaller, durable sandbox tier. The exact
-sharing ratio (~20:1) is **not** fixed here — it is an empirical P3 experiment. P2 delivers the *mechanism*: pod
+sharing ratio (~20:1) is **not** fixed here — it is an empirical P3 experiment. P2 delivers the _mechanism_: pod
 discovery, lease-based assignment, per-sandbox repo distribution, and per-leaf worktree isolation.
 
 `kubectl exec` targets a **concrete pod name**, so "pick the first Running pod" must become deliberate,
@@ -29,13 +29,13 @@ load-aware pod selection. That is the heart of P2.
 
 These were settled during brainstorming and are not relitigated here:
 
-| # | Decision | Rationale |
-|---|----------|-----------|
-| D1 | **Storage topology: per-sandbox RWO copy.** Each sandbox pod holds its own repo copy on its own RWO PVC. **No RWX** on the deployable path. RWX (fleet-wide single repo) is documented as the alternative only. | Runs on the EBS-only OCP 4.20 cluster today; matches "the harness mounts nothing"; RWX is heavier infra (EFS/CSI), slower networked FS, cross-pod contention. |
-| D2 | **Routing: harness-side pick + Redis leases.** Selection logic stays in the harness/`@sh/k8s-sandbox` layer; Redis holds per-pod lease counters for least-loaded + capacity backpressure. **No new deployable component.** | Reuses the existing hard Redis dependency; crash-safe lease reclaim via TTL mirrors the existing leaf-resume model. |
-| D3 | **Repo seeding: ref-pinned lazy converge.** The envelope carries a git ref; on leaf start the leased pod's repo is fetched/converged to that ref, then a worktree is created. Idempotent (pod already at ref = no-op). **Eager pre-warm deferred to P3.** | Guarantees batch-wide commit consistency regardless of which pod a leaf lands on; amortizes clone cost across the sharing ratio; survives pod churn for free. |
-| D4 | **Pool scaling: static N, config knob.** N `Sandbox` CRs declared in kustomize; N and per-pod cap are values tuned empirically in P3. **Autoscaling is future work only.** | Deterministic, no new controller; saturation backpressures through the existing async Redis/KEDA queue and a bounded sync wait. |
-| D5 | **Soft capacity cap.** ~20 is an empirical figure, not a safety bound; rare concurrent overshoot is acceptable. | Avoids a hard-CAS hot path; the true safety boundary is Kata at the pod level (P3). |
+| #   | Decision                                                                                                                                                                                                                                                  | Rationale                                                                                                                                                     |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | **Storage topology: per-sandbox RWO copy.** Each sandbox pod holds its own repo copy on its own RWO PVC. **No RWX** on the deployable path. RWX (fleet-wide single repo) is documented as the alternative only.                                           | Runs on the EBS-only OCP 4.20 cluster today; matches "the harness mounts nothing"; RWX is heavier infra (EFS/CSI), slower networked FS, cross-pod contention. |
+| D2  | **Routing: harness-side pick + Redis leases.** Selection logic stays in the harness/`@sh/k8s-sandbox` layer; Redis holds per-pod lease counters for least-loaded + capacity backpressure. **No new deployable component.**                                | Reuses the existing hard Redis dependency; crash-safe lease reclaim via TTL mirrors the existing leaf-resume model.                                           |
+| D3  | **Repo seeding: ref-pinned lazy converge.** The envelope carries a git ref; on leaf start the leased pod's repo is fetched/converged to that ref, then a worktree is created. Idempotent (pod already at ref = no-op). **Eager pre-warm deferred to P3.** | Guarantees batch-wide commit consistency regardless of which pod a leaf lands on; amortizes clone cost across the sharing ratio; survives pod churn for free. |
+| D4  | **Pool scaling: static N, config knob.** N `Sandbox` CRs declared in kustomize; N and per-pod cap are values tuned empirically in P3. **Autoscaling is future work only.**                                                                                | Deterministic, no new controller; saturation backpressures through the existing async Redis/KEDA queue and a bounded sync wait.                               |
+| D5  | **Soft capacity cap.** ~20 is an empirical figure, not a safety bound; rare concurrent overshoot is acceptable.                                                                                                                                           | Avoids a hard-CAS hot path; the true safety boundary is Kata at the pod level (P3).                                                                           |
 
 **Threat model (locked — from epic #49, not relitigated):** there is **no agent in the sandbox** — it is a
 passive `kubectl exec` target. The threat is a **compromised/injected harness** and **kernel exploits**. Blast
@@ -48,7 +48,7 @@ agent-sandbox `v1beta1` **removed `spec.replicas`** (the `Sandbox` is a single-i
 an open upstream feature request, [kubernetes-sigs/agent-sandbox#34](https://github.com/kubernetes-sigs/agent-sandbox/issues/34)).
 So the P2 pool primitive is **N distinct `Sandbox` CRs** `sandbox-0 … sandbox-{N-1}`:
 
-- **Own RWO PVC each** via the existing `volumeClaimTemplates` — this *is* the per-sandbox repo copy (D1). No
+- **Own RWO PVC each** via the existing `volumeClaimTemplates` — this _is_ the per-sandbox repo copy (D1). No
   shared volume, no RWX.
 - **Distinct names** deliberately sidestep the agent-sandbox v0.5.0 **bare-pod name-collision / adopt-error**
   gotcha observed in P0′.
@@ -101,7 +101,7 @@ Bounded wait with backoff, up to a timeout:
 
 ## 5. Repo lifecycle & workspace layout
 
-The unit shared across leaves on a pod is the **git object store**, *not* a working tree — so two leaves at
+The unit shared across leaves on a pod is the **git object store**, _not_ a working tree — so two leaves at
 different commits never contend over a checkout.
 
 - **`/workspace/repo`** — the canonical clone; its object store accumulates every ref ever fetched on that pod.
@@ -113,7 +113,7 @@ different commits never contend over a checkout.
 - **Cleanup:** `git worktree remove` on leaf end; orphaned worktrees from crashed leaves are reclaimed by
   `git worktree prune` plus a dir-age sweep performed opportunistically on acquire.
 
-This yields **batch-wide consistency** (each leaf pins its own commit regardless of pod) *and* lets a single pod
+This yields **batch-wide consistency** (each leaf pins its own commit regardless of pod) _and_ lets a single pod
 serve many refs concurrently.
 
 ## 6. FS-free contract & leaf-flow interaction
@@ -143,10 +143,10 @@ and the existing Redis-backed resume re-runs the leaf, which **re-acquires** (li
 
 Additive to the P1 wire contract:
 
-| Field | Type | Meaning |
-|-------|------|---------|
-| `repoUrl` | string | Git remote to converge from. |
-| `ref` | string | Commit SHA (preferred) or branch/tag; the pod converges to it and the worktree pins the resolved commit. |
+| Field     | Type   | Meaning                                                                                                  |
+| --------- | ------ | -------------------------------------------------------------------------------------------------------- |
+| `repoUrl` | string | Git remote to converge from.                                                                             |
+| `ref`     | string | Commit SHA (preferred) or branch/tag; the pod converges to it and the worktree pins the resolved commit. |
 
 `workspaceRef` becomes **derived** (`/workspace/leaves/<runId>`) rather than a caller-supplied absolute pod path.
 Callers we own (leaf-orchestrator, dispatch scripts) are updated in the same cut to send `repoUrl`/`ref` and to
@@ -173,13 +173,13 @@ one trust domain in P2. Documented here as the known limitation P3 resolves.
 
 ## 10. Failure modes
 
-| Event | Behavior |
-|-------|----------|
-| Pod crashes mid-leaf | Lease TTL-expires → reclaimed on next acquire; worktree orphaned then age-pruned; leaf resumes (existing Redis resume) and re-acquires + re-converges (likely a different pod). |
-| Pod removed from pool | K8s list stops returning it → never picked. In-flight leaf on it fails through the existing verdict-error path and resumes elsewhere. |
-| All pods FULL | §4.3 — async stays queued; sync gets `503 Retry-After`. |
-| `git fetch`/converge fails | Leaf errors out via the existing verdict-error path; lease released; resume retries. |
-| Two harnesses race one pod | Soft-cap overshoot by a small margin (D5) — accepted. |
+| Event                      | Behavior                                                                                                                                                                        |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pod crashes mid-leaf       | Lease TTL-expires → reclaimed on next acquire; worktree orphaned then age-pruned; leaf resumes (existing Redis resume) and re-acquires + re-converges (likely a different pod). |
+| Pod removed from pool      | K8s list stops returning it → never picked. In-flight leaf on it fails through the existing verdict-error path and resumes elsewhere.                                           |
+| All pods FULL              | §4.3 — async stays queued; sync gets `503 Retry-After`.                                                                                                                         |
+| `git fetch`/converge fails | Leaf errors out via the existing verdict-error path; lease released; resume retries.                                                                                            |
+| Two harnesses race one pod | Soft-cap overshoot by a small margin (D5) — accepted.                                                                                                                           |
 
 ## 11. Testing
 
@@ -193,16 +193,16 @@ one trust domain in P2. Documented here as the known limitation P3 resolves.
 
 ## 12. Acceptance mapping (issue #46)
 
-| Issue #46 scope item | Addressed by |
-|----------------------|--------------|
-| Replace fixed `KAGENTI_SANDBOX_POD` with pool assignment (pod-selection logic) | §4 routing + §8 `KAGENTI_SANDBOX_POOL_SELECTOR` |
-| Within a sandbox: shared repo (read-mostly), per-leaf isolated worktrees, `/workspace/<run>/…` layout | §5 shared object store + per-leaf worktree |
-| Across sandboxes: storage topology — RWX vs per-sandbox copy (design both) | D1 + §3 (per-sandbox RWO chosen; RWX = §13 alternative) |
-| Sandbox tier as a managed set with durable storage | §3 N `Sandbox` CRs, per-CR RWO PVC |
-| Open Q — routing mechanism | §4 (harness-side pick + Redis leases) |
-| Open Q — repo distribution | D3 + §5 (ref-pinned lazy converge) |
-| Open Q — sandbox lifecycle/scaling | D4 + §8 (static N config knob) |
-| Open Q — isolation between shared leaves | §9 (worktree/dir, Kata → P3) |
+| Issue #46 scope item                                                                                  | Addressed by                                            |
+| ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Replace fixed `KAGENTI_SANDBOX_POD` with pool assignment (pod-selection logic)                        | §4 routing + §8 `KAGENTI_SANDBOX_POOL_SELECTOR`         |
+| Within a sandbox: shared repo (read-mostly), per-leaf isolated worktrees, `/workspace/<run>/…` layout | §5 shared object store + per-leaf worktree              |
+| Across sandboxes: storage topology — RWX vs per-sandbox copy (design both)                            | D1 + §3 (per-sandbox RWO chosen; RWX = §13 alternative) |
+| Sandbox tier as a managed set with durable storage                                                    | §3 N `Sandbox` CRs, per-CR RWO PVC                      |
+| Open Q — routing mechanism                                                                            | §4 (harness-side pick + Redis leases)                   |
+| Open Q — repo distribution                                                                            | D3 + §5 (ref-pinned lazy converge)                      |
+| Open Q — sandbox lifecycle/scaling                                                                    | D4 + §8 (static N config knob)                          |
+| Open Q — isolation between shared leaves                                                              | §9 (worktree/dir, Kata → P3)                            |
 
 ## 13. Non-goals (this phase)
 
@@ -223,4 +223,4 @@ one trust domain in P2. Documented here as the known limitation P3 resolves.
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) — brainstorming + spec authoring for P2.*
+_Assisted-By: Claude (Anthropic AI) — brainstorming + spec authoring for P2._

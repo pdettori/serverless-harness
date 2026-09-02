@@ -1,17 +1,17 @@
-import { spawn as nodeSpawn } from "node:child_process";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { beforeAll, describe, expect, it } from "vitest";
-import type { K8sSandboxConfig } from "../src/config.js";
-import { KubectlTransport } from "../src/exec.js";
-import { persistentExecInPod } from "../src/persistent-exec.js";
+import { spawn as nodeSpawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { beforeAll, describe, expect, it } from 'vitest';
+import type { K8sSandboxConfig } from '../src/config.js';
+import { KubectlTransport } from '../src/exec.js';
+import { persistentExecInPod } from '../src/persistent-exec.js';
 import {
   createPodBashOps,
   createPodFindOps,
   createPodLsOps,
   createPodReadOps,
   createPodWriteOps,
-} from "../src/operations.js";
+} from '../src/operations.js';
 
 const execFileP = promisify(execFile);
 
@@ -22,23 +22,23 @@ const LIVE = !!process.env.M3_LIVE_SMOKE;
 // Construct the config directly (mirrors the unit-test fixture) so path mapping
 // is deterministic: head path /head/X maps to pod path /workspace/X.
 const cfg: K8sSandboxConfig = {
-  pod: process.env.KAGENTI_SANDBOX_POD ?? "",
-  namespace: process.env.KAGENTI_SANDBOX_NAMESPACE ?? "default",
-  context: process.env.KAGENTI_SANDBOX_CONTEXT ?? "kind-kagenti",
-  podCwd: "/workspace",
-  headCwd: "/head",
+  pod: process.env.KAGENTI_SANDBOX_POD ?? '',
+  namespace: process.env.KAGENTI_SANDBOX_NAMESPACE ?? 'default',
+  context: process.env.KAGENTI_SANDBOX_CONTEXT ?? 'kind-kagenti',
+  podCwd: '/workspace',
+  headCwd: '/head',
 };
 
 /** Direct `kubectl exec` into the pod (independent verification path). */
 async function kubectlExecRaw(args: string[]): Promise<string> {
-  const base = ["exec", "-n", cfg.namespace];
-  if (cfg.context) base.push("--context", cfg.context);
-  base.push(cfg.pod, "--", ...args);
-  const { stdout } = await execFileP("kubectl", base, { maxBuffer: 8 * 1024 * 1024 });
+  const base = ['exec', '-n', cfg.namespace];
+  if (cfg.context) base.push('--context', cfg.context);
+  base.push(cfg.pod, '--', ...args);
+  const { stdout } = await execFileP('kubectl', base, { maxBuffer: 8 * 1024 * 1024 });
   return stdout;
 }
 
-describe.skipIf(!LIVE)("M3 live smoke (real kind cluster)", () => {
+describe.skipIf(!LIVE)('M3 live smoke (real kind cluster)', () => {
   // Seed the find fixtures this suite reads. Claims 1, 4 and 5 assert on a `.gitignore`
   // and a tree of seeded `.ts` files that they do NOT create themselves — Claims 2 and 4b
   // build their own, which is why they pass on a bare pod while the others do not.
@@ -54,16 +54,16 @@ describe.skipIf(!LIVE)("M3 live smoke (real kind cluster)", () => {
   // as an arbitrary non-root UID and `/tmp` is not writable.
   beforeAll(async () => {
     await kubectlExecRaw([
-      "bash",
-      "-c",
-      "cd /workspace && mkdir -p src node_modules/pkg .git dist && " +
+      'bash',
+      '-c',
+      'cd /workspace && mkdir -p src node_modules/pkg .git dist && ' +
         'printf "node_modules/\ndist/\n" > .gitignore && ' +
-        ": > src/keep.ts && : > node_modules/pkg/skip.ts && : > .git/cfg.ts && " +
-        ": > dist/bundle.ts && : > top.ts",
+        ': > src/keep.ts && : > node_modules/pkg/skip.ts && : > .git/cfg.ts && ' +
+        ': > dist/bundle.ts && : > top.ts',
     ]);
   }, 60_000);
 
-  it("Claim 1: a single persistent process serves a burst of >=3 ops", async () => {
+  it('Claim 1: a single persistent process serves a burst of >=3 ops', async () => {
     let spawnCount = 0;
     const countingSpawn = ((...a: Parameters<typeof nodeSpawn>) => {
       spawnCount += 1;
@@ -83,13 +83,13 @@ describe.skipIf(!LIVE)("M3 live smoke (real kind cluster)", () => {
       // NOTE: the seeded .ts files are 0 bytes, so we assert presence of the
       // *.gitignore* read (non-empty) and structural results for ls/glob;
       // content length of empty files is intentionally not asserted.
-      const gi = await read.readFile("/head/.gitignore");
-      const listing = await ls.readdir("/head");
-      const globbed = await find.glob("*.ts", "/head", {
-        ignore: ["**/node_modules/**", "**/.git/**"],
+      const gi = await read.readFile('/head/.gitignore');
+      const listing = await ls.readdir('/head');
+      const globbed = await find.glob('*.ts', '/head', {
+        ignore: ['**/node_modules/**', '**/.git/**'],
         limit: 100,
       });
-      const gi2 = await read.readFile("/head/.gitignore");
+      const gi2 = await read.readFile('/head/.gitignore');
 
       expect(gi.length).toBeGreaterThan(0);
       expect(listing.length).toBeGreaterThan(0);
@@ -106,12 +106,11 @@ describe.skipIf(!LIVE)("M3 live smoke (real kind cluster)", () => {
     }
   }, 30000);
 
-  it("Claim 2 (TOP): write/edit over the persistent channel round-trips multi-line/special content", async () => {
+  it('Claim 2 (TOP): write/edit over the persistent channel round-trips multi-line/special content', async () => {
     const fastExec = persistentExecInPod(cfg, { fallback: KubectlTransport(cfg).exec });
-    const headPath = "/head/m3-write.txt";
-    const podPath = "/workspace/m3-write.txt";
-    const content =
-      'line1\nline2 with "quotes" and $dollar and `backtick`\nline3 end\n';
+    const headPath = '/head/m3-write.txt';
+    const podPath = '/workspace/m3-write.txt';
+    const content = 'line1\nline2 with "quotes" and $dollar and `backtick`\nline3 end\n';
     try {
       const write = createPodWriteOps(fastExec.exec, cfg);
       const read = createPodReadOps(fastExec.exec, cfg);
@@ -125,7 +124,7 @@ describe.skipIf(!LIVE)("M3 live smoke (real kind cluster)", () => {
       expect(roundTrip).toBe(content);
 
       // Independently confirm with a direct kubectl exec cat.
-      const direct = await kubectlExecRaw(["cat", podPath]);
+      const direct = await kubectlExecRaw(['cat', podPath]);
       expect(direct).toBe(content);
 
       // eslint-disable-next-line no-console
@@ -135,18 +134,18 @@ describe.skipIf(!LIVE)("M3 live smoke (real kind cluster)", () => {
     }
   }, 30000);
 
-  it("Claim 3: env injection reaches the bash op", async () => {
+  it('Claim 3: env injection reaches the bash op', async () => {
     const streamExec = KubectlTransport(cfg).exec;
     const bash = createPodBashOps(streamExec, cfg);
     const chunks: Buffer[] = [];
-    const r = await bash.exec("echo MARKER=$M3_SMOKE", "/head", {
+    const r = await bash.exec('echo MARKER=$M3_SMOKE', '/head', {
       onData: (d) => chunks.push(d),
-      env: { M3_SMOKE: "works-42" },
+      env: { M3_SMOKE: 'works-42' },
     });
     const out = Buffer.concat(chunks).toString();
     expect(r.exitCode).toBe(0);
-    expect(out).toContain("MARKER=works-42");
-    const line = out.split("\n").find((l) => l.includes("MARKER=")) ?? out.trim();
+    expect(out).toContain('MARKER=works-42');
+    const line = out.split('\n').find((l) => l.includes('MARKER=')) ?? out.trim();
     // eslint-disable-next-line no-console
     console.log(`[Claim3] captured: ${line.trim()}`);
   }, 30000);
@@ -155,8 +154,8 @@ describe.skipIf(!LIVE)("M3 live smoke (real kind cluster)", () => {
     const fastExec = persistentExecInPod(cfg, { fallback: KubectlTransport(cfg).exec });
     try {
       const find = createPodFindOps(fastExec.exec, cfg);
-      const results = await find.glob("*.ts", "/head", {
-        ignore: ["**/node_modules/**", "**/.git/**"],
+      const results = await find.glob('*.ts', '/head', {
+        ignore: ['**/node_modules/**', '**/.git/**'],
         limit: 100,
       });
       const set = new Set(results);
@@ -164,11 +163,11 @@ describe.skipIf(!LIVE)("M3 live smoke (real kind cluster)", () => {
       console.log(`[Claim4] glob result: ${JSON.stringify(results)}`);
 
       // Included: regular tracked files.
-      expect(set.has("src/keep.ts")).toBe(true);
-      expect(set.has("top.ts")).toBe(true);
+      expect(set.has('src/keep.ts')).toBe(true);
+      expect(set.has('top.ts')).toBe(true);
       // Excluded: in the ignore-list / rg built-ins.
-      expect(set.has("node_modules/pkg/skip.ts")).toBe(false);
-      expect(set.has(".git/cfg.ts")).toBe(false);
+      expect(set.has('node_modules/pkg/skip.ts')).toBe(false);
+      expect(set.has('.git/cfg.ts')).toBe(false);
 
       // ── gitignored DIRECTORY case (the nuance) ────────────────────────────
       // operations.ts notes that a positive `-g <pattern>` is a ripgrep
@@ -180,7 +179,7 @@ describe.skipIf(!LIVE)("M3 live smoke (real kind cluster)", () => {
       // though `*.ts` matches it. (Only `rg --files -uu`/`--no-ignore-vcs`
       // would surface it.) Assert the dir-prune behaviour here; the file-level
       // override is asserted separately in Claim 4b.
-      const distVisible = set.has("dist/bundle.ts");
+      const distVisible = set.has('dist/bundle.ts');
       // eslint-disable-next-line no-console
       console.log(
         `[Claim4] dist/bundle.ts visible via -g glob = ${distVisible} ` +
@@ -192,7 +191,7 @@ describe.skipIf(!LIVE)("M3 live smoke (real kind cluster)", () => {
     }
   }, 30000);
 
-  it("Claim 4b: positive -g whitelist-overrides a file-level .gitignore (verified nuance)", async () => {
+  it('Claim 4b: positive -g whitelist-overrides a file-level .gitignore (verified nuance)', async () => {
     const fastExec = persistentExecInPod(cfg, { fallback: KubectlTransport(cfg).exec });
     try {
       // Seed an ISOLATED fixture (does not touch the shared /workspace files):
@@ -200,18 +199,18 @@ describe.skipIf(!LIVE)("M3 live smoke (real kind cluster)", () => {
       // the file `a.ts` by name. A positive `-g '*.ts'` should whitelist-override
       // that FILE-level ignore (unlike the DIRECTORY-prune case in Claim 4).
       await kubectlExecRaw([
-        "bash",
-        "-lc",
-        "mkdir -p /workspace/ovr && " +
-          ": > /workspace/ovr/a.ts && " +
-          ": > /workspace/ovr/keep2.ts && " +
+        'bash',
+        '-lc',
+        'mkdir -p /workspace/ovr && ' +
+          ': > /workspace/ovr/a.ts && ' +
+          ': > /workspace/ovr/keep2.ts && ' +
           "printf 'a.ts\\n' > /workspace/ovr/.gitignore",
       ]);
 
       const find = createPodFindOps(fastExec.exec, cfg);
       // cwd /head/ovr maps to /workspace/ovr; empty ignore-list so ONLY
       // .gitignore is in play.
-      const results = await find.glob("*.ts", "/head/ovr", {
+      const results = await find.glob('*.ts', '/head/ovr', {
         ignore: [],
         limit: 100,
       });
@@ -221,25 +220,25 @@ describe.skipIf(!LIVE)("M3 live smoke (real kind cluster)", () => {
 
       // a.ts is gitignored by name, but the positive -g '*.ts' whitelist
       // overrides a FILE-level ignore -> it reappears.
-      expect(set.has("a.ts")).toBe(true);
+      expect(set.has('a.ts')).toBe(true);
       // keep2.ts is not ignored at all.
-      expect(set.has("keep2.ts")).toBe(true);
+      expect(set.has('keep2.ts')).toBe(true);
     } finally {
-      await kubectlExecRaw(["rm", "-rf", "/workspace/ovr"]);
+      await kubectlExecRaw(['rm', '-rf', '/workspace/ovr']);
       await fastExec.close();
     }
   }, 30000);
 
-  it("Claim 5: close is non-throwing (best-effort process-count probe)", async () => {
+  it('Claim 5: close is non-throwing (best-effort process-count probe)', async () => {
     const fastExec = persistentExecInPod(cfg, { fallback: KubectlTransport(cfg).exec });
     // Warm the channel so a persistent bash exists in the pod.
-    await createPodReadOps(fastExec.exec, cfg).readFile("/head/.gitignore");
+    await createPodReadOps(fastExec.exec, cfg).readFile('/head/.gitignore');
 
     const countBash = async (): Promise<number> => {
       try {
         const out = await kubectlExecRaw([
-          "sh",
-          "-c",
+          'sh',
+          '-c',
           'ps -o pid,args 2>/dev/null | grep -c "[b]ash"',
         ]);
         return parseInt(out.trim(), 10) || 0;
@@ -258,19 +257,19 @@ describe.skipIf(!LIVE)("M3 live smoke (real kind cluster)", () => {
     console.log(`[Claim5] bash-process count before=${before} after=${after} (informational)`);
   }, 30000);
 
-  it("Claim 6: a file over the output cap fails the read loudly, with a usable message", async () => {
+  it('Claim 6: a file over the output cap fails the read loudly, with a usable message', async () => {
     // The one change with no hermetic proxy: a real `head -c` in a real pipeline, over
     // kubectl exec, against the sandbox image's coreutils. The unit tests prove the
     // command shape and the client half; only this proves they compose in the pod.
     const t = persistentExecInPod(cfg, { fallback: KubectlTransport(cfg).exec });
     try {
-      const big = "/workspace/cap-probe.bin";
+      const big = '/workspace/cap-probe.bin';
       // 9 MiB > the 8 MiB cap, written in-pod so no large payload crosses the wire.
-      await kubectlExecRaw(["bash", "-c", `head -c 9437184 /dev/zero > ${big}`]);
+      await kubectlExecRaw(['bash', '-c', `head -c 9437184 /dev/zero > ${big}`]);
       const read = createPodReadOps(t.exec, cfg);
       // One read, three assertions: re-invoking would push 9 MiB through the pod's
       // pipeline three times for no extra coverage.
-      const err = (await read.readFile("/head/cap-probe.bin").catch((e) => e)) as Error;
+      const err = (await read.readFile('/head/cap-probe.bin').catch((e) => e)) as Error;
       expect(err.message).toMatch(/exceeds the .* output cap/);
       // The message must carry the size and the escape hatch, or the model cannot act.
       expect(err.message).toMatch(/9437184/);
@@ -278,20 +277,22 @@ describe.skipIf(!LIVE)("M3 live smoke (real kind cluster)", () => {
 
       // A file just under the cap must still read cleanly — the cap must not have made
       // the whole path fragile.
-      const small = "/workspace/cap-probe-small.bin";
-      await kubectlExecRaw(["bash", "-c", `head -c 1048576 /dev/zero > ${small}`]);
-      const buf = await read.readFile("/head/cap-probe-small.bin");
+      const small = '/workspace/cap-probe-small.bin';
+      await kubectlExecRaw(['bash', '-c', `head -c 1048576 /dev/zero > ${small}`]);
+      const buf = await read.readFile('/head/cap-probe-small.bin');
       expect(buf.length).toBe(1048576);
 
       // And bash reports the kill rather than success (#181), over the same real pod.
       const bash = createPodBashOps(KubectlTransport(cfg).exec, cfg);
-      const r = await bash.exec(`cat ${big}`, "/head", { onData: () => {} });
+      const r = await bash.exec(`cat ${big}`, '/head', { onData: () => {} });
       expect(r.exitCode).toBe(137);
     } finally {
       await t.close();
-      await kubectlExecRaw(["bash", "-c", "rm -f /workspace/cap-probe.bin /workspace/cap-probe-small.bin"]).catch(
-        () => {},
-      );
+      await kubectlExecRaw([
+        'bash',
+        '-c',
+        'rm -f /workspace/cap-probe.bin /workspace/cap-probe-small.bin',
+      ]).catch(() => {});
     }
   }, 120_000);
 });

@@ -27,14 +27,14 @@ spec:
     - metadata:
         name: workspace
       spec:
-        accessModes: ["ReadWriteOnce"]
+        accessModes: ['ReadWriteOnce']
         resources:
           requests:
             storage: 50Gi
   podTemplate:
     metadata:
       labels:
-        sh.kagenti.io/sandbox-pool: swebench    # pool discovery label (harness selects on this)
+        sh.kagenti.io/sandbox-pool: swebench # pool discovery label (harness selects on this)
     spec:
       # Spread pool pods across nodes (see sandbox-pool.yaml). Scoped to the swebench pool
       # label. Soft (ScheduleAnyway) so single-node clusters still schedule.
@@ -56,7 +56,7 @@ spec:
         - name: sandbox
           image: image-registry.openshift-image-registry.svc:5000/default/swebench-sandbox:ff962cb83fe5c624-15of15
           imagePullPolicy: IfNotPresent
-          command: ["sleep", "infinity"]
+          command: ['sleep', 'infinity']
           workingDir: /workspace
           volumeMounts:
             - name: workspace
@@ -65,14 +65,14 @@ spec:
           # CPU-throttled, matching the repo's emulated-workload pattern; adjust if needed.
           resources:
             requests:
-              memory: "512Mi"
-              cpu: "250m"
+              memory: '512Mi'
+              cpu: '250m'
             limits:
-              memory: "4Gi"
+              memory: '4Gi'
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
-              drop: ["ALL"]
+              drop: ['ALL']
 
 ---
 apiVersion: agents.x-k8s.io/v1beta1
@@ -87,14 +87,14 @@ spec:
     - metadata:
         name: workspace
       spec:
-        accessModes: ["ReadWriteOnce"]
+        accessModes: ['ReadWriteOnce']
         resources:
           requests:
             storage: 50Gi
   podTemplate:
     metadata:
       labels:
-        sh.kagenti.io/sandbox-pool: swebench    # pool discovery label (harness selects on this)
+        sh.kagenti.io/sandbox-pool: swebench # pool discovery label (harness selects on this)
     spec:
       # Spread pool pods across nodes (see sandbox-pool.yaml). Scoped to the swebench pool
       # label. Soft (ScheduleAnyway) so single-node clusters still schedule.
@@ -116,7 +116,7 @@ spec:
         - name: sandbox
           image: image-registry.openshift-image-registry.svc:5000/default/swebench-sandbox:ff962cb83fe5c624-15of15
           imagePullPolicy: IfNotPresent
-          command: ["sleep", "infinity"]
+          command: ['sleep', 'infinity']
           workingDir: /workspace
           volumeMounts:
             - name: workspace
@@ -125,14 +125,14 @@ spec:
           # CPU-throttled, matching the repo's emulated-workload pattern; adjust if needed.
           resources:
             requests:
-              memory: "512Mi"
-              cpu: "250m"
+              memory: '512Mi'
+              cpu: '250m'
             limits:
-              memory: "4Gi"
+              memory: '4Gi'
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
-              drop: ["ALL"]
+              drop: ['ALL']
 
 ---
 apiVersion: agents.x-k8s.io/v1beta1
@@ -147,14 +147,14 @@ spec:
     - metadata:
         name: workspace
       spec:
-        accessModes: ["ReadWriteOnce"]
+        accessModes: ['ReadWriteOnce']
         resources:
           requests:
             storage: 50Gi
   podTemplate:
     metadata:
       labels:
-        sh.kagenti.io/sandbox-pool: swebench    # pool discovery label (harness selects on this)
+        sh.kagenti.io/sandbox-pool: swebench # pool discovery label (harness selects on this)
     spec:
       # Spread pool pods across nodes (see sandbox-pool.yaml). Scoped to the swebench pool
       # label. Soft (ScheduleAnyway) so single-node clusters still schedule.
@@ -176,7 +176,7 @@ spec:
         - name: sandbox
           image: image-registry.openshift-image-registry.svc:5000/default/swebench-sandbox:ff962cb83fe5c624-15of15
           imagePullPolicy: IfNotPresent
-          command: ["sleep", "infinity"]
+          command: ['sleep', 'infinity']
           workingDir: /workspace
           volumeMounts:
             - name: workspace
@@ -185,11 +185,11 @@ spec:
           # CPU-throttled, matching the repo's emulated-workload pattern; adjust if needed.
           resources:
             requests:
-              memory: "512Mi"
-              cpu: "250m"
+              memory: '512Mi'
+              cpu: '250m'
             limits:
-              memory: "4Gi"
+              memory: '4Gi'
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
-              drop: ["ALL"]
+              drop: ['ALL']

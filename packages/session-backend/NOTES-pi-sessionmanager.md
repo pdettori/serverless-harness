@@ -13,13 +13,13 @@ All line references target the pinned commit `406a2214` of `pi-fork/`.
 The class is the single owner of all JSONL file I/O for session data.
 It is instantiated via four static factory methods:
 
-| Factory | Purpose | Line |
-|---------|---------|------|
-| `SessionManager.create(cwd, sessionDir?, options?)` | New session | 1385 |
-| `SessionManager.open(path, sessionDir?, cwdOverride?)` | Open existing file | 1396 |
-| `SessionManager.continueRecent(cwd, sessionDir?)` | Most-recent or new | 1412 |
-| `SessionManager.inMemory(cwd?)` | No-persist (testing) | 1423 |
-| `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?, options?)` | Fork a session | 1434 |
+| Factory                                                                 | Purpose              | Line |
+| ----------------------------------------------------------------------- | -------------------- | ---- |
+| `SessionManager.create(cwd, sessionDir?, options?)`                     | New session          | 1385 |
+| `SessionManager.open(path, sessionDir?, cwdOverride?)`                  | Open existing file   | 1396 |
+| `SessionManager.continueRecent(cwd, sessionDir?)`                       | Most-recent or new   | 1412 |
+| `SessionManager.inMemory(cwd?)`                                         | No-persist (testing) | 1423 |
+| `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?, options?)` | Fork a session       | 1434 |
 
 ---
 
@@ -30,12 +30,14 @@ It is instantiated via four static factory methods:
 ```
 private _appendEntry(entry: SessionEntry): void   // line 937
 ```
+
 Pushes to in-memory `fileEntries`, updates `byId` map, advances `leafId`,
 then calls `_persist(entry)`.
 
 ```
 _persist(entry: SessionEntry): void               // line 908
 ```
+
 - If no assistant message has been written yet: holds in memory (lazy flush).
 - On first assistant message: opens file with flag `"wx"` and rewrites ALL
   accumulated entries at once (`writeFileSync`), then sets `flushed = true`.
@@ -46,29 +48,30 @@ _persist(entry: SessionEntry): void               // line 908
 
 All return the new entry's `id: string`.
 
-| Method | Signature | Line |
-|--------|-----------|------|
-| `appendMessage` | `(message: Message \| CustomMessage \| BashExecutionMessage): string` | 950 |
-| `appendThinkingLevelChange` | `(thinkingLevel: string): string` | 963 |
-| `appendModelChange` | `(provider: string, modelId: string): string` | 976 |
-| `appendCompaction` | `(summary, firstKeptEntryId, tokensBefore, details?, fromHook?): string` | 990 |
-| `appendCustomEntry` | `(customType: string, data?: unknown): string` | 1013 |
-| `appendSessionInfo` | `(name: string): string` | 1027 |
-| `appendCustomMessageEntry` | `(customType, content, display, details?): string` | 1061 |
-| `appendLabelChange` | `(targetId, label: string \| undefined): string` | 1122 |
-| `branchWithSummary` | `(branchFromId: string \| null, summary, details?, fromHook?): string` | 1262 |
+| Method                      | Signature                                                                | Line |
+| --------------------------- | ------------------------------------------------------------------------ | ---- |
+| `appendMessage`             | `(message: Message \| CustomMessage \| BashExecutionMessage): string`    | 950  |
+| `appendThinkingLevelChange` | `(thinkingLevel: string): string`                                        | 963  |
+| `appendModelChange`         | `(provider: string, modelId: string): string`                            | 976  |
+| `appendCompaction`          | `(summary, firstKeptEntryId, tokensBefore, details?, fromHook?): string` | 990  |
+| `appendCustomEntry`         | `(customType: string, data?: unknown): string`                           | 1013 |
+| `appendSessionInfo`         | `(name: string): string`                                                 | 1027 |
+| `appendCustomMessageEntry`  | `(customType, content, display, details?): string`                       | 1061 |
+| `appendLabelChange`         | `(targetId, label: string \| undefined): string`                         | 1122 |
+| `branchWithSummary`         | `(branchFromId: string \| null, summary, details?, fromHook?): string`   | 1262 |
 
 ### Compaction / rewrite path
 
 `_rewriteFile(): void` — line 872 — opens the file with flag `"w"` (truncate)
 and writes ALL `fileEntries` line-by-line. Called when:
+
 - Migration is needed on load (`setSessionFile`, line 811).
 - A branched session is created with an assistant message already present (`createBranchedSession`, line 1350).
 
 **Compaction is NOT a rewrite.** The compaction flow calls
 `appendCompaction(summary, firstKeptEntryId, tokensBefore, ...)` which is a
 normal append. It records the summary text and the ID of the first entry to
-keep; the *in-memory* tree then respects `firstKeptEntryId` when building
+keep; the _in-memory_ tree then respects `firstKeptEntryId` when building
 context, but no entries are deleted from disk. The file remains append-only.
 Branching operations (`branch()`, `branchWithSummary()`) similarly only
 change the in-memory `leafId` pointer and optionally append a `branch_summary`
@@ -78,35 +81,37 @@ entry — no truncation.
 
 ## 3. Read methods
 
-| Method | Signature | Return shape | Line |
-|--------|-----------|-------------|------|
-| `getEntries()` | `(): SessionEntry[]` | All non-header entries, shallow copy | 1182 |
-| `getEntry(id)` | `(id: string): SessionEntry \| undefined` | Single entry by id | 1093 |
-| `getBranch(fromId?)` | `(fromId?: string): SessionEntry[]` | Path from root to leaf | 1150 |
-| `getLeafEntry()` | `(): SessionEntry \| undefined` | Current leaf | 1089 |
-| `getLeafId()` | `(): string \| null` | Current leaf id | 1085 |
-| `getChildren(parentId)` | `(parentId: string): SessionEntry[]` | Direct children | 1100 |
-| `getTree()` | `(): SessionTreeNode[]` | Full tree as nodes | 1191 |
-| `getHeader()` | `(): SessionHeader \| null` | Session header record | 1172 |
-| `buildSessionContext()` | `(): SessionContext` | LLM messages + model/thinking | 1165 |
+| Method                  | Signature                                 | Return shape                         | Line |
+| ----------------------- | ----------------------------------------- | ------------------------------------ | ---- |
+| `getEntries()`          | `(): SessionEntry[]`                      | All non-header entries, shallow copy | 1182 |
+| `getEntry(id)`          | `(id: string): SessionEntry \| undefined` | Single entry by id                   | 1093 |
+| `getBranch(fromId?)`    | `(fromId?: string): SessionEntry[]`       | Path from root to leaf               | 1150 |
+| `getLeafEntry()`        | `(): SessionEntry \| undefined`           | Current leaf                         | 1089 |
+| `getLeafId()`           | `(): string \| null`                      | Current leaf id                      | 1085 |
+| `getChildren(parentId)` | `(parentId: string): SessionEntry[]`      | Direct children                      | 1100 |
+| `getTree()`             | `(): SessionTreeNode[]`                   | Full tree as nodes                   | 1191 |
+| `getHeader()`           | `(): SessionHeader \| null`               | Session header record                | 1172 |
+| `buildSessionContext()` | `(): SessionContext`                      | LLM messages + model/thinking        | 1165 |
 
 `SessionEntry` union type — line 140:
+
 ```typescript
 type SessionEntry =
-  | SessionMessageEntry          // type: "message"
-  | ThinkingLevelChangeEntry     // type: "thinking_level_change"
-  | ModelChangeEntry             // type: "model_change"
-  | CompactionEntry              // type: "compaction"
-  | BranchSummaryEntry           // type: "branch_summary"
-  | CustomEntry                  // type: "custom"
-  | CustomMessageEntry           // type: "custom_message"
-  | LabelEntry                   // type: "label"
-  | SessionInfoEntry             // type: "session_info"
+  | SessionMessageEntry // type: "message"
+  | ThinkingLevelChangeEntry // type: "thinking_level_change"
+  | ModelChangeEntry // type: "model_change"
+  | CompactionEntry // type: "compaction"
+  | BranchSummaryEntry // type: "branch_summary"
+  | CustomEntry // type: "custom"
+  | CustomMessageEntry // type: "custom_message"
+  | LabelEntry // type: "label"
+  | SessionInfoEntry; // type: "session_info"
 ```
 
 Every entry has `{ id: string; parentId: string | null; timestamp: string }` base fields — line 46.
 
 Static list helpers:
+
 - `SessionManager.list(cwd, sessionDir?, onProgress?)` — line 1493
 - `SessionManager.listAll(sessionDir?, onProgress?)` — line 1508
 
@@ -119,8 +124,8 @@ Static list helpers:
 ```typescript
 // line 438
 function getDefaultSessionDirPath(cwd: string, agentDir: string): string {
-  const safePath = `--${resolvedCwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-  return join(agentDir, "sessions", safePath);
+  const safePath = `--${resolvedCwd.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-')}--`;
+  return join(agentDir, 'sessions', safePath);
 }
 ```
 
@@ -133,7 +138,7 @@ So the default session dir for cwd `/home/user/project` is:
 
 ```typescript
 // line 844-846 (inside newSession())
-const fileTimestamp = timestamp.replace(/[:.]/g, "-");
+const fileTimestamp = timestamp.replace(/[:.]/g, '-');
 this.sessionFile = join(this.getSessionDir(), `${fileTimestamp}_${this.sessionId}.jsonl`);
 ```
 
@@ -197,12 +202,16 @@ in `BashToolOptions` (bash.ts:134) that can rewrite command/cwd/env.
 ```typescript
 // bash.ts:40
 interface BashOperations {
-  exec: (command: string, cwd: string, options: {
-    onData: (data: Buffer) => void;
-    signal?: AbortSignal;
-    timeout?: number;
-    env?: NodeJS.ProcessEnv;
-  }) => Promise<{ exitCode: number | null }>;
+  exec: (
+    command: string,
+    cwd: string,
+    options: {
+      onData: (data: Buffer) => void;
+      signal?: AbortSignal;
+      timeout?: number;
+      env?: NodeJS.ProcessEnv;
+    },
+  ) => Promise<{ exitCode: number | null }>;
 }
 
 // read.ts:43
@@ -228,7 +237,9 @@ interface WriteOperations {
 // ls.ts:32
 interface LsOperations {
   exists: (absolutePath: string) => Promise<boolean> | boolean;
-  stat: (absolutePath: string) => Promise<{ isDirectory: () => boolean }> | { isDirectory: () => boolean };
+  stat: (
+    absolutePath: string,
+  ) => Promise<{ isDirectory: () => boolean }> | { isDirectory: () => boolean };
   readdir: (absolutePath: string) => Promise<string[]> | string[];
 }
 
@@ -241,7 +252,11 @@ interface GrepOperations {
 // find.ts:41
 interface FindOperations {
   exists: (absolutePath: string) => Promise<boolean> | boolean;
-  glob: (pattern: string, cwd: string, options: { ignore: string[]; limit: number }) => Promise<string[]> | string[];
+  glob: (
+    pattern: string,
+    cwd: string,
+    options: { ignore: string[]; limit: number },
+  ) => Promise<string[]> | string[];
 }
 ```
 
@@ -254,36 +269,36 @@ These are registered via `runtime.on(eventName, handler)` on the extension
 
 ### Events confirmed in source
 
-| Event name | Type interface | Blockable / cancellable | Location |
-|---|---|---|---|
-| `session_start` | `SessionStartEvent` | No | types.ts:1127 |
-| `session_before_switch` | `SessionBeforeSwitchEvent` | Yes (result) | types.ts:1129 |
-| `session_before_fork` | `SessionBeforeForkEvent` | Yes (result) | types.ts:1132 |
-| `session_before_compact` | `SessionBeforeCompactEvent` | Yes (result) | types.ts:1134 |
-| `session_compact` | `SessionCompactEvent` | No | types.ts:1137 |
-| `session_shutdown` | `SessionShutdownEvent` | No | types.ts:1138 |
-| `session_before_tree` | `SessionBeforeTreeEvent` | Yes (result) | types.ts:1139 |
-| `session_tree` | `SessionTreeEvent` | No | types.ts:1140 |
-| `context` | `ContextEvent` | Yes (result) | types.ts:1141 |
-| `before_provider_request` | `BeforeProviderRequestEvent` | Yes (result) | types.ts:1143 |
-| `after_provider_response` | `AfterProviderResponseEvent` | No | types.ts:1146 |
-| `before_agent_start` | `BeforeAgentStartEvent` | Yes (result) | types.ts:1147 |
-| `agent_start` | `AgentStartEvent` | No | types.ts:1148 |
-| `agent_end` | `AgentEndEvent` | No | types.ts:1149 |
-| `turn_start` | `TurnStartEvent` | No | types.ts:1150 |
-| `turn_end` | `TurnEndEvent` | No | types.ts:1151 |
-| `message_start` | `MessageStartEvent` | No | types.ts:1152 |
-| `message_update` | `MessageUpdateEvent` | No | types.ts:1153 |
-| `message_end` | `MessageEndEvent` | Yes (result) | types.ts:1154 |
-| `tool_execution_start` | `ToolExecutionStartEvent` | No | types.ts:1155 |
-| `tool_execution_update` | `ToolExecutionUpdateEvent` | No | types.ts:1156 |
-| `tool_execution_end` | `ToolExecutionEndEvent` | No | types.ts:1157 |
-| `model_select` | `ModelSelectEvent` | No | types.ts:1158 |
-| `thinking_level_select` | `ThinkingLevelSelectEvent` | No | types.ts:1159 |
-| `tool_call` | `ToolCallEvent` (discriminated union by toolName) | Yes — `input` mutable | types.ts:1160 |
-| `tool_result` | `ToolResultEvent` (discriminated union by toolName) | Yes (result) | types.ts:1161 |
-| `user_bash` | `UserBashEvent` | Yes (result) | types.ts:1162 |
-| `input` | `InputEvent` | Yes (result) | types.ts:1163 |
+| Event name                | Type interface                                      | Blockable / cancellable | Location      |
+| ------------------------- | --------------------------------------------------- | ----------------------- | ------------- |
+| `session_start`           | `SessionStartEvent`                                 | No                      | types.ts:1127 |
+| `session_before_switch`   | `SessionBeforeSwitchEvent`                          | Yes (result)            | types.ts:1129 |
+| `session_before_fork`     | `SessionBeforeForkEvent`                            | Yes (result)            | types.ts:1132 |
+| `session_before_compact`  | `SessionBeforeCompactEvent`                         | Yes (result)            | types.ts:1134 |
+| `session_compact`         | `SessionCompactEvent`                               | No                      | types.ts:1137 |
+| `session_shutdown`        | `SessionShutdownEvent`                              | No                      | types.ts:1138 |
+| `session_before_tree`     | `SessionBeforeTreeEvent`                            | Yes (result)            | types.ts:1139 |
+| `session_tree`            | `SessionTreeEvent`                                  | No                      | types.ts:1140 |
+| `context`                 | `ContextEvent`                                      | Yes (result)            | types.ts:1141 |
+| `before_provider_request` | `BeforeProviderRequestEvent`                        | Yes (result)            | types.ts:1143 |
+| `after_provider_response` | `AfterProviderResponseEvent`                        | No                      | types.ts:1146 |
+| `before_agent_start`      | `BeforeAgentStartEvent`                             | Yes (result)            | types.ts:1147 |
+| `agent_start`             | `AgentStartEvent`                                   | No                      | types.ts:1148 |
+| `agent_end`               | `AgentEndEvent`                                     | No                      | types.ts:1149 |
+| `turn_start`              | `TurnStartEvent`                                    | No                      | types.ts:1150 |
+| `turn_end`                | `TurnEndEvent`                                      | No                      | types.ts:1151 |
+| `message_start`           | `MessageStartEvent`                                 | No                      | types.ts:1152 |
+| `message_update`          | `MessageUpdateEvent`                                | No                      | types.ts:1153 |
+| `message_end`             | `MessageEndEvent`                                   | Yes (result)            | types.ts:1154 |
+| `tool_execution_start`    | `ToolExecutionStartEvent`                           | No                      | types.ts:1155 |
+| `tool_execution_update`   | `ToolExecutionUpdateEvent`                          | No                      | types.ts:1156 |
+| `tool_execution_end`      | `ToolExecutionEndEvent`                             | No                      | types.ts:1157 |
+| `model_select`            | `ModelSelectEvent`                                  | No                      | types.ts:1158 |
+| `thinking_level_select`   | `ThinkingLevelSelectEvent`                          | No                      | types.ts:1159 |
+| `tool_call`               | `ToolCallEvent` (discriminated union by toolName)   | Yes — `input` mutable   | types.ts:1160 |
+| `tool_result`             | `ToolResultEvent` (discriminated union by toolName) | Yes (result)            | types.ts:1161 |
+| `user_bash`               | `UserBashEvent`                                     | Yes (result)            | types.ts:1162 |
+| `input`                   | `InputEvent`                                        | Yes (result)            | types.ts:1163 |
 
 **Note on `tool_call` blocking:** The handler receives a mutable `event.input`
 which can be patched in-place. The comment at types.ts:855 confirms: "Later
@@ -306,6 +321,7 @@ pi --mode json                    # reads prompt from stdin when not a TTY
 ```
 
 The `runPrintMode(runtimeHost, options)` function (print-mode.ts:32):
+
 - Sends `initialMessage` via `session.prompt(...)` then any additional `messages`.
 - In `text` mode: prints last assistant message's text content to stdout.
 - In `json` mode: streams all `AgentSessionEvent` objects as JSON lines.
@@ -377,27 +393,27 @@ type is unnecessary since Pi constructs the full entry before persistence.
 
 ## 10. Plan-assumption drift
 
-| Plan identifier | Status | Real name / notes |
-|---|---|---|
-| `appendEntry` (on SessionManager) | DIFFERENT | Pi does NOT have a public `appendEntry` method. The public API is `appendMessage()`, `appendCompaction()`, `appendCustomEntry()`, etc. `_appendEntry` is private. The `appendEntry` that appears in extension types (types.ts:1230) is on `PiRuntime` (the extension API object) — it lets extensions append a custom entry to the session log. |
-| `getEntries` (on SessionManager) | MATCH | `getEntries(): SessionEntry[]` — line 1182 |
-| `ReadOperations` | MATCH | Interface exists, exported — read.ts:43 |
-| `WriteOperations` | MATCH | Interface exists, exported — write.ts:25 |
-| `EditOperations` | MATCH | Interface exists, exported — edit.ts:74 |
-| `BashOperations` | MATCH | Interface exists, exported — bash.ts:40 |
-| `LsOperations` | MATCH | Interface exists, exported — ls.ts:32 |
-| `GrepOperations` | MATCH | Interface exists, exported — grep.ts:51 |
-| `FindOperations` | MATCH | Interface exists, exported — find.ts:41 |
-| Operations injection via `createBashTool(cwd, { operations })` | MATCH | Pattern confirmed for all seven tools |
-| `tool_call` event (blockable) | MATCH | Confirmed — mutable `event.input` |
-| `tool_result` event | MATCH | Confirmed |
-| `turn_end` event | MATCH | Confirmed |
-| `session_compact` event | MATCH | Confirmed |
-| `session_before_compact` event | MATCH | Confirmed (blockable/cancellable) |
-| `session_shutdown` event | MATCH | Confirmed |
-| Headless flag `--print` / `-p` | MATCH | Confirmed in args.ts:14 and print-mode.ts |
-| `--mode json` (NDJSON stream) | ADDITIONAL | Not in plan; exists as a second headless mode — event stream rather than final-text only. Highly useful for the HTTP turn handler. |
-| `spawnHook` for operations injection | ADDITIONAL | BashToolOptions has `spawnHook?: BashSpawnHook` (bash.ts:134) — rewrites command/cwd/env before spawn. Alternative injection path for bash (no subprocess replacement needed, just command rewriting). |
-| `session_start` event | ADDITIONAL | Not in plan list; fires on startup/reload/new/resume/fork — needed for cold-start reconstruction. |
-| `before_agent_start` event | ADDITIONAL | Fires after user submits prompt but before agent loop — useful for budget voter. |
-| `context` event | ADDITIONAL | Fires before each LLM call, can mutate messages — useful for injecting reconstructed context. |
+| Plan identifier                                                | Status     | Real name / notes                                                                                                                                                                                                                                                                                                                               |
+| -------------------------------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `appendEntry` (on SessionManager)                              | DIFFERENT  | Pi does NOT have a public `appendEntry` method. The public API is `appendMessage()`, `appendCompaction()`, `appendCustomEntry()`, etc. `_appendEntry` is private. The `appendEntry` that appears in extension types (types.ts:1230) is on `PiRuntime` (the extension API object) — it lets extensions append a custom entry to the session log. |
+| `getEntries` (on SessionManager)                               | MATCH      | `getEntries(): SessionEntry[]` — line 1182                                                                                                                                                                                                                                                                                                      |
+| `ReadOperations`                                               | MATCH      | Interface exists, exported — read.ts:43                                                                                                                                                                                                                                                                                                         |
+| `WriteOperations`                                              | MATCH      | Interface exists, exported — write.ts:25                                                                                                                                                                                                                                                                                                        |
+| `EditOperations`                                               | MATCH      | Interface exists, exported — edit.ts:74                                                                                                                                                                                                                                                                                                         |
+| `BashOperations`                                               | MATCH      | Interface exists, exported — bash.ts:40                                                                                                                                                                                                                                                                                                         |
+| `LsOperations`                                                 | MATCH      | Interface exists, exported — ls.ts:32                                                                                                                                                                                                                                                                                                           |
+| `GrepOperations`                                               | MATCH      | Interface exists, exported — grep.ts:51                                                                                                                                                                                                                                                                                                         |
+| `FindOperations`                                               | MATCH      | Interface exists, exported — find.ts:41                                                                                                                                                                                                                                                                                                         |
+| Operations injection via `createBashTool(cwd, { operations })` | MATCH      | Pattern confirmed for all seven tools                                                                                                                                                                                                                                                                                                           |
+| `tool_call` event (blockable)                                  | MATCH      | Confirmed — mutable `event.input`                                                                                                                                                                                                                                                                                                               |
+| `tool_result` event                                            | MATCH      | Confirmed                                                                                                                                                                                                                                                                                                                                       |
+| `turn_end` event                                               | MATCH      | Confirmed                                                                                                                                                                                                                                                                                                                                       |
+| `session_compact` event                                        | MATCH      | Confirmed                                                                                                                                                                                                                                                                                                                                       |
+| `session_before_compact` event                                 | MATCH      | Confirmed (blockable/cancellable)                                                                                                                                                                                                                                                                                                               |
+| `session_shutdown` event                                       | MATCH      | Confirmed                                                                                                                                                                                                                                                                                                                                       |
+| Headless flag `--print` / `-p`                                 | MATCH      | Confirmed in args.ts:14 and print-mode.ts                                                                                                                                                                                                                                                                                                       |
+| `--mode json` (NDJSON stream)                                  | ADDITIONAL | Not in plan; exists as a second headless mode — event stream rather than final-text only. Highly useful for the HTTP turn handler.                                                                                                                                                                                                              |
+| `spawnHook` for operations injection                           | ADDITIONAL | BashToolOptions has `spawnHook?: BashSpawnHook` (bash.ts:134) — rewrites command/cwd/env before spawn. Alternative injection path for bash (no subprocess replacement needed, just command rewriting).                                                                                                                                          |
+| `session_start` event                                          | ADDITIONAL | Not in plan list; fires on startup/reload/new/resume/fork — needed for cold-start reconstruction.                                                                                                                                                                                                                                               |
+| `before_agent_start` event                                     | ADDITIONAL | Fires after user submits prompt but before agent loop — useful for budget voter.                                                                                                                                                                                                                                                                |
+| `context` event                                                | ADDITIONAL | Fires before each LLM call, can mutate messages — useful for injecting reconstructed context.                                                                                                                                                                                                                                                   |

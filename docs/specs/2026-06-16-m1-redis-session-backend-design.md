@@ -12,7 +12,7 @@ Discovery basis: [`NOTES-pi-sessionmanager.md`](../../packages/session-backend/N
 
 Make the serverless harness's hard dependency real: Pi persists session state to
 **Redis instead of local JSONL**, transparently, so a session can be resumed by a
-*fresh process* with no local files.
+_fresh process_ with no local files.
 
 M1 is **done** when a turn round-trips through Redis and survives process death,
 proven by an automated deterministic test (faux provider) plus one real headless
@@ -38,15 +38,15 @@ smoke run.
 
 ## 2. Key decisions (resolved during brainstorming)
 
-| # | Decision | Choice |
-|---|----------|--------|
-| D1 | Entry representation | **Native passthrough** — store Pi's `FileEntry` verbatim; backend never reshapes it. |
-| D2 | Fork invasiveness | **Upstreamable refactor** — introduce `SessionStorageBackend` in Pi core + `FileSessionStorageBackend` default + factory injection. |
-| D3 | Sync→async bridge | **Write-behind via a harness-side buffering decorator** — keep Pi's sync append API and a **pristine** (#2032-identical) core interface; the decorator owns the queue + drain worker + `flush()`; the harness flushes at `turn_end` and `session_shutdown`. |
-| D4 | Storage envelope | **Thin envelope** around the opaque Pi entry, keeping `position` + `content_sha256`. |
-| D5 | Checkpoint representation | Pi **`custom` entry** with `customType: "checkpoint"` (distinct from native `compaction`). |
-| D6 | M1 gate | **Deterministic integration test** (faux provider + disposable Redis) **+ one real headless smoke**. |
-| D7 | Ownership split | Generic seam in `pi-fork`; Redis specifics in `@sh/session-backend` + `harness`. Dependency arrow points one way only. |
+| #   | Decision                  | Choice                                                                                                                                                                                                                                                      |
+| --- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | Entry representation      | **Native passthrough** — store Pi's `FileEntry` verbatim; backend never reshapes it.                                                                                                                                                                        |
+| D2  | Fork invasiveness         | **Upstreamable refactor** — introduce `SessionStorageBackend` in Pi core + `FileSessionStorageBackend` default + factory injection.                                                                                                                         |
+| D3  | Sync→async bridge         | **Write-behind via a harness-side buffering decorator** — keep Pi's sync append API and a **pristine** (#2032-identical) core interface; the decorator owns the queue + drain worker + `flush()`; the harness flushes at `turn_end` and `session_shutdown`. |
+| D4  | Storage envelope          | **Thin envelope** around the opaque Pi entry, keeping `position` + `content_sha256`.                                                                                                                                                                        |
+| D5  | Checkpoint representation | Pi **`custom` entry** with `customType: "checkpoint"` (distinct from native `compaction`).                                                                                                                                                                  |
+| D6  | M1 gate                   | **Deterministic integration test** (faux provider + disposable Redis) **+ one real headless smoke**.                                                                                                                                                        |
+| D7  | Ownership split           | Generic seam in `pi-fork`; Redis specifics in `@sh/session-backend` + `harness`. Dependency arrow points one way only.                                                                                                                                      |
 
 ---
 
@@ -93,6 +93,7 @@ The Redis backend is **injected**, never imported by Pi core.
 ### Behavior-preserving constraint
 
 The file backend must reproduce Pi's existing persistence semantics exactly, including:
+
 - **Lazy flush** — entries held in memory until the first assistant message, then the
   whole prefix written with flag `"wx"`, `flushed = true`, append-only thereafter.
 - **`_rewriteFile`** (flag `"w"`) on migration and branched-session creation only —
@@ -127,11 +128,11 @@ pi core:    SessionStorageBackend  // pristine 5 methods, exactly #2032 — no f
 - **Durability barriers**: the **harness** registers the `turn_end` and `session_shutdown`
   hooks (both confirmed Pi events, already harness-owned `pi.on(...)` listeners) and calls
   `bufferedBackend.flush()` from them. **Pi core never calls flush — it only emits the
-  events it already emits.** A *completed turn* is therefore always durable (satisfies
+  events it already emits.** A _completed turn_ is therefore always durable (satisfies
   experiment E4); only an in-flight turn can be lost on a hard kill.
 
 **Why Pi never needs to flush for its own correctness:** fork / branch / compact all
-operate on the in-memory tree, which is authoritative during a live session. The *only*
+operate on the in-memory tree, which is authoritative during a live session. The _only_
 reason to flush is external durability (surviving process death) — a purely serverless/
 harness concern. So the harness is the natural owner of both the buffer and `flush()`,
 and the #2032 interface contributed upstream is unchanged.
@@ -143,12 +144,12 @@ envelope wrapping Pi's opaque native entry:
 
 ```ts
 export interface LogEntry {
-  position: number;       // monotonic offset (Redis INCR); powers read(fromPosition)
+  position: number; // monotonic offset (Redis INCR); powers read(fromPosition)
   session_id: string;
-  piType: string;         // denormalized copy of the Pi entry's `type`, for cheap filtering
-  entry: FileEntry;       // Pi's native entry/header, stored & returned VERBATIM
+  piType: string; // denormalized copy of the Pi entry's `type`, for cheap filtering
+  entry: FileEntry; // Pi's native entry/header, stored & returned VERBATIM
   content_sha256: string; // integrity; makes E3/E4 fidelity provable by hash
-  timestamp: number;      // wall-clock ms; audit only, not ordering
+  timestamp: number; // wall-clock ms; audit only, not ordering
 }
 ```
 
@@ -192,12 +193,12 @@ Anything Redis-flavored lives in `harness` or the backend package. This keeps th
 diff a clean, self-contained refactor that could be opened as a PR, and isolates the
 experiment's glue from the contribution.
 
-| Lives in | What | Why |
-|----------|------|-----|
-| **`pi-fork` core** | `SessionStorageBackend` interface + `FileSessionStorageBackend` (extraction) + factory injection | The upstreamable slice; Pi core owns the interface and its default. |
-| **`pi-fork` test dir** | Backend **contract/parity** test parametrized over `InMemory` + `File` (no Redis dependency) | Proves the extraction is behavior-preserving; ships *with* the #2032 contribution; runs in Pi's own suite. |
-| **`@sh/session-backend`** | `RedisSessionBackend` (plain interface impl) + the envelope refactor (`entry.ts`) | Our code, injected — Pi never imports it. |
-| **`harness` package** | `BufferedRedisBackend` decorator (queue + drain worker + `flush()`) + the wiring (inject the decorator into Pi's factory; call `flush()` from harness-owned `turn_end` / `session_shutdown` hooks; headless entry wrapper) **+ the Redis integration / mobility / recovery tests + the headless smoke** | Depends on *both* `pi-fork` and `@sh/session-backend`; keeps that dependency — and all async/buffering concerns — out of Pi core. |
+| Lives in                  | What                                                                                                                                                                                                                                                                                                    | Why                                                                                                                               |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| **`pi-fork` core**        | `SessionStorageBackend` interface + `FileSessionStorageBackend` (extraction) + factory injection                                                                                                                                                                                                        | The upstreamable slice; Pi core owns the interface and its default.                                                               |
+| **`pi-fork` test dir**    | Backend **contract/parity** test parametrized over `InMemory` + `File` (no Redis dependency)                                                                                                                                                                                                            | Proves the extraction is behavior-preserving; ships _with_ the #2032 contribution; runs in Pi's own suite.                        |
+| **`@sh/session-backend`** | `RedisSessionBackend` (plain interface impl) + the envelope refactor (`entry.ts`)                                                                                                                                                                                                                       | Our code, injected — Pi never imports it.                                                                                         |
+| **`harness` package**     | `BufferedRedisBackend` decorator (queue + drain worker + `flush()`) + the wiring (inject the decorator into Pi's factory; call `flush()` from harness-owned `turn_end` / `session_shutdown` hooks; headless entry wrapper) **+ the Redis integration / mobility / recovery tests + the headless smoke** | Depends on _both_ `pi-fork` and `@sh/session-backend`; keeps that dependency — and all async/buffering concerns — out of Pi core. |
 
 The `harness` package is already declared in `pnpm-workspace.yaml` but does not yet exist;
 M1 creates it.
@@ -210,7 +211,7 @@ M1 creates it.
 
 Pi ships a real faux provider (`pi-fork/packages/ai/src/providers/faux.ts`:
 `registerFauxProvider`, `fauxAssistantMessage`, `fauxText`, `fauxToolCall`,
-`FauxResponseFactory` for scripted multi-step turns *including tool calls*). The gate
+`FauxResponseFactory` for scripted multi-step turns _including tool calls_). The gate
 rests on this shipped seam, not on a live model.
 
 1. **Storage-swap parity** — drive a scripted turn (faux assistant message + a tool call)
@@ -242,13 +243,13 @@ confirming the headless one-shot entry point drives the externalized store end-t
 
 ## 7. Risks & mitigations
 
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| Fork diff diverges from upstream as Pi evolves | Maintenance burden | Keep the diff minimal + behavior-preserving; shape to #2032; pin to `406a2214`; branch (not detached HEAD). |
-| Write-behind loses an in-flight turn on hard kill | Sub-turn data loss | Acceptable by design — durability boundary is the *completed turn* (E4). Flush at `turn_end` + `session_shutdown`. |
-| Lazy-flush / `_rewriteFile` semantics subtly broken in extraction | Pi behavior regression | The parametrized parity test over `File` + `InMemory` is the guard; extract behavior unchanged. |
+| Risk                                                                  | Impact                            | Mitigation                                                                                                                           |
+| --------------------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Fork diff diverges from upstream as Pi evolves                        | Maintenance burden                | Keep the diff minimal + behavior-preserving; shape to #2032; pin to `406a2214`; branch (not detached HEAD).                          |
+| Write-behind loses an in-flight turn on hard kill                     | Sub-turn data loss                | Acceptable by design — durability boundary is the _completed turn_ (E4). Flush at `turn_end` + `session_shutdown`.                   |
+| Lazy-flush / `_rewriteFile` semantics subtly broken in extraction     | Pi behavior regression            | The parametrized parity test over `File` + `InMemory` is the guard; extract behavior unchanged.                                      |
 | Fire-and-forget `append` hides a Redis write error from the call site | Silent loss before the next flush | Errors surface inside `BufferedRedisBackend` (retry/backoff); the `turn_end` flush is the durability checkpoint and can fail loudly. |
-| Resume-by-`session_id` changes the factory contract | Breaks callers expecting a path | Default factory behavior (file, path-based) preserved; `session_id` resume is the injected-backend path. |
+| Resume-by-`session_id` changes the factory contract                   | Breaks callers expecting a path   | Default factory behavior (file, path-based) preserved; `session_id` resume is the injected-backend path.                             |
 
 ---
 
@@ -261,4 +262,4 @@ confirming the headless one-shot entry point drives the externalized store end-t
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

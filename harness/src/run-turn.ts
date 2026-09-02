@@ -5,19 +5,30 @@ import {
   SessionManager,
   SettingsManager,
   type FileEntry,
-} from "@earendil-works/pi-coding-agent";
-import { getModel, getModels, getProviders, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
-import { RedisSessionBackend } from "@sh/session-backend";
-import { BufferedRedisBackend } from "./buffered-redis-backend.js";
-import { flushExtension } from "./flush-extension.js";
-import { k8sSandboxExtension, resolveSandboxConfig, type K8sSandboxConfig, type SandboxTransport } from "@sh/k8s-sandbox";
-import { checkpointExtension } from "./checkpoint-extension.js";
-import { budgetVoterExtension, branchSpend } from "./budget-voter.js";
-import { toolChoiceExtension } from "./tool-choice-extension.js";
+} from '@earendil-works/pi-coding-agent';
+import {
+  getModel,
+  getModels,
+  getProviders,
+  type AssistantMessage,
+  type Model,
+} from '@earendil-works/pi-ai';
+import { RedisSessionBackend } from '@sh/session-backend';
+import { BufferedRedisBackend } from './buffered-redis-backend.js';
+import { flushExtension } from './flush-extension.js';
+import {
+  k8sSandboxExtension,
+  resolveSandboxConfig,
+  type K8sSandboxConfig,
+  type SandboxTransport,
+} from '@sh/k8s-sandbox';
+import { checkpointExtension } from './checkpoint-extension.js';
+import { budgetVoterExtension, branchSpend } from './budget-voter.js';
+import { toolChoiceExtension } from './tool-choice-extension.js';
 // Type-only import (erased at compile time) so it is safe against the run-leaf↔run-turn value
 // cycle: run-leaf.ts imports values from run-turn.js, but a `import type` adds no runtime edge.
-import type { LeafUsage } from "./run-leaf.js";
-import { sseExtension, type TurnStreamFrame } from "./turn-stream.js";
+import type { LeafUsage } from './run-leaf.js';
+import { sseExtension, type TurnStreamFrame } from './turn-stream.js';
 
 /**
  * The sandbox a turn's tool calls run in: a resolved pod/pool config (null ⇒ run tools in the
@@ -65,8 +76,8 @@ export function resolveModelSelection(
   env: NodeJS.ProcessEnv = process.env,
 ): ModelSelection {
   return {
-    provider: config?.provider ?? env.SH_MODEL_PROVIDER ?? "anthropic",
-    modelId: config?.model ?? env.SH_MODEL ?? "claude-opus-4-8",
+    provider: config?.provider ?? env.SH_MODEL_PROVIDER ?? 'anthropic',
+    modelId: config?.model ?? env.SH_MODEL ?? 'claude-opus-4-8',
   };
 }
 
@@ -98,22 +109,27 @@ function parseModelHeaders(env: NodeJS.ProcessEnv): Record<string, string> {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new Error(`SH_MODEL_HEADERS must be a JSON object of header name→value pairs (got: ${raw}).`);
+    throw new Error(
+      `SH_MODEL_HEADERS must be a JSON object of header name→value pairs (got: ${raw}).`,
+    );
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error(`SH_MODEL_HEADERS must be a JSON object of header name→value pairs.`);
   }
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
     out[k] =
-      typeof v === "string"
-        ? v.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_m, name: string) => env[name] ?? "")
+      typeof v === 'string'
+        ? v.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_m, name: string) => env[name] ?? '')
         : String(v);
   }
   return out;
 }
 
-function synthesizeCustomModel(modelId: string, env: NodeJS.ProcessEnv): Model<"anthropic-messages"> {
+function synthesizeCustomModel(
+  modelId: string,
+  env: NodeJS.ProcessEnv,
+): Model<'anthropic-messages'> {
   // SH_MODEL_BASE_URL is the protocol-neutral knob; ANTHROPIC_BASE_URL is the back-compat fallback.
   const baseUrl = env.SH_MODEL_BASE_URL || env.ANTHROPIC_BASE_URL;
   if (!baseUrl) {
@@ -126,20 +142,20 @@ function synthesizeCustomModel(modelId: string, env: NodeJS.ProcessEnv): Model<"
   // Typed as Model<"anthropic-messages"> (not `as ReturnType<typeof getModel>`) so tsc checks
   // the shape — if pi-ai's Model type gains a required field, this fails to compile instead of
   // silently omitting it.
-  const model: Model<"anthropic-messages"> = {
+  const model: Model<'anthropic-messages'> = {
     id: modelId,
     name: modelId,
-    api: "anthropic-messages",
+    api: 'anthropic-messages',
     // provider MUST be "anthropic" (not a synthetic tag): pi resolves the request API key by
     // provider name — authStorage.getApiKey(provider) maps "anthropic" -> ANTHROPIC_API_KEY
     // (which applyModelGateway seeds from the auth token), whereas an unknown provider like
     // "custom" has no env-key mapping and fails with `No API key found for "custom"`. Request
     // routing is by baseUrl + api, not provider, so tagging it "anthropic" sends traffic to the
     // custom baseUrl while satisfying the key lookup. Overridable via SH_MODEL_PROVIDER.
-    provider: (env.SH_MODEL_PROVIDER ?? "anthropic") as Model<"anthropic-messages">["provider"],
+    provider: (env.SH_MODEL_PROVIDER ?? 'anthropic') as Model<'anthropic-messages'>['provider'],
     baseUrl,
     reasoning: false,
-    input: ["text"],
+    input: ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow,
     maxTokens,
@@ -163,7 +179,7 @@ function synthesizeCustomModel(modelId: string, env: NodeJS.ProcessEnv): Model<"
 function synthesizeOpenAICompletionsModel(
   modelId: string,
   env: NodeJS.ProcessEnv,
-): Model<"openai-completions"> {
+): Model<'openai-completions'> {
   const baseUrl = env.SH_MODEL_BASE_URL || env.OPENAI_BASE_URL;
   if (!baseUrl) {
     throw new Error(
@@ -172,26 +188,26 @@ function synthesizeOpenAICompletionsModel(
   }
   const contextWindow = Number(env.SH_MODEL_CONTEXT_WINDOW) || 131072;
   const maxTokens = Number(env.SH_MODEL_MAX_TOKENS) || 8192;
-  const auth = env.SH_MODEL_AUTH ?? "bearer";
+  const auth = env.SH_MODEL_AUTH ?? 'bearer';
   const headers: Record<string, string | null> = { ...parseModelHeaders(env) };
-  if (auth === "custom-header" || auth === "none") {
+  if (auth === 'custom-header' || auth === 'none') {
     // Endpoint authenticates via a custom header (already in `headers`) or not at all — strip the
     // SDK's default Authorization Bearer so an unknown/empty Bearer isn't sent. pi's openai client
     // still requires a non-empty api key even when the Bearer is unused, so seed a placeholder.
     headers.Authorization = null;
-    if (!env.OPENAI_API_KEY) process.env.OPENAI_API_KEY = "unused";
+    if (!env.OPENAI_API_KEY) process.env.OPENAI_API_KEY = 'unused';
   }
-  const model: Model<"openai-completions"> = {
+  const model: Model<'openai-completions'> = {
     id: modelId,
     name: modelId,
-    api: "openai-completions",
+    api: 'openai-completions',
     // provider "openai" so pi resolves the api key from OPENAI_API_KEY (env-api-keys.ts). Request
     // routing is by baseUrl + api; provider only drives the key lookup. Overridable via SH_MODEL_PROVIDER.
-    provider: (env.SH_MODEL_PROVIDER ?? "openai") as Model<"openai-completions">["provider"],
+    provider: (env.SH_MODEL_PROVIDER ?? 'openai') as Model<'openai-completions'>['provider'],
     baseUrl,
     headers: headers as unknown as Record<string, string>,
     reasoning: false,
-    input: ["text"],
+    input: ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow,
     maxTokens,
@@ -219,15 +235,15 @@ export function requireModel(
   modelId: string,
   env: NodeJS.ProcessEnv = process.env,
 ) {
-  if (env.SH_MODEL_CUSTOM === "1") {
-    const api = env.SH_MODEL_API ?? "anthropic";
+  if (env.SH_MODEL_CUSTOM === '1') {
+    const api = env.SH_MODEL_API ?? 'anthropic';
     switch (api) {
-      case "anthropic":
-      case "anthropic-messages":
+      case 'anthropic':
+      case 'anthropic-messages':
         return synthesizeCustomModel(modelId, env);
-      case "openai-completions":
+      case 'openai-completions':
         return synthesizeOpenAICompletionsModel(modelId, env);
-      case "openai-responses":
+      case 'openai-responses':
         throw new Error(
           `SH_MODEL_API=openai-responses is not yet implemented (deferred; see docs/specs/2026-08-20-multi-protocol-model-provider-design.md §7). Use openai-completions.`,
         );
@@ -242,16 +258,16 @@ export function requireModel(
   const providers = getProviders() as string[];
   if (!providers.includes(provider)) {
     throw new Error(
-      `Unknown model provider "${provider}". Known providers: ${providers.join(", ")}.`,
+      `Unknown model provider "${provider}". Known providers: ${providers.join(', ')}.`,
     );
   }
   const ids = (getModels(provider as never) as Array<{ id: string }>).map((m) => m.id);
   // Surface the dot-vs-dash (or case) twin if one exists — the common mistake.
-  const norm = (s: string) => s.replace(/[.\-]/g, "").toLowerCase();
+  const norm = (s: string) => s.replace(/[.\-]/g, '').toLowerCase();
   const suggestions = ids.filter((id) => norm(id) === norm(modelId));
   const hint = suggestions.length
-    ? `Did you mean: ${suggestions.join(", ")}?`
-    : `Known "${provider}" ids include: ${ids.slice(0, 12).join(", ")}${ids.length > 12 ? ", …" : ""}.`;
+    ? `Did you mean: ${suggestions.join(', ')}?`
+    : `Known "${provider}" ids include: ${ids.slice(0, 12).join(', ')}${ids.length > 12 ? ', …' : ''}.`;
   throw new Error(`Unknown model "${provider}/${modelId}" — not in the pi-ai registry. ${hint}`);
 }
 
@@ -276,14 +292,14 @@ export interface TurnResult {
  */
 export function applyModelGateway<M extends { headers?: Record<string, unknown> }>(
   baseModel: M,
-  config?: Pick<TurnConfig, "anthropicBaseUrl" | "anthropicAuthToken">,
+  config?: Pick<TurnConfig, 'anthropicBaseUrl' | 'anthropicAuthToken'>,
 ): M {
   // The Anthropic gateway rewrite (Bearer + strip x-api-key + seed ANTHROPIC_API_KEY, and the
   // litellm compat-flag disables) applies ONLY to the Anthropic-messages path. OpenAI-compatible
   // models carry their own baseUrl/headers/auth from synthesizeOpenAICompletionsModel — leave
   // them untouched (else we'd clobber baseUrl with ANTHROPIC_BASE_URL and inject a wrong Bearer).
   const api = (baseModel as { api?: string }).api;
-  if (api && api !== "anthropic-messages") return baseModel;
+  if (api && api !== 'anthropic-messages') return baseModel;
   // `||` (not `??`) so an empty-string config value falls back to the env var rather than
   // suppressing it — "" is a "not set" sentinel here, not a meaningful credential.
   const authToken = config?.anthropicAuthToken || process.env.ANTHROPIC_AUTH_TOKEN;
@@ -317,7 +333,7 @@ export function applyModelGateway<M extends { headers?: Record<string, unknown> 
           headers: {
             ...baseModel.headers,
             Authorization: `Bearer ${authToken}`,
-            "x-api-key": null, // strip x-api-key when using gateway Bearer auth
+            'x-api-key': null, // strip x-api-key when using gateway Bearer auth
           } as unknown as Record<string, string>,
         }
       : {}),
@@ -336,9 +352,12 @@ export function sumBranchUsage(sm: unknown): LeafUsage {
   const branch = (sm as { getBranch?: () => unknown[] }).getBranch?.() ?? [];
   for (const entry of branch as Array<{
     type?: string;
-    message?: { role?: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number } };
+    message?: {
+      role?: string;
+      usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+    };
   }>) {
-    if (entry?.type === "message" && entry.message?.role === "assistant" && entry.message.usage) {
+    if (entry?.type === 'message' && entry.message?.role === 'assistant' && entry.message.usage) {
       const m = entry.message.usage;
       u.input += m.input;
       u.output += m.output;
@@ -370,7 +389,7 @@ export interface ExecuteTurnInput {
  */
 export async function executeTurn(input: ExecuteTurnInput): Promise<TurnResult> {
   const { prompt, sessionId, config, createIfAbsent } = input;
-  const redisUrl = config?.redisUrl ?? "redis://localhost:6379";
+  const redisUrl = config?.redisUrl ?? 'redis://localhost:6379';
   const cwd = config?.cwd ?? process.cwd();
 
   const store = new RedisSessionBackend<FileEntry>(redisUrl);
@@ -385,7 +404,7 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<TurnResult> 
       try {
         sessionManager = await SessionManager.openFromCheckpoint(sessionId, backend, cwd);
       } catch (err) {
-        if (err instanceof Error && err.message.includes("no session in backend")) {
+        if (err instanceof Error && err.message.includes('no session in backend')) {
           sessionManager = SessionManager.create(cwd, undefined, { id: sessionId }, backend);
         } else {
           throw err;
@@ -410,10 +429,10 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<TurnResult> 
   // Surface whether sandbox routing actually resolved: a null config means tool calls run in
   // the harness pod's own filesystem (local), not a sandbox pod — a common cause of "the file
   // never appeared in the sandbox". Cheap one-line signal in container logs.
-  if (process.env.SH_MODEL_CUSTOM === "1") {
+  if (process.env.SH_MODEL_CUSTOM === '1') {
     const how = sandbox.config
-      ? `${input.sandbox ? "leased" : "pod/pool"}${sandbox.transport ? " (grpc transport)" : ""}`
-      : "NULL (tools run LOCAL)";
+      ? `${input.sandbox ? 'leased' : 'pod/pool'}${sandbox.transport ? ' (grpc transport)' : ''}`
+      : 'NULL (tools run LOCAL)';
     console.error(`[sandbox] resolved config: ${how}`);
   }
   const extensionFactories = [
@@ -465,17 +484,17 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<TurnResult> 
   await session.prompt(prompt);
 
   const lastMessage = session.state.messages.at(-1) as AssistantMessage | undefined;
-  let response = "";
-  let stopReason = "end_turn";
+  let response = '';
+  let stopReason = 'end_turn';
   let errorMessage: string | undefined;
 
-  if (lastMessage?.role === "assistant") {
-    stopReason = lastMessage.stopReason ?? "end_turn";
-    if (stopReason === "error" || stopReason === "aborted") {
+  if (lastMessage?.role === 'assistant') {
+    stopReason = lastMessage.stopReason ?? 'end_turn';
+    if (stopReason === 'error' || stopReason === 'aborted') {
       errorMessage = lastMessage.errorMessage || `Request ${stopReason}`;
     } else {
       for (const content of lastMessage.content) {
-        if (content.type === "text") {
+        if (content.type === 'text') {
           response += content.text;
         }
       }
@@ -511,7 +530,7 @@ export function wireAbort(signal: AbortSignal, session: { abort: () => void }): 
     session.abort();
     return;
   }
-  signal.addEventListener("abort", () => session.abort(), { once: true });
+  signal.addEventListener('abort', () => session.abort(), { once: true });
 }
 
 /**

@@ -1,8 +1,8 @@
 // harness/src/leaf-job-runner.ts
-import type { WorkQueue } from "@sh/work-queue";
-import { classifyOutcome } from "./classify-outcome.js";
-import { leafSessionId, type LeafEnvelope, type LeafResult } from "./run-leaf.js";
-import { toResultRecord, writeResult, type RedisLike } from "./leaf-result-store.js";
+import type { WorkQueue } from '@sh/work-queue';
+import { classifyOutcome } from './classify-outcome.js';
+import { leafSessionId, type LeafEnvelope, type LeafResult } from './run-leaf.js';
+import { toResultRecord, writeResult, type RedisLike } from './leaf-result-store.js';
 
 export interface LeafJobDeps {
   queue: WorkQueue;
@@ -30,29 +30,46 @@ export interface LeafJobDeps {
  */
 export async function processOne(
   deps: LeafJobDeps,
-): Promise<"done" | "failed" | "paused" | "aborted" | "solved" | "responded" | "deadletter" | "idle" | "retry"> {
+): Promise<
+  | 'done'
+  | 'failed'
+  | 'paused'
+  | 'aborted'
+  | 'solved'
+  | 'responded'
+  | 'deadletter'
+  | 'idle'
+  | 'retry'
+> {
   const maxAttempts = deps.maxAttempts ?? 3;
   const minIdleMs = deps.minIdleMs ?? 90_000;
   const blockMs = deps.blockMs ?? 5_000;
   const heartbeatMs = deps.heartbeatMs ?? 30_000;
   const now = deps.now ?? (() => new Date().toISOString());
   const setHb = deps.setHeartbeat ?? ((fn, ms) => setInterval(fn, ms));
-  const clearHb = deps.clearHeartbeat ?? ((h) => clearInterval(h as ReturnType<typeof setInterval>));
+  const clearHb =
+    deps.clearHeartbeat ?? ((h) => clearInterval(h as ReturnType<typeof setInterval>));
 
   const claimed = await deps.queue.claim(deps.consumerId, { minIdleMs, blockMs });
-  if (!claimed) return "idle";
+  if (!claimed) return 'idle';
 
   const env = claimed.envelope as LeafEnvelope;
   const sid = leafSessionId(env);
 
   if (claimed.deliveryCount > maxAttempts) {
-    await writeResult(deps.resultStore, sid,
-      toResultRecord({ status: "failed", reason: "error" }, env.sessionId, now()), deps.ttlSeconds);
+    await writeResult(
+      deps.resultStore,
+      sid,
+      toResultRecord({ status: 'failed', reason: 'error' }, env.sessionId, now()),
+      deps.ttlSeconds,
+    );
     await deps.queue.ack(claimed.entryId);
-    return "deadletter";
+    return 'deadletter';
   }
 
-  const hb = setHb(() => { void deps.queue.touch(claimed.entryId, deps.consumerId); }, heartbeatMs);
+  const hb = setHb(() => {
+    void deps.queue.touch(claimed.entryId, deps.consumerId);
+  }, heartbeatMs);
   let result: LeafResult;
   try {
     result = await deps.runLeaf(env);
@@ -61,12 +78,17 @@ export async function processOne(
   }
 
   const outcome = classifyOutcome(result);
-  if (outcome.retryable) return "retry";
+  if (outcome.retryable) return 'retry';
 
-  await writeResult(deps.resultStore, sid, toResultRecord(result, env.sessionId, now()), deps.ttlSeconds);
+  await writeResult(
+    deps.resultStore,
+    sid,
+    toResultRecord(result, env.sessionId, now()),
+    deps.ttlSeconds,
+  );
   if (outcome.ack) {
     await deps.queue.ack(claimed.entryId);
     return result.status;
   }
-  return "retry";
+  return 'retry';
 }

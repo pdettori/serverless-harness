@@ -72,7 +72,9 @@ describe('harness egress NetworkPolicy manifest', () => {
       ),
     );
     expect(dnsRule, 'a rule scoped to the openshift-dns namespace').toBeDefined();
-    const protos = new Set((dnsRule.ports ?? []).filter((p: any) => p.port === 5353).map((p: any) => p.protocol));
+    const protos = new Set(
+      (dnsRule.ports ?? []).filter((p: any) => p.port === 5353).map((p: any) => p.protocol),
+    );
     expect(protos.has('UDP')).toBe(true);
     expect(protos.has('TCP')).toBe(true);
   });
@@ -90,7 +92,9 @@ describe('harness egress NetworkPolicy manifest', () => {
       ),
     );
     expect(dnsRule, 'a rule scoped to the kube-system namespace').toBeDefined();
-    const protos = new Set((dnsRule.ports ?? []).filter((p: any) => p.port === 53).map((p: any) => p.protocol));
+    const protos = new Set(
+      (dnsRule.ports ?? []).filter((p: any) => p.port === 53).map((p: any) => p.protocol),
+    );
     expect(protos.has('UDP')).toBe(true);
     expect(protos.has('TCP')).toBe(true);
   });
@@ -183,7 +187,9 @@ describe('tightened AB1 egress variant', () => {
       ),
     );
     expect(dnsRule, 'a rule scoped to the openshift-dns namespace').toBeDefined();
-    const protos = new Set((dnsRule.ports ?? []).filter((p: any) => p.port === 5353).map((p: any) => p.protocol));
+    const protos = new Set(
+      (dnsRule.ports ?? []).filter((p: any) => p.port === 5353).map((p: any) => p.protocol),
+    );
     expect(protos.has('UDP')).toBe(true);
     expect(protos.has('TCP')).toBe(true);
   });
@@ -201,7 +207,9 @@ describe('tightened AB1 egress variant', () => {
       ),
     );
     expect(dnsRule, 'a rule scoped to the kube-system namespace').toBeDefined();
-    const protos = new Set((dnsRule.ports ?? []).filter((p: any) => p.port === 53).map((p: any) => p.protocol));
+    const protos = new Set(
+      (dnsRule.ports ?? []).filter((p: any) => p.port === 53).map((p: any) => p.protocol),
+    );
     expect(protos.has('UDP')).toBe(true);
     expect(protos.has('TCP')).toBe(true);
   });

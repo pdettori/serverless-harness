@@ -32,4 +32,4 @@ agent-sandbox `Sandbox` CR's `volumeClaimTemplates`, and run both harness and sa
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

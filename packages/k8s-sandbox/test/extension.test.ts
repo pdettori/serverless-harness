@@ -1,14 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
-import type { K8sSandboxConfig } from "../src/config.js";
-import type { SandboxTransport } from "../src/transport.js";
-import { k8sSandboxExtension } from "../src/extension.js";
+import { describe, expect, it, vi } from 'vitest';
+import type { K8sSandboxConfig } from '../src/config.js';
+import type { SandboxTransport } from '../src/transport.js';
+import { k8sSandboxExtension } from '../src/extension.js';
 
 const cfg: K8sSandboxConfig = {
-  pod: "sbx-0",
-  namespace: "default",
+  pod: 'sbx-0',
+  namespace: 'default',
   context: undefined,
-  podCwd: "/workspace",
-  headCwd: "/head",
+  podCwd: '/workspace',
+  headCwd: '/head',
 };
 
 /** Minimal ExtensionAPI stub recording registrations + event handlers. */
@@ -25,21 +25,21 @@ function fakePi() {
 }
 
 const okTransport = (close = vi.fn(async () => {})): SandboxTransport => ({
-  exec: async () => ({ stdout: Buffer.from(""), exitCode: 0, truncated: false }),
+  exec: async () => ({ stdout: Buffer.from(''), exitCode: 0, truncated: false }),
   close,
 });
 
-describe("k8sSandboxExtension", () => {
-  it("registers the seven pod tools and wires the lifecycle handlers", () => {
+describe('k8sSandboxExtension', () => {
+  it('registers the seven pod tools and wires the lifecycle handlers', () => {
     const { pi, tools, handlers } = fakePi();
     k8sSandboxExtension({ config: cfg, transport: okTransport() })(pi);
     expect(tools).toHaveLength(7);
-    expect(typeof handlers.user_bash).toBe("function");
-    expect(typeof handlers.before_agent_start).toBe("function");
-    expect(typeof handlers.session_shutdown).toBe("function");
+    expect(typeof handlers.user_bash).toBe('function');
+    expect(typeof handlers.before_agent_start).toBe('function');
+    expect(typeof handlers.session_shutdown).toBe('function');
   });
 
-  it("closes the fast channel on session_shutdown", async () => {
+  it('closes the fast channel on session_shutdown', async () => {
     const close = vi.fn(async () => {});
     const { pi, handlers } = fakePi();
     k8sSandboxExtension({ config: cfg, transport: okTransport(close) })(pi);
@@ -47,7 +47,7 @@ describe("k8sSandboxExtension", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it("is inert (registers nothing) when config is null", () => {
+  it('is inert (registers nothing) when config is null', () => {
     const { pi, tools } = fakePi();
     k8sSandboxExtension({ config: null })(pi);
     expect(tools).toHaveLength(0);

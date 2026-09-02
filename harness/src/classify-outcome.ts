@@ -1,4 +1,4 @@
-import type { LeafResult } from "./run-leaf.js";
+import type { LeafResult } from './run-leaf.js';
 
 export interface Outcome {
   ack: boolean;
@@ -13,7 +13,7 @@ export interface Outcome {
  *   drains as pool leases free (spec §4.3). (A process crash never returns here → stays pending → reclaimed.)
  */
 export function classifyOutcome(result: LeafResult): Outcome {
-  if (result.status === "failed" && (result.reason === "error" || result.reason === "saturated")) {
+  if (result.status === 'failed' && (result.reason === 'error' || result.reason === 'saturated')) {
     return { ack: false, retryable: true };
   }
   return { ack: true, retryable: false };

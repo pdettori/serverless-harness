@@ -27,12 +27,12 @@ recorded in any table. The roadmap is stale w.r.t. what merged.
 **Change.** Add a new section **"Leaf-Session Backend (BUILT)"** between the Phase-1 and Phase-2
 sections, with a table:
 
-| Slice | Spec | PR |
-|---|---|---|
-| MVP leaf-session invocation contract | `2026-06-26-mvp-leaf-session-contract-design.md` | #10, #11 (gate-7 resume) |
-| Async leaf completion (KEDA `ScaledJob` + queue) | `2026-06-27-async-leaf-completion-design.md` | #12 |
-| Scheduled leaf dispatch (cron trigger on-ramp) | `2026-06-28-scheduled-leaf-dispatch-design.md` | #13 |
-| Human-gate (gate-while-idle, Archetype B) | `2026-06-28-human-gate-design.md` | #14 |
+| Slice                                            | Spec                                             | PR                       |
+| ------------------------------------------------ | ------------------------------------------------ | ------------------------ |
+| MVP leaf-session invocation contract             | `2026-06-26-mvp-leaf-session-contract-design.md` | #10, #11 (gate-7 resume) |
+| Async leaf completion (KEDA `ScaledJob` + queue) | `2026-06-27-async-leaf-completion-design.md`     | #12                      |
+| Scheduled leaf dispatch (cron trigger on-ramp)   | `2026-06-28-scheduled-leaf-dispatch-design.md`   | #13                      |
+| Human-gate (gate-while-idle, Archetype B)        | `2026-06-28-human-gate-design.md`                | #14                      |
 
 A short paragraph notes: these realize the [Capability Charter](2026-06-26-leaf-session-backend-capability-charter.md)
 §5 MVP core + §8 promote-post-MVP (human-gate, cron trigger), sit **outside** the `M`/`Z` numbering
@@ -96,9 +96,10 @@ reason inline. The non-fs hardening (non-root, runAsUser, seccomp, no-priv-esc, 
 applied unconditionally regardless.
 
 **Risks this surfaces (all caught by the live smoke):**
+
 - `runAsUser: 65532` must be able to **write the `/work` PVC** (the gate writes `result_ref`/markers
   there). `fsGroup: 65532` makes the harness's own writes group-owned, **but** `fsGroup` does NOT
-  make a *result directory created by a different (root) writer* group-writable. **Operational
+  make a _result directory created by a different (root) writer_ group-writable. **Operational
   contract (confirmed in live verification — EACCES writing the gate marker):** because `/work` is
   the orchestrator's store (charter G3) and the harness now runs as uid 65532, the **orchestrator
   must provision the per-run result directories writable by uid 65532** (e.g. world-writable, or
@@ -148,4 +149,4 @@ applied unconditionally regardless.
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

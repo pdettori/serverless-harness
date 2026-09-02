@@ -17,7 +17,7 @@ the connection into the pod through the kube API**. This only works when the har
 reach the sandbox's API server, which rules out sandboxes behind NAT, on-prem, on a
 laptop, or in another cloud.
 
-**Goal:** let a sandbox live anywhere by inverting connectivity — the sandbox dials *out*
+**Goal:** let a sandbox live anywhere by inverting connectivity — the sandbox dials _out_
 to a broker the harness also talks to — with a protocol that is **language-neutral**
 (any runtime can host a worker) and **firewall-friendly** (a single outbound TLS
 connection on `:443`), without changing the Pi orchestration loop, the session backend,
@@ -26,7 +26,7 @@ or the leaf queue.
 ### Drivers (priority order)
 
 1. **Bring-your-own (untrusted 3rd-party) sandbox** — external parties host their own
-   sandbox and register it. *Top priority.*
+   sandbox and register it. _Top priority._
 2. **Decoupling / heterogeneity** — a clean, language-independent harness↔sandbox
    contract so a sandbox can be any runtime (VM, Firecracker, remote Docker) in any
    language.
@@ -36,7 +36,7 @@ or the leaf queue.
 ## 2. Key decisions (settled during brainstorming)
 
 - **Brain stays central.** The Pi loop + LLM calls remain in the harness; only command
-  execution is delegated. This is the *trust-correct* choice for driver #1: the LLM key
+  execution is delegated. This is the _trust-correct_ choice for driver #1: the LLM key
   and control loop never leave the harness; an untrusted sandbox only ever receives
   commands and returns bytes.
 - **The contract is a Protobuf IDL, not a TypeScript interface.** Any language with gRPC
@@ -45,8 +45,8 @@ or the leaf queue.
   real.
 - **gRPC-native over HTTP/2 on `:443`.** One outbound TLS connection carrying a
   full-duplex bidirectional stream. HTTP/2-on-443 traverses most modern egress and NAT.
-  *(Connect / HTTP-1.1 fallback was considered and rejected — see §5 — because our
-  streaming core is full-duplex, which requires HTTP/2 regardless.)*
+  _(Connect / HTTP-1.1 fallback was considered and rejected — see §5 — because our
+  streaming core is full-duplex, which requires HTTP/2 regardless.)_
 - **A single-replica relay, presence-only.** A new in-cluster process bridges the
   worker's outbound stream to the harness's in-cluster calls. It does **not** own
   matching or leasing — it mirrors connected workers into the **existing sandbox pool**,
@@ -55,7 +55,7 @@ or the leaf queue.
   droppable into any sandbox image — and the honest proof that the contract is genuinely
   language-neutral rather than secretly TS-shaped.
 - **Per-sandbox bearer token at the edge.** The worker authenticates on connect;
-  SPIFFE/mTLS for untrusted BYO upgrades into the *same* seam later.
+  SPIFFE/mTLS for untrusted BYO upgrades into the _same_ seam later.
 - **Latency posture: mixed.** `kubectl-exec` stays as the fast in-cluster implementation;
   the remote path is added behind the same interface and degrades gracefully.
 
@@ -86,25 +86,28 @@ Sandbox (laptop / on-prem / other cloud / same cluster)
 
 ### Component boundaries
 
-| Unit | Purpose | Depends on |
-|------|---------|-----------|
-| `SandboxTransport` (interface) | The exec seam Pi sees. No transport knowledge above it. | — |
-| `KubectlTransport` | Local/in-cluster fast path. Rename of today's `kubectlExecInPod`. | kubectl |
-| `GrpcRelayTransport` | Harness side: turn one `exec()` into a `SandboxExec.Exec` call + stream reassembly + correlation. | relay (in-cluster gRPC) |
-| `relay` | Bridge worker's outbound `Attach` stream ↔ harness `Exec`; mirror presence into the pool. | gRPC, Redis pool |
-| Go worker (reference) | Sandbox side: dial `Attach`, run commands locally, stream frames, honor abort. | local shell |
-| `select-sandbox` (existing) | Now returns a **transport**, not a pod name. Sees pods + remote records; leases least-loaded. | pool/lease logic |
+| Unit                           | Purpose                                                                                           | Depends on              |
+| ------------------------------ | ------------------------------------------------------------------------------------------------- | ----------------------- |
+| `SandboxTransport` (interface) | The exec seam Pi sees. No transport knowledge above it.                                           | —                       |
+| `KubectlTransport`             | Local/in-cluster fast path. Rename of today's `kubectlExecInPod`.                                 | kubectl                 |
+| `GrpcRelayTransport`           | Harness side: turn one `exec()` into a `SandboxExec.Exec` call + stream reassembly + correlation. | relay (in-cluster gRPC) |
+| `relay`                        | Bridge worker's outbound `Attach` stream ↔ harness `Exec`; mirror presence into the pool.         | gRPC, Redis pool        |
+| Go worker (reference)          | Sandbox side: dial `Attach`, run commands locally, stream frames, honor abort.                    | local shell             |
+| `select-sandbox` (existing)    | Now returns a **transport**, not a pod name. Sees pods + remote records; leases least-loaded.     | pool/lease logic        |
 
 ### The harness-facing interface (unchanged from PR #78)
 
 ```ts
 interface SandboxTransport {
-  exec(command: string, opts?: {
-    stdin?: Buffer;
-    onData?: (chunk: Buffer) => void;
-    signal?: AbortSignal;
-    timeout?: number; // seconds
-  }): Promise<{ stdout: Buffer; exitCode: number | null }>;
+  exec(
+    command: string,
+    opts?: {
+      stdin?: Buffer;
+      onData?: (chunk: Buffer) => void;
+      signal?: AbortSignal;
+      timeout?: number; // seconds
+    },
+  ): Promise<{ stdout: Buffer; exitCode: number | null }>;
   close(): Promise<void>;
 }
 ```
@@ -129,7 +132,7 @@ implementations of this one interface.
 
 The Pi orchestration loop, `run-turn`, the session backend (`RedisSessionBackend`), the
 leaf queue (`@sh/work-queue`), and the sandbox **pool/lease** logic. The change slots
-strictly *below* the current `ExecInPod` call sites (`converge.ts`, `run-leaf.ts`,
+strictly _below_ the current `ExecInPod` call sites (`converge.ts`, `run-leaf.ts`,
 `run-turn.ts`, `select-sandbox.ts`).
 
 ## 4. The Protobuf contract (`sandbox/v1`)
@@ -217,7 +220,7 @@ message AbortResponse {}
 
 The constraint: the **worker can only dial out**, but the **harness must push commands to
 the worker**. A single **bidirectional streaming RPC where the worker is the client**
-resolves this — commands flow to the worker on the *server→client* half of the stream the
+resolves this — commands flow to the worker on the _server→client_ half of the stream the
 worker itself opened:
 
 ```
@@ -233,7 +236,7 @@ outbound-only property we want, expressed in a standard RPC primitive.
 **Why gRPC-native and not Connect.** Connect's headline advantage is a plain-HTTP/1.1
 fallback that traverses HTTP-inspecting proxies. But **full-duplex bidi streaming
 requires HTTP/2 regardless of framework** — Connect only offers unary + server-streaming
-over HTTP/1.1. Since our core *is* a full-duplex stream, Connect buys us little for the
+over HTTP/1.1. Since our core _is_ a full-duplex stream, Connect buys us little for the
 part that matters while adding a second toolchain. We therefore use gRPC-native over
 HTTP/2 on `:443`. If a concrete "must traverse HTTP/1.1-only proxy" requirement ever
 appears, the fallback is to decompose `Attach` into a server-streaming "receive commands"
@@ -249,7 +252,7 @@ A new in-cluster `Deployment`, **one replica**. It is a matchmaker-free byte bri
 2. **Mirrors presence into the existing Redis sandbox pool.** It writes a lightweight
    record (`sandbox_id`, labels, capabilities, `capacity_max`, `transport:"grpc"`) into
    the same pool store `select-sandbox` already reads, and **removes it when the stream
-   closes**. The live `Attach` stream *is* the registration — no separate heartbeat key,
+   closes**. The live `Attach` stream _is_ the registration — no separate heartbeat key,
    no reaper.
 3. **Routes `SandboxExec.Exec`.** Looks up the live stream by `sandbox_id`, sends
    `ServerFrame{Exec}`, and forwards the worker's `Chunk`/`End`/`Error` back as the
@@ -306,7 +309,7 @@ one-in-flight execs.
 
 ## 8. Wire semantics (correlation, dedup, timeout, output cap, abort)
 
-The frame *semantics* are carried from the superseded design verbatim — only the encoding
+The frame _semantics_ are carried from the superseded design verbatim — only the encoding
 (protobuf) and transport (gRPC bidi) changed.
 
 - **Correlation & ordering.** Each `exec()` gets a `req_id` unique across harness
@@ -320,7 +323,7 @@ The frame *semantics* are carried from the superseded design verbatim — only t
   the idempotency key.
 - **Streaming vs one-shot.** Streaming ops (bash/grep) emit `Chunk`* then `End`; the
   harness replays each `Chunk` into `opts.onData`, matching today's `ExecInPod` contract
-  byte-for-byte. Non-streaming ops (read/write) differ only in *when* bytes leave: the
+  byte-for-byte. Non-streaming ops (read/write) differ only in _when_ bytes leave: the
   worker withholds them until exit and then emits `ChunkSize`-capped `Chunk` frames
   followed by `End`. `streaming: false` means "no incremental delivery", not "exactly one
   frame" — `End` carries no payload.
@@ -330,7 +333,7 @@ The frame *semantics* are carried from the superseded design verbatim — only t
   `cat file` yields exit 0 and empty stdout, because `End` has nowhere to put the bytes and
   the `Chunk`s were consumed by the original delivery. This is a known asymmetry with
   `KubectlTransport`, which keeps no cache and so re-runs and returns output. Callers must
-  not treat a dedup hit as a content read. *Honest limitation:* if the worker died mid-write,
+  not treat a dedup hit as a content read. _Honest limitation:_ if the worker died mid-write,
   exactly-once is impossible — the contract is at-least-once + dedup-by-`req_id`, and partial
   filesystem effects on crash are possible (same risk class as a leaf re-run today).
 - **Dual-ended timeout.** The worker kills its local child at `timeout_s`; the harness has
@@ -348,17 +351,18 @@ The frame *semantics* are carried from the superseded design verbatim — only t
 
   **The stop mechanism differs by transport, and each declares which one it uses:**
 
-  | Transport | Mechanism | What it guarantees |
-  |---|---|---|
-  | `GrpcRelayTransport` | `remote-abort` — `Abort` for the exec's `req_id` | the worker kills the process group |
-  | `KubectlTransport` | `local-kill` — SIGKILL its `kubectl exec` client | the in-pod process stops on EPIPE, if at all |
+  | Transport             | Mechanism                                                       | What it guarantees                             |
+  | --------------------- | --------------------------------------------------------------- | ---------------------------------------------- |
+  | `GrpcRelayTransport`  | `remote-abort` — `Abort` for the exec's `req_id`                | the worker kills the process group             |
+  | `KubectlTransport`    | `local-kill` — SIGKILL its `kubectl exec` client                | the in-pod process stops on EPIPE, if at all   |
   | `persistentExecInPod` | `producer-side-cap` — pod-side `head -c` in the framed pipeline | raw output cannot exceed the cap at the source |
 
-  The battery asserts the *declared* mechanism rather than accepting any truthy "stopped"
+  The battery asserts the _declared_ mechanism rather than accepting any truthy "stopped"
   signal, so a transport cannot claim one and perform another, and a deleted stop fails
   loudly. Neither kubectl mechanism defends against a producer that traps or ignores
   SIGPIPE and keeps burning CPU after we stop reading; that residual threat belongs to
   VM-level isolation (#57), not to the cap.
+
 - **Abort/end races.** A late `End` for an aborted `req_id` is dropped; an `Abort` for an
   already-ended `req_id` is a no-op.
 
@@ -369,7 +373,7 @@ production-behaviour decision outside this epic.
 
 - **No default deadline on the kubectl path.** `KubectlTransport` arms a timer only when
   `opts.timeout > 0`; `GrpcRelayTransport` always applies `DEFAULT_DEADLINE_MS` (120 s).
-  Pi's bash tool documents no default timeout, so *the same* model-issued `bash` with no
+  Pi's bash tool documents no default timeout, so _the same_ model-issued `bash` with no
   timeout runs unbounded on the pod path and dies at 120 s on the remote path — an
   unbounded pod-side exec on one backend, a surprise 120 s failure on the other. The
   conformance battery cannot see this: its timeout case always passes an explicit
@@ -383,16 +387,16 @@ relay validates the token ↔ `sandbox_id` binding on `Attach` before parking th
 The worker-facing `Attach` endpoint is the **single public attack surface**; the
 harness-facing `SandboxExec` service is **in-cluster only**, guarded by NetworkPolicy.
 
-| Property | Value |
-|----------|-------|
-| Inbound rules on sandbox | none (outbound only) |
-| Egress required | `:443` only |
-| Encryption | TLS 1.3 |
+| Property                  | Value                                            |
+| ------------------------- | ------------------------------------------------ |
+| Inbound rules on sandbox  | none (outbound only)                             |
+| Egress required           | `:443` only                                      |
+| Encryption                | TLS 1.3                                          |
 | Worker identity (day-one) | per-sandbox bearer token, scoped to `sandbox_id` |
-| Public attack surface | relay `Attach` on `:443` |
+| Public attack surface     | relay `Attach` on `:443`                         |
 
 **Upgrade path for untrusted BYO.** SPIFFE/SPIRE **mTLS** with per-connection identity
-slots into the *same* `Attach` endpoint — same protocol, stronger credential on the TLS
+slots into the _same_ `Attach` endpoint — same protocol, stronger credential on the TLS
 handshake, no wire change. Deferred (§13); the bearer token is the seam it replaces.
 
 **Reachability is pluggable beneath the RPC.** A private-mesh mode (self-hosted
@@ -402,16 +406,16 @@ Tailscale is explicitly out of scope.
 
 ## 10. Error handling & lifecycle
 
-| Failure | Detection | Behavior |
-|---------|-----------|----------|
-| Worker disconnects (crash / network) | `Attach` stream closes | Presence record removed from pool; worker reconnects and re-registers. In-flight `Exec` fails; leaf retry re-leases a healthy sandbox. |
-| Command redelivered after reconnect | duplicate `req_id` at worker | Dedup cache re-emits cached `End`; else re-run (at-least-once). Partial-write risk documented (§8). |
-| Relay restart | all parked streams drop | Workers reconnect; in-flight execs fail → leaf retry. No mid-exec durability. |
-| Worker never connects / gone | no live stream for `sandbox_id`; harness deadline | Pool entry absent or evicted; `Exec` rejects; leaf retry re-leases elsewhere. |
-| In-flight exec exceeds timeout | dual deadline (§8) | Worker SIGKILLs local child; harness synthesizes timeout — never hangs on a silent worker. |
-| Output cap exceeded (poisoned/runaway) | harness byte counter on `ExecEvent` | Harness `Abort`s, truncates, surfaces `[output truncated]` to Pi. |
-| Abort races with `End` | `req_id` correlation | Late `End` for an aborted `req_id` dropped; `Abort` for an ended `req_id` is a no-op. |
-| Bad / missing token | relay validates on `Attach` | Stream rejected before it is parked; no pool entry created. |
+| Failure                                | Detection                                         | Behavior                                                                                                                               |
+| -------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Worker disconnects (crash / network)   | `Attach` stream closes                            | Presence record removed from pool; worker reconnects and re-registers. In-flight `Exec` fails; leaf retry re-leases a healthy sandbox. |
+| Command redelivered after reconnect    | duplicate `req_id` at worker                      | Dedup cache re-emits cached `End`; else re-run (at-least-once). Partial-write risk documented (§8).                                    |
+| Relay restart                          | all parked streams drop                           | Workers reconnect; in-flight execs fail → leaf retry. No mid-exec durability.                                                          |
+| Worker never connects / gone           | no live stream for `sandbox_id`; harness deadline | Pool entry absent or evicted; `Exec` rejects; leaf retry re-leases elsewhere.                                                          |
+| In-flight exec exceeds timeout         | dual deadline (§8)                                | Worker SIGKILLs local child; harness synthesizes timeout — never hangs on a silent worker.                                             |
+| Output cap exceeded (poisoned/runaway) | harness byte counter on `ExecEvent`               | Harness `Abort`s, truncates, surfaces `[output truncated]` to Pi.                                                                      |
+| Abort races with `End`                 | `req_id` correlation                              | Late `End` for an aborted `req_id` dropped; `Abort` for an ended `req_id` is a no-op.                                                  |
+| Bad / missing token                    | relay validates on `Attach`                       | Stream rejected before it is parked; no pool entry created.                                                                            |
 
 **Lifecycle.** The `GrpcRelayTransport` is created at lease time; `close()` on leaf
 completion stops reading the `ExecEvent` stream. The worker's lifetime is independent — it
@@ -420,12 +424,12 @@ shared-pool model.
 
 ## 11. Testing
 
-| Layer | What | How |
-|-------|------|-----|
-| Pure unit | Frame reassembly, dedup cache, output-cap counter, timeout math, transport selection | Plain vitest / Go test, no I/O. |
-| Contract | `GrpcRelayTransport` + Go worker against a real relay, worker pointed at a local bash | Round-trip every op (read/write/bash/grep), abort mid-stream, timeout, reconnect→dedup, output-cap. Core suite. |
-| Conformance | The *same* battery run against **both** `KubectlTransport` and `GrpcRelayTransport` | One shared spec proving identical `SandboxTransport` contract — this is what makes them safely swappable (driver #2). |
-| Live gate | Real Go worker pod dialing the in-cluster relay over `:443`; one leaf end-to-end on Kind, then OCP | Follows the existing leaf-smoke pattern; manifest-shape vitest parses the relay + worker Deployment YAML directly (no kustomize in CI). |
+| Layer       | What                                                                                               | How                                                                                                                                     |
+| ----------- | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Pure unit   | Frame reassembly, dedup cache, output-cap counter, timeout math, transport selection               | Plain vitest / Go test, no I/O.                                                                                                         |
+| Contract    | `GrpcRelayTransport` + Go worker against a real relay, worker pointed at a local bash              | Round-trip every op (read/write/bash/grep), abort mid-stream, timeout, reconnect→dedup, output-cap. Core suite.                         |
+| Conformance | The _same_ battery run against **both** `KubectlTransport` and `GrpcRelayTransport`                | One shared spec proving identical `SandboxTransport` contract — this is what makes them safely swappable (driver #2).                   |
+| Live gate   | Real Go worker pod dialing the in-cluster relay over `:443`; one leaf end-to-end on Kind, then OCP | Follows the existing leaf-smoke pattern; manifest-shape vitest parses the relay + worker Deployment YAML directly (no kustomize in CI). |
 
 ## 12. Why this supersedes the Redis-Streams design
 
@@ -439,7 +443,7 @@ that limited reach and portability:
    blocked by egress firewalls that allow only `:443`, and it forced a Redis availability
    dependency into the exec path.
 
-This design keeps the outbound-dial insight and the frame *semantics* (`req_id`, dedup,
+This design keeps the outbound-dial insight and the frame _semantics_ (`req_id`, dedup,
 dual timeout, output cap — §8) **verbatim**, and changes only the encoding and transport:
 protobuf over one gRPC bidi stream on `:443`. What survives unchanged from the earlier
 work is the `SandboxTransport` interface and the `KubectlTransport` rename (a pure,
@@ -486,4 +490,4 @@ single-replica relay + the Go worker + the presence mirror.
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

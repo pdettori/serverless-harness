@@ -27,4 +27,4 @@ We will run a separate, shared, long-lived injector pod that concretely realizes
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

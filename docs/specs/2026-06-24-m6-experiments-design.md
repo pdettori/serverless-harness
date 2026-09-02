@@ -51,12 +51,12 @@ M6 is **done** when:
 
 ### 1.1 Honest framing (inherited from M5 §1/§8)
 
-The pi-track plan's E2 measured *end-to-end cold-start latency* (message → first token) under an
+The pi-track plan's E2 measured _end-to-end cold-start latency_ (message → first token) under an
 `everyK` checkpoint cadence. M5 §1 established this is the wrong instrument: Pi's native
 compaction already bounds the LLM context (`buildSessionContext()` assembles only
 `[summary, …kept tail, …post-compaction]`), so end-to-end latency is dominated by an
 already-bounded LLM call and would show **"no effect."** The loader's real, measurable win is
-**local**: the Redis read, `_buildIndex`, and the leaf→root walk. M6/E2 measures *that*, directly
+**local**: the Redis read, `_buildIndex`, and the leaf→root walk. M6/E2 measures _that_, directly
 and deterministically, without an LLM. The `everyK` knob does not exist (we ride Pi's native
 compaction cadence — M5 D5), so it plays no part here.
 
@@ -76,38 +76,38 @@ compaction cadence — M5 D5), so it plays no part here.
 - **`everyK` / forced-checkpoint cadence** (deferred in M5; ride native compaction).
 - **Cross-turn / cumulative budget ledger** (deferred in M5).
 - **Knative/HTTP-driven experiments and a Kind cluster.** M6 is in-process + local Redis only.
-- **E1, E3, E4** — these are end-to-end *cluster* experiments; see §8.1.
+- **E1, E3, E4** — these are end-to-end _cluster_ experiments; see §8.1.
 - **The pi-track plan's Python `experiments/` drivers** — re-targeted to in-process TS.
 
 ---
 
 ## 2. Discovery findings (the design rests on these)
 
-| # | Finding | Evidence |
-|---|---------|----------|
-| F1 | M5 is merged to `main`: `openFromCheckpoint` + `markerResumePosition` (pi-fork), `RedisSessionBackend` deterministic stream ids + `positionOfId`, `checkpoint-extension.ts`, `budget-voter.ts`, wired in `run-turn.ts`. | `8083a27` (PR #2); `run-turn.ts:48` calls `openFromCheckpoint`. |
-| F2 | Both loaders accept an injected `backend: SessionStorageBackend` and call `backend.read(...)`. `openFromBackend` reads **all** entries; `openFromCheckpoint` reads only `marker.resumeFromPosition`-forward. ⇒ wrapping the injected backend captures the read-volume difference with no fork change. | `session-manager.ts:1430` (`openFromBackend`), `:1457` (`openFromCheckpoint`). |
-| F3 | `SessionStorageBackend` is a 4-method interface: `append`, `read(sid, fromPosition?)`, `latestCheckpoint(sid)`, `list()`. A decorator is small. | `core/session-storage-backend.ts:14–22`. |
-| F4 | The M5 `checkpoint.test.ts` builds a real compacted session in Redis (append entries → `appendCompaction` → checkpoint marker) and asserts `openFromCheckpoint` parity vs `openFromBackend`. This is the template for the E2 synthetic fixture. | `harness/test/checkpoint.test.ts` (M5). |
-| F5 | The budget voter meters per-turn spend = `sessionSpendTotal(ctx) − baseline` (baseline captured at `session_start`); on `tool_call` it blocks and appends one `abort` via `sm.appendCustomEntry("abort", …)`. `sessionSpendTotal` reads `ctx.sessionManager.getBranch()` assistant `usage`. Returns `0` for an empty branch, `null` only when the branch is unavailable (a missing/`null` reading ⇒ do not block). | `harness/src/budget-voter.ts` (M5). |
-| F6 | The production turn path hardcodes the model: `getModel("anthropic", "claude-opus-4-8")`. Credentials already flow via `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` (+ optional `anthropicAuthToken`/`anthropicBaseUrl` on `TurnConfig`); the gateway path overrides `baseUrl` and injects `Authorization: Bearer` while nulling `x-api-key`. | `run-turn.ts:78`, `:39–42`, `:79–95`. |
-| F7 | `pnpm-workspace.yaml` declares `packages/*` and `harness`. A new top-level `experiments` dir must be added to the workspace globs. | `pnpm-workspace.yaml`. |
+| #   | Finding                                                                                                                                                                                                                                                                                                                                                                                                            | Evidence                                                                       |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| F1  | M5 is merged to `main`: `openFromCheckpoint` + `markerResumePosition` (pi-fork), `RedisSessionBackend` deterministic stream ids + `positionOfId`, `checkpoint-extension.ts`, `budget-voter.ts`, wired in `run-turn.ts`.                                                                                                                                                                                            | `8083a27` (PR #2); `run-turn.ts:48` calls `openFromCheckpoint`.                |
+| F2  | Both loaders accept an injected `backend: SessionStorageBackend` and call `backend.read(...)`. `openFromBackend` reads **all** entries; `openFromCheckpoint` reads only `marker.resumeFromPosition`-forward. ⇒ wrapping the injected backend captures the read-volume difference with no fork change.                                                                                                              | `session-manager.ts:1430` (`openFromBackend`), `:1457` (`openFromCheckpoint`). |
+| F3  | `SessionStorageBackend` is a 4-method interface: `append`, `read(sid, fromPosition?)`, `latestCheckpoint(sid)`, `list()`. A decorator is small.                                                                                                                                                                                                                                                                    | `core/session-storage-backend.ts:14–22`.                                       |
+| F4  | The M5 `checkpoint.test.ts` builds a real compacted session in Redis (append entries → `appendCompaction` → checkpoint marker) and asserts `openFromCheckpoint` parity vs `openFromBackend`. This is the template for the E2 synthetic fixture.                                                                                                                                                                    | `harness/test/checkpoint.test.ts` (M5).                                        |
+| F5  | The budget voter meters per-turn spend = `sessionSpendTotal(ctx) − baseline` (baseline captured at `session_start`); on `tool_call` it blocks and appends one `abort` via `sm.appendCustomEntry("abort", …)`. `sessionSpendTotal` reads `ctx.sessionManager.getBranch()` assistant `usage`. Returns `0` for an empty branch, `null` only when the branch is unavailable (a missing/`null` reading ⇒ do not block). | `harness/src/budget-voter.ts` (M5).                                            |
+| F6  | The production turn path hardcodes the model: `getModel("anthropic", "claude-opus-4-8")`. Credentials already flow via `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` (+ optional `anthropicAuthToken`/`anthropicBaseUrl` on `TurnConfig`); the gateway path overrides `baseUrl` and injects `Authorization: Bearer` while nulling `x-api-key`.                                                                     | `run-turn.ts:78`, `:39–42`, `:79–95`.                                          |
+| F7  | `pnpm-workspace.yaml` declares `packages/*` and `harness`. A new top-level `experiments` dir must be added to the workspace globs.                                                                                                                                                                                                                                                                                 | `pnpm-workspace.yaml`.                                                         |
 
 ---
 
 ## 3. Key decisions
 
-| # | Decision | Choice |
-|---|----------|--------|
-| D1 | E2 session generation | **Synthetic, no LLM.** Programmatically append realistic `FileEntry` logs + a real `compaction` entry + a `checkpoint` marker to real Redis (per F4). Deterministic, scales to any N cheaply, reproducible, needs no key. A live model is needed only by E5. |
-| D2 | E2 headline metric | **Entries read + bytes read** from Redis during reconstruction, via a counting backend decorator (no pi-fork change). #entries loaded is the common driver of the Redis read **and** `_buildIndex` **and** the leaf→root walk, so it faithfully proxies all three local costs. Wall-clock reconstruction time is a **secondary, illustrative** column. |
-| D3 | E2 pass criterion | The `backend / checkpoint` read ratio **strictly increases with N** (checkpoint near-constant, backend linear). Concretely: assert the ratio at N=5000 is materially greater than at N=50 (and monotonic non-decreasing across the N series, within a small tolerance). Plus a `buildSessionContext()` parity re-confirmation. |
-| D4 | E5 structural gate | **No key, real Redis.** Inject a synthetic over-cap spend at the voter/extension boundary; assert tool_call blocked **and** exactly one `abort` entry actually persisted in the Redis log; assert inert (no block, no `abort`) when `SH_BUDGET_TOKENS` unset. This is the M6 pass gate for E5. |
-| D5 | E5 live run | **Key-gated, tiny cap.** `SH_BUDGET_TOKENS=1` + a prompt that forces a tool call ⇒ the first post-baseline `tool_call` deterministically trips the cap. Assert block + exactly one `abort` in Redis. Skips cleanly when `SH_RUN_LIVE`/key absent. |
-| D6 | Experiment placement | **New `experiments/` pnpm workspace**, vitest, in-process. Mirrors the parent plan's `experiments/` intent in TypeScript. E2 + E5-structural always run (no key); E5-live is gated. |
-| D7 | Model as runtime input | Env + config, defaults preserved: `getModel(provider, modelId)` where `provider = config?.provider ?? SH_MODEL_PROVIDER ?? "anthropic"` and `modelId = config?.model ?? SH_MODEL ?? "claude-opus-4-8"`. `TurnConfig` gains optional `model?` / `provider?`. No secrets in repo. |
-| D8 | Provider scope | `SH_MODEL_PROVIDER` is **forward-looking** and exercised here only as `anthropic` (directly or via the litellm gateway through `ANTHROPIC_BASE_URL`). The auth-header injection (F6) is anthropic/gateway-shaped; a genuinely different provider would need its own key handling — documented limitation, not implemented. |
-| D9 | Milestone scope | **One milestone, one branch** (`feat/m6-experiments`). E2 and E5 are independent experiments but small and share the workspace + model/credential config + real-Redis setup + reporting. No pi-fork edits ⇒ **no submodule branch**. |
+| #   | Decision               | Choice                                                                                                                                                                                                                                                                                                                                                 |
+| --- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| D1  | E2 session generation  | **Synthetic, no LLM.** Programmatically append realistic `FileEntry` logs + a real `compaction` entry + a `checkpoint` marker to real Redis (per F4). Deterministic, scales to any N cheaply, reproducible, needs no key. A live model is needed only by E5.                                                                                           |
+| D2  | E2 headline metric     | **Entries read + bytes read** from Redis during reconstruction, via a counting backend decorator (no pi-fork change). #entries loaded is the common driver of the Redis read **and** `_buildIndex` **and** the leaf→root walk, so it faithfully proxies all three local costs. Wall-clock reconstruction time is a **secondary, illustrative** column. |
+| D3  | E2 pass criterion      | The `backend / checkpoint` read ratio **strictly increases with N** (checkpoint near-constant, backend linear). Concretely: assert the ratio at N=5000 is materially greater than at N=50 (and monotonic non-decreasing across the N series, within a small tolerance). Plus a `buildSessionContext()` parity re-confirmation.                         |
+| D4  | E5 structural gate     | **No key, real Redis.** Inject a synthetic over-cap spend at the voter/extension boundary; assert tool_call blocked **and** exactly one `abort` entry actually persisted in the Redis log; assert inert (no block, no `abort`) when `SH_BUDGET_TOKENS` unset. This is the M6 pass gate for E5.                                                         |
+| D5  | E5 live run            | **Key-gated, tiny cap.** `SH_BUDGET_TOKENS=1` + a prompt that forces a tool call ⇒ the first post-baseline `tool_call` deterministically trips the cap. Assert block + exactly one `abort` in Redis. Skips cleanly when `SH_RUN_LIVE`/key absent.                                                                                                      |
+| D6  | Experiment placement   | **New `experiments/` pnpm workspace**, vitest, in-process. Mirrors the parent plan's `experiments/` intent in TypeScript. E2 + E5-structural always run (no key); E5-live is gated.                                                                                                                                                                    |
+| D7  | Model as runtime input | Env + config, defaults preserved: `getModel(provider, modelId)` where `provider = config?.provider ?? SH_MODEL_PROVIDER ?? "anthropic"` and `modelId = config?.model ?? SH_MODEL ?? "claude-opus-4-8"`. `TurnConfig` gains optional `model?` / `provider?`. No secrets in repo.                                                                        |
+| D8  | Provider scope         | `SH_MODEL_PROVIDER` is **forward-looking** and exercised here only as `anthropic` (directly or via the litellm gateway through `ANTHROPIC_BASE_URL`). The auth-header injection (F6) is anthropic/gateway-shaped; a genuinely different provider would need its own key handling — documented limitation, not implemented.                             |
+| D9  | Milestone scope        | **One milestone, one branch** (`feat/m6-experiments`). E2 and E5 are independent experiments but small and share the workspace + model/credential config + real-Redis setup + reporting. No pi-fork edits ⇒ **no submodule branch**.                                                                                                                   |
 
 ---
 
@@ -171,13 +171,13 @@ export interface TurnConfig {
   cwd?: string;
   anthropicBaseUrl?: string;
   anthropicAuthToken?: string;
-  model?: string;      // NEW
-  provider?: string;   // NEW
+  model?: string; // NEW
+  provider?: string; // NEW
 }
 
 // replaces run-turn.ts:78
-const provider = config?.provider ?? process.env.SH_MODEL_PROVIDER ?? "anthropic";
-const modelId  = config?.model    ?? process.env.SH_MODEL          ?? "claude-opus-4-8";
+const provider = config?.provider ?? process.env.SH_MODEL_PROVIDER ?? 'anthropic';
+const modelId = config?.model ?? process.env.SH_MODEL ?? 'claude-opus-4-8';
 const baseModel = getModel(provider, modelId);
 ```
 
@@ -229,10 +229,10 @@ pos m+1.. post-compaction messages
 Two facts make a simple "read from the compaction entry forward" insufficient, and motivate the
 separate `checkpoint` marker:
 
-1. **The kept tail sits *before* the compaction entry (F4).** Pi appends the compaction entry
-   *after* the messages it retains, so reading forward from the compaction entry's position would
+1. **The kept tail sits _before_ the compaction entry (F4).** Pi appends the compaction entry
+   _after_ the messages it retains, so reading forward from the compaction entry's position would
    drop the kept tail (positions `k..m-1`) and reconstruct the wrong context. The correct resume
-   point is `firstKeptEntryId` at position `k`, which is *earlier* in the log.
+   point is `firstKeptEntryId` at position `k`, which is _earlier_ in the log.
 2. **Redis Streams seek by position, not by content-id.** The compaction entry holds
    `firstKeptEntryId` as a string id buried in its payload. Translating that id → stream position
    requires reading entries until it is found — an O(N) scan (`positionOfId`), which is exactly the
@@ -278,44 +278,48 @@ so the model has something to call.
 ## 5. Verification gate
 
 ### Unit (no key)
+
 - `CountingBackend`: read tallies match expected entries and byte totals; `reset()` zeroes; non-`read` methods delegate.
 - `session-fixture`: produced session has N+compaction+marker; `latestCheckpoint()` returns the marker; `openFromCheckpoint` reads strictly fewer entries than `openFromBackend`.
 
 ### Integration — real Redis on `localhost:6379` (no key)
+
 - **E2 ratio gate (primary):** across N ∈ {50,200,1000,5000}, checkpoint entries/bytes ≈ constant; backend grows ~linearly; `ratio(N=5000) ≫ ratio(N=50)` and non-decreasing across the series (tolerance documented). `buildSessionContext()` parity holds at every N.
 - **E5 structural gate (primary):** over-cap spend ⇒ `{ block:true }` + exactly one persisted `abort`; unset cap ⇒ no block, no `abort`.
 
 ### Live (manual, key-gated)
+
 - **E5 live:** tiny-cap real-model run blocks and records exactly one `abort`. Skips with no key.
 
 ### Build/regression
+
 - `pnpm -C experiments test` green; existing harness / session-backend / k8s-sandbox suites green; pi-fork untouched (no submodule change). Analyze long logs via subagents (context-budget rule).
 
 ---
 
 ## 6. Deviations from the pi-track plan (Tasks 18, 21)
 
-| Plan (Task 18/21) | This spec | Why |
-|---|---|---|
-| E2 = end-to-end cold-start **latency** (message→first-token) | E2 = **local reconstruction cost** (entries/bytes read) | Pi compaction already bounds LLM context; latency would show "no effect" (M5 §1, §1.1 here). |
-| `everyK` cadence on/off | Ride Pi's native compaction; no `everyK` | The knob doesn't exist (M5 D5); fixture compacts once. |
-| Python drivers, HTTP against deployed Knative service, `kubectl scale` | In-process TypeScript vitest, local Redis | E2 measures in-process Redis reads + the `buildSessionContext` walk — not observable over HTTP. E5 drives the voter directly. |
-| E5: realistic 50k cap + "refactor everything", assert elapsed | E5: no-key structural gate (synthetic spend) + key-gated **tiny-cap** live run | Deterministic CI gate without a key; tiny cap makes the live breach deterministic. |
-| `redis-cli XRANGE … | count "abort"` via `kubectl exec` | Assert exactly one `abort` in Redis from the test process | No cluster; direct Redis assertion is exact. |
+| Plan (Task 18/21)                                                      | This spec                                                                      | Why                                                                                                                           |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| E2 = end-to-end cold-start **latency** (message→first-token)           | E2 = **local reconstruction cost** (entries/bytes read)                        | Pi compaction already bounds LLM context; latency would show "no effect" (M5 §1, §1.1 here).                                  |
+| `everyK` cadence on/off                                                | Ride Pi's native compaction; no `everyK`                                       | The knob doesn't exist (M5 D5); fixture compacts once.                                                                        |
+| Python drivers, HTTP against deployed Knative service, `kubectl scale` | In-process TypeScript vitest, local Redis                                      | E2 measures in-process Redis reads + the `buildSessionContext` walk — not observable over HTTP. E5 drives the voter directly. |
+| E5: realistic 50k cap + "refactor everything", assert elapsed          | E5: no-key structural gate (synthetic spend) + key-gated **tiny-cap** live run | Deterministic CI gate without a key; tiny cap makes the live breach deterministic.                                            |
+| `redis-cli XRANGE …                                                    | count "abort"`via`kubectl exec`                                                | Assert exactly one `abort` in Redis from the test process                                                                     | No cluster; direct Redis assertion is exact. |
 
 ---
 
 ## 7. Residual risks
 
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| Counting at the `SessionStorageBackend` boundary measures entries/bytes returned, not raw Redis wire bytes. | Slight abstraction from true I/O. | Faithful proxy for the O(tail) vs O(total) story (the quantity that differs); documented. Wall-clock column gives a tangible secondary read. |
-| Wall-clock reconstruction time is noisy on a dev box. | Secondary column varies run-to-run. | Reported as illustrative only; the gate is the deterministic entries/bytes ratio (D3). |
-| Live E5 needs a tool the model will actually call without a sandbox pod. | Live breach may not fire. | Resolved in the plan (§4.7): set `KAGENTI_SANDBOX_POD` or register a trivial tool. Live run is **not** the pass gate (D4 structural gate is). |
-| Synthetic fixture diverges from genuinely-compacted sessions. | E2 measures an unrealistic shape. | Built through the same `RedisSessionBackend`/`appendCompaction` path as `checkpoint.test.ts` (F4); a unit test asserts `latestCheckpoint`/parity hold on it. |
-| `SH_MODEL_PROVIDER` ≠ anthropic is untested (D8). | False expectation of multi-provider support. | Documented as forward-looking; default and tests use anthropic (incl. gateway). |
-| New workspace glob / cross-package deps misconfigured. | `pnpm -C experiments test` won't resolve `harness`/pi-fork. | Mirror the existing `harness` package's workspace deps; build-order gotchas from M2/M4 noted in the plan. |
-| The harness never calls `bindExtensions()`, so `session_start` is **not** emitted in the headless `runTurn` path (only interactive/print/rpc modes emit it). | The voter's original `session_start`-captured baseline stayed `null`, so it never blocked against a real model — found by the live E5 run; the structural/unit tests masked it by firing `session_start` by hand. | **Fixed:** the voter no longer depends on `session_start`; `run-turn` computes the pre-turn baseline (`branchSpend(sessionManager)`) and injects it. **Open for M7:** verify whether `session_compact` (checkpoint marker) and `turn_end` (flush) *also* require `bindExtensions` — if so, the checkpoint marker is never written in production and `openFromCheckpoint` always falls back to full replay, which M7's E3-mobility depends on. |
+| Risk                                                                                                                                                         | Impact                                                                                                                                                                                                            | Mitigation                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Counting at the `SessionStorageBackend` boundary measures entries/bytes returned, not raw Redis wire bytes.                                                  | Slight abstraction from true I/O.                                                                                                                                                                                 | Faithful proxy for the O(tail) vs O(total) story (the quantity that differs); documented. Wall-clock column gives a tangible secondary read.                                                                                                                                                                                                                                                                                                  |
+| Wall-clock reconstruction time is noisy on a dev box.                                                                                                        | Secondary column varies run-to-run.                                                                                                                                                                               | Reported as illustrative only; the gate is the deterministic entries/bytes ratio (D3).                                                                                                                                                                                                                                                                                                                                                        |
+| Live E5 needs a tool the model will actually call without a sandbox pod.                                                                                     | Live breach may not fire.                                                                                                                                                                                         | Resolved in the plan (§4.7): set `KAGENTI_SANDBOX_POD` or register a trivial tool. Live run is **not** the pass gate (D4 structural gate is).                                                                                                                                                                                                                                                                                                 |
+| Synthetic fixture diverges from genuinely-compacted sessions.                                                                                                | E2 measures an unrealistic shape.                                                                                                                                                                                 | Built through the same `RedisSessionBackend`/`appendCompaction` path as `checkpoint.test.ts` (F4); a unit test asserts `latestCheckpoint`/parity hold on it.                                                                                                                                                                                                                                                                                  |
+| `SH_MODEL_PROVIDER` ≠ anthropic is untested (D8).                                                                                                            | False expectation of multi-provider support.                                                                                                                                                                      | Documented as forward-looking; default and tests use anthropic (incl. gateway).                                                                                                                                                                                                                                                                                                                                                               |
+| New workspace glob / cross-package deps misconfigured.                                                                                                       | `pnpm -C experiments test` won't resolve `harness`/pi-fork.                                                                                                                                                       | Mirror the existing `harness` package's workspace deps; build-order gotchas from M2/M4 noted in the plan.                                                                                                                                                                                                                                                                                                                                     |
+| The harness never calls `bindExtensions()`, so `session_start` is **not** emitted in the headless `runTurn` path (only interactive/print/rpc modes emit it). | The voter's original `session_start`-captured baseline stayed `null`, so it never blocked against a real model — found by the live E5 run; the structural/unit tests masked it by firing `session_start` by hand. | **Fixed:** the voter no longer depends on `session_start`; `run-turn` computes the pre-turn baseline (`branchSpend(sessionManager)`) and injects it. **Open for M7:** verify whether `session_compact` (checkpoint marker) and `turn_end` (flush) _also_ require `bindExtensions` — if so, the checkpoint marker is never written in production and `openFromCheckpoint` always falls back to full replay, which M7's E3-mobility depends on. |
 
 ---
 
@@ -376,4 +380,4 @@ No secrets in the repo; model + provider + key are env-only.
 
 ---
 
-*Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>*
+_Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

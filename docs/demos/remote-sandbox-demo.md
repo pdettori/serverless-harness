@@ -4,8 +4,8 @@ A ~10-minute walkthrough of **SandboxTransport**: the harness dispatches a leaf'
 sandbox running as a plain `docker run` **on your laptop** — outside the cluster, with **zero
 inbound rules**, holding no cluster credential.
 
-The task — read a file and say what it contains — is just a vehicle. The real show is *which
-machine's filesystem answers*. You will send the same free-form prompt twice and watch the model
+The task — read a file and say what it contains — is just a vehicle. The real show is _which
+machine's filesystem answers_. You will send the same free-form prompt twice and watch the model
 name a different OS each time, then plant a secret in a container by hand and watch the cluster
 read it back.
 
@@ -20,11 +20,11 @@ laptop
 
 Neither address is inbound to the laptop.
 
-| Act | What a normal remote sandbox needs | What SandboxTransport needs |
-|-----|-----------------------------------|-----------------------------|
-| **1 — Inverted connectivity** | An inbound port, a firewall rule, a public address the cluster can reach | **Nothing.** The worker dials *out* and parks a stream. `docker run` with no `-p` at all |
-| **2 — Provable placement** | Trust that the config routed where you think | A **fingerprint** and a **structural guard** — a green run on the wrong backend is made impossible |
-| **3 — Zero standing authority** | A kubeconfig, or an agent with cluster reach | One bearer token. No LLM key, no kubeconfig, no orchestration |
+| Act                             | What a normal remote sandbox needs                                       | What SandboxTransport needs                                                                        |
+| ------------------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| **1 — Inverted connectivity**   | An inbound port, a firewall rule, a public address the cluster can reach | **Nothing.** The worker dials _out_ and parks a stream. `docker run` with no `-p` at all           |
+| **2 — Provable placement**      | Trust that the config routed where you think                             | A **fingerprint** and a **structural guard** — a green run on the wrong backend is made impossible |
+| **3 — Zero standing authority** | A kubeconfig, or an agent with cluster reach                             | One bearer token. No LLM key, no kubeconfig, no orchestration                                      |
 
 Prefer it non-interactive? `make demo-remote-sandbox` does all of this in one command and asserts
 every step. This document is the version you drive by hand so you can explain each move.
@@ -91,7 +91,7 @@ curl -s -o /dev/null -w 'harness HTTP %{http_code}\n' --max-time 5 -H "$HOSTHDR"
 
 > **`404` is success.** This is a transport check, not a health check: any response proves the
 > tunnel and Host header reach the harness. Skipping it is a trap — an empty `/runs` reply later
-> is indistinguishable from an unreachable *model*, and the two have completely different fixes.
+> is indistinguishable from an unreachable _model_, and the two have completely different fixes.
 
 ### Build the worker image
 
@@ -107,8 +107,8 @@ docker build --load -f remote-worker/Dockerfile -t dev.local/remote-worker:demo 
 
 # Act 1: A sandbox with no inbound route
 
-**The claim a normal remote sandbox can't make:** *nothing can reach me, and I am still serving
-your cluster's tool calls.*
+**The claim a normal remote sandbox can't make:** _nothing can reach me, and I am still serving
+your cluster's tool calls._
 
 ### 1a. Bring up the relay
 
@@ -118,7 +118,7 @@ kubectl -n $NS rollout status deploy/sandbox-relay --timeout=90s
 ```
 
 > The relay is the only thing the worker will dial. It is **inert** until both a worker attaches
-> *and* the harness is switched to the remote path — so nothing is routed anywhere yet.
+> _and_ the harness is switched to the remote path — so nothing is routed anywhere yet.
 
 ### 1b. Generate the registration token
 
@@ -130,7 +130,7 @@ kubectl -n $NS rollout status deploy/sandbox-relay --timeout=90s
 
 > Relay auth is **fail-closed**: a token mismatch rejects the Attach before the stream is ever
 > parked. We mint a fresh token per run rather than using `relay-deployment.yaml`'s `dev-token`,
-> because that value is a repo constant and therefore public. Patch *before* waiting on the
+> because that value is a repo constant and therefore public. Patch _before_ waiting on the
 > rollout, so the pod that becomes Ready is already the one holding this token.
 
 ### 1c. Open the tunnel — and prove the relay is really serving
@@ -145,7 +145,7 @@ grep -qE 'error forwarding|connection refused|lost connection' /tmp/demo-remote/
 ```
 
 > **A bare TCP connect is not enough.** `kubectl port-forward` accepts your local connection
-> first and only *then* tries the pod, so a dead relay still gives you a successful connect.
+> first and only _then_ tries the pod, so a dead relay still gives you a successful connect.
 > Reading the forward log is what separates "the relay is dead" from "a container can't route
 > here" — two failures with completely different fixes. The relay also needs ~4s after `Running`
 > to bind, because `node --import tsx` compiles its TypeScript at startup; probing immediately is
@@ -173,7 +173,7 @@ docker inspect sh-demo-remote-worker --format '{{range .Config.Env}}{{println .}
 > A bearer token, a sandbox id, a relay address. **No LLM key, no kubeconfig, no
 > orchestration.** If this container is stolen, the attacker gets a scoped token to one relay.
 
-### 1e. Registration *is* the live stream
+### 1e. Registration _is_ the live stream
 
 **Look at T1** — the record just appeared:
 
@@ -183,14 +183,14 @@ sbx-laptop-demo
 ```
 
 > Nothing polled. Nothing heartbeated a URL. Redis holds this record **only while the Attach
-> stream is open** — the registration *is* the stream. `"transport":"grpc"` is how the harness
+> stream is open** — the registration _is_ the stream. `"transport":"grpc"` is how the harness
 > knows to route over the relay instead of `kubectl exec`. We come back to T1 in Act 3.
 
 ---
 
 # Act 2: Prove which machine ran the command
 
-**The claim a config change can't make on its own:** *the exec provably ran there, not here.*
+**The claim a config change can't make on its own:** _the exec provably ran there, not here._
 
 ### 2a. Establish the discriminator first
 
@@ -204,10 +204,10 @@ PRETTY_NAME="Alpine Linux v3.20"                    <- in-cluster pool
 PRETTY_NAME="Red Hat Enterprise Linux 9.8 (Plow)"   <- remote host container
 ```
 
-> The pool is Alpine, the worker is RHEL. So one free-form question — *what does
-> `/etc/os-release` say?* — gets a different answer depending on which machine ran it, and the
+> The pool is Alpine, the worker is RHEL. So one free-form question — _what does
+> `/etc/os-release` say?_ — gets a different answer depending on which machine ran it, and the
 > model **names the OS it read** rather than handing you a flag you have to trust. Verify the
-> fingerprint *before* anything relies on it; an unverified discriminator makes every later
+> fingerprint _before_ anything relies on it; an unverified discriminator makes every later
 > assertion meaningless.
 
 Set the prompt you will send unchanged to both backends:
@@ -241,9 +241,9 @@ The file /etc/os-release reports Alpine Linux v3.20.
 >
 > `kind:"prompt"` is what makes this a free-form leaf: the reply comes back as `.text`, the
 > model's own words, with `status: "responded"`. No verdict schema, no `submit_verdict` tool —
-> which is why the answer can *name* what it read.
+> which is why the answer can _name_ what it read.
 
-### 2c. Flip to the remote path — and make a pod win *impossible*
+### 2c. Flip to the remote path — and make a pod win _impossible_
 
 Snapshot the env first. **Look at what has to survive the flip:**
 
@@ -282,7 +282,7 @@ kubectl get pods -n $NS -l sh.kagenti.io/sandbox-pool=demo-remote-only \
 # => 0
 ```
 
-> **Say this carefully.** `SH_REMOTE_SANDBOX=1` *alone does not route to the worker.*
+> **Say this carefully.** `SH_REMOTE_SANDBOX=1` _alone does not route to the worker._
 > `select-sandbox.ts` builds `candidates = [...pods, ...grpcRecs]` and leases least-loaded-first,
 > so an idle in-cluster pod can still win the lease — and you would get a green demo that proved
 > nothing. Pointing the selector at a label **no pod carries** means a pod cannot win a lease it
@@ -340,23 +340,23 @@ BEFORE (8)                          AFTER (10)
 
 **The property that matters:** untouched entries are passed through as **whole objects**, never
 reconstructed — which is what preserves those three `secretKeyRef`s. `kubectl set env` does not
-work on a Knative `Service` at all (*"no kind Service is registered"*), and anything that rebuilds
+work on a Knative `Service` at all (_"no kind Service is registered"_), and anything that rebuilds
 the array from name/value pairs flattens `valueFrom` to an empty string. The model call then fails
 looking exactly like an unreachable endpoint. Order shifts, which is harmless: Kubernetes only
 cares about env ordering for `$(VAR)` interpolation, which this env does not use.
 
 **The kubectl half — replace the whole array.** JSON Patch has no "upsert by name": array ops
-address elements by *index*, and indices shift as you add and remove. Computing the final array in
+address elements by _index_, and indices shift as you add and remove. Computing the final array in
 jq and replacing `/spec/template/spec/containers/0/env` once sidesteps that arithmetic and lands
 atomically. `containers/0` is the first (user) container in the revision template.
 
 **And what the three values do:**
 
-| Var | Effect |
-|-----|--------|
-| `SH_REMOTE_SANDBOX=1` | enables the remote-sandbox code path at all |
-| `SH_RELAY_ADDR=sandbox-relay.default.svc:8443` | where the *harness* dials the relay — in-cluster DNS, the other end of the worker's outbound tunnel |
-| `KAGENTI_SANDBOX_POOL_SELECTOR=…pool=demo-remote-only` | a label no pod carries, so the pod candidate set is empty |
+| Var                                                    | Effect                                                                                              |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `SH_REMOTE_SANDBOX=1`                                  | enables the remote-sandbox code path at all                                                         |
+| `SH_RELAY_ADDR=sandbox-relay.default.svc:8443`         | where the _harness_ dials the relay — in-cluster DNS, the other end of the worker's outbound tunnel |
+| `KAGENTI_SANDBOX_POOL_SELECTOR=…pool=demo-remote-only` | a label no pod carries, so the pod candidate set is empty                                           |
 
 The third is the load-bearing one for the demo's honesty. The first two alone would leave idle
 Alpine pods in the candidate set, and least-loaded-first could hand the exec to one.
@@ -379,7 +379,7 @@ The file /etc/os-release reports Red Hat Enterprise Linux 9.8 (Plow).
 
 > Same prompt as 2b, **different OS named.** Now check it in both directions — the reply must say
 > `Red Hat` **and** must not say `Alpine`. Assert against the reply you already captured; a second
-> `curl` with the same `sessionId` would *resume* that session rather than ask afresh:
+> `curl` with the same `sessionId` would _resume_ that session rather than ask afresh:
 
 ```bash
 grep -qi 'red hat' <<<"$REPLY" && echo "ok: named Red Hat"  || echo "FAIL: did not name Red Hat"
@@ -387,7 +387,7 @@ grep -qi 'alpine'  <<<"$REPLY" && echo "FAIL: named Alpine" || echo "ok: did not
 ```
 
 > Both directions on purpose: a free-form reply has no flag to flip, so "it landed on an Alpine
-> pod" is ruled out by asserting the OS it must *not* have read is absent too. This is the one
+> pod" is ruled out by asserting the OS it must _not_ have read is absent too. This is the one
 > place the free-form version is weaker than a `CLEAR`/`FLAGGED` verdict — a reply that mentions
 > neither OS fails the first check rather than being caught as nonsense. Act 3 is what closes
 > that gap, and it is the stronger proof anyway.
@@ -396,8 +396,8 @@ grep -qi 'alpine'  <<<"$REPLY" && echo "FAIL: named Alpine" || echo "ok: did not
 
 # Act 3: The closer — plant a secret, watch the cluster read it back
 
-**The claim that ends the argument:** *you created this evidence thirty seconds ago, on this
-laptop, and the cluster just read it.*
+**The claim that ends the argument:** _you created this evidence thirty seconds ago, on this
+laptop, and the cluster just read it._
 
 ### 3a. Write a marker only your laptop has
 
@@ -426,7 +426,7 @@ The file /tmp/proof.txt contains the marker string: tuscan-lentils-29765
 ```
 
 > **Note what the free-form reply buys you here.** It does not confirm a string you already
-> supplied — it *reads one back to you*. Check it against the `$MARK` you printed thirty seconds
+> supplied — it _reads one back to you_. Check it against the `$MARK` you printed thirty seconds
 > ago:
 
 ```bash
@@ -435,7 +435,7 @@ grep -qF "$MARK" <<<"$PROOF" \
 ```
 
 > There is no `kubectl exec` anywhere in that path, no inbound route to this machine, and the
-> worker holds no cluster credential — only a token it used to dial *out*. An answer about
+> worker holds no cluster credential — only a token it used to dial _out_. An answer about
 > `/etc/os-release` can be argued with — image drift, a lucky guess from context. A random string
 > you generated yourself, echoed back verbatim, cannot be.
 
@@ -448,10 +448,10 @@ docker stop sh-demo-remote-worker
 **Watch T1.** The record clears on its own:
 
 > Nothing deleted it. The Attach stream closed and the record went with it. That is what
-> "registration *is* the live stream" means — and why the harness never routes to a sandbox that
+> "registration _is_ the live stream" means — and why the harness never routes to a sandbox that
 > has quietly gone away.
 
-> `make demo-remote-sandbox` asserts this act too — the planted marker *and* this teardown. The
+> `make demo-remote-sandbox` asserts this act too — the planted marker _and_ this teardown. The
 > one exception is `--keep`, which promises the worker is still running when the run ends: proving
 > the record clears means closing the stream, so the script skips this step and tells you to do it
 > by hand instead.
@@ -464,7 +464,7 @@ You drove a sandbox that:
 
 1. **Had no inbound route** — `docker run` with no `-p`, no firewall rule, reachable by nothing
    (Act 1d).
-2. **Registered by existing** — its presence record *was* its open stream, and vanished with it
+2. **Registered by existing** — its presence record _was_ its open stream, and vanished with it
    (Act 1e, 3c).
 3. **Provably ran the exec** — same prompt, and the model named a different OS each time, with a
    pool selector that made a pod win structurally impossible (Act 2).
@@ -524,8 +524,8 @@ make demo-remote-sandbox-teardown   # asks before deleting the cluster; DEMO_ARG
   probes for this and escalates automatically, with a warning.
 - **Live streaming, abort mid-stream, dual-ended timeout and reconnect→dedup** are implemented and
   unit-tested but not shown here — tracked in
-  [#198](https://github.com/rossoctl/serverless-harness/issues/198). The honest line: *the
-  transport does it, this demo doesn't show it yet.*
+  [#198](https://github.com/rossoctl/serverless-harness/issues/198). The honest line: _the
+  transport does it, this demo doesn't show it yet._
 
 Reference: [`../../deploy/knative/README-worker.md`](../../deploy/knative/README-worker.md)
 §"Laptop demo" and [`../../deploy/knative/demo-remote-worker.sh`](../../deploy/knative/demo-remote-worker.sh).

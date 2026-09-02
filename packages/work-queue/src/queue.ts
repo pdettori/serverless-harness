@@ -1,4 +1,4 @@
-import { createClient, type RedisClientType } from "redis";
+import { createClient, type RedisClientType } from 'redis';
 
 export interface ClaimedEntry {
   entryId: string;
@@ -9,13 +9,19 @@ export interface ClaimedEntry {
 export interface WorkQueue {
   ensureGroup(): Promise<void>;
   enqueue(envelope: unknown): Promise<string>;
-  claim(consumerId: string, opts: { minIdleMs: number; blockMs: number }): Promise<ClaimedEntry | null>;
+  claim(
+    consumerId: string,
+    opts: { minIdleMs: number; blockMs: number },
+  ): Promise<ClaimedEntry | null>;
   ack(entryId: string): Promise<void>;
   touch(entryId: string, consumerId: string): Promise<void>;
   pending(): Promise<number>;
   deleteConsumer(consumerId: string): Promise<void>;
   gcIdleConsumers(minIdleMs: number): Promise<number>;
-  reapDeadLetters(consumerId: string, opts: { minIdleMs: number; maxAttempts: number }): Promise<Array<{ entryId: string; envelope: unknown }>>;
+  reapDeadLetters(
+    consumerId: string,
+    opts: { minIdleMs: number; maxAttempts: number },
+  ): Promise<Array<{ entryId: string; envelope: unknown }>>;
   purge(): Promise<void>;
   close(): Promise<void>;
 }
@@ -24,9 +30,9 @@ export class RedisWorkQueue implements WorkQueue {
   private client: RedisClientType;
   private ready: Promise<void>;
   constructor(
-    url = process.env.REDIS_URL ?? "redis://127.0.0.1:6379",
-    private readonly stream = "leaf-queue",
-    private readonly group = "leaf-workers",
+    url = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379',
+    private readonly stream = 'leaf-queue',
+    private readonly group = 'leaf-workers',
   ) {
     this.client = createClient({ url }) as RedisClientType;
     this.ready = this.client.connect().then(() => undefined);
@@ -36,27 +42,46 @@ export class RedisWorkQueue implements WorkQueue {
     await this.ready;
     try {
       // "0" = deliver from the start of the stream; MKSTREAM creates it if absent.
-      await this.client.xGroupCreate(this.stream, this.group, "0", { MKSTREAM: true });
+      await this.client.xGroupCreate(this.stream, this.group, '0', { MKSTREAM: true });
     } catch (err) {
-      if (!String((err as Error).message).includes("BUSYGROUP")) throw err;
+      if (!String((err as Error).message).includes('BUSYGROUP')) throw err;
     }
   }
 
   async enqueue(envelope: unknown): Promise<string> {
     await this.ready;
-    return this.client.xAdd(this.stream, "*", { envelope: JSON.stringify(envelope) });
+    return this.client.xAdd(this.stream, '*', { envelope: JSON.stringify(envelope) });
   }
 
-  async claim(consumerId: string, opts: { minIdleMs: number; blockMs: number }): Promise<ClaimedEntry | null> {
+  async claim(
+    consumerId: string,
+    opts: { minIdleMs: number; blockMs: number },
+  ): Promise<ClaimedEntry | null> {
     await this.ready;
     // 1. Prefer reclaiming a stale (delivered-but-unacked) entry — crash recovery.
-    const auto = await this.client.xAutoClaim(this.stream, this.group, consumerId, opts.minIdleMs, "0", { COUNT: 1 });
+    const auto = await this.client.xAutoClaim(
+      this.stream,
+      this.group,
+      consumerId,
+      opts.minIdleMs,
+      '0',
+      { COUNT: 1 },
+    );
     const reclaimed = auto.messages?.find((m) => m && m.message);
     if (reclaimed) {
-      return { entryId: reclaimed.id, envelope: JSON.parse(reclaimed.message.envelope), deliveryCount: await this.deliveryCount(reclaimed.id) };
+      return {
+        entryId: reclaimed.id,
+        envelope: JSON.parse(reclaimed.message.envelope),
+        deliveryCount: await this.deliveryCount(reclaimed.id),
+      };
     }
     // 2. Otherwise read a brand-new entry.
-    const res = await this.client.xReadGroup(this.group, consumerId, [{ key: this.stream, id: ">" }], { COUNT: 1, BLOCK: opts.blockMs });
+    const res = await this.client.xReadGroup(
+      this.group,
+      consumerId,
+      [{ key: this.stream, id: '>' }],
+      { COUNT: 1, BLOCK: opts.blockMs },
+    );
     const msg = res?.[0]?.messages?.[0];
     if (!msg) return null;
     return { entryId: msg.id, envelope: JSON.parse(msg.message.envelope), deliveryCount: 1 };
@@ -105,19 +130,39 @@ export class RedisWorkQueue implements WorkQueue {
   // Bounded per startup; backlogs > REAP_BATCH drain across successive pod restarts.
   private static readonly REAP_BATCH = 100;
 
-  async reapDeadLetters(consumerId: string, opts: { minIdleMs: number; maxAttempts: number }): Promise<Array<{ entryId: string; envelope: unknown }>> {
+  async reapDeadLetters(
+    consumerId: string,
+    opts: { minIdleMs: number; maxAttempts: number },
+  ): Promise<Array<{ entryId: string; envelope: unknown }>> {
     await this.ready;
     const deadLettered: Array<{ entryId: string; envelope: unknown }> = [];
-    const pending = await this.client.xPendingRange(this.stream, this.group, "-", "+", RedisWorkQueue.REAP_BATCH);
+    const pending = await this.client.xPendingRange(
+      this.stream,
+      this.group,
+      '-',
+      '+',
+      RedisWorkQueue.REAP_BATCH,
+    );
     for (const entry of pending) {
-      if (entry.millisecondsSinceLastDelivery >= opts.minIdleMs && entry.deliveriesCounter > opts.maxAttempts) {
-        const claimed = await this.client.xClaim(this.stream, this.group, consumerId, opts.minIdleMs, [entry.id]);
+      if (
+        entry.millisecondsSinceLastDelivery >= opts.minIdleMs &&
+        entry.deliveriesCounter > opts.maxAttempts
+      ) {
+        const claimed = await this.client.xClaim(
+          this.stream,
+          this.group,
+          consumerId,
+          opts.minIdleMs,
+          [entry.id],
+        );
         const msg = claimed?.[0];
         if (!msg) continue; // entry was reclaimed by another consumer between inspect and claim
         let envelope: unknown = null;
         try {
           envelope = msg.message?.envelope ? JSON.parse(msg.message.envelope) : null;
-        } catch { /* malformed — still dead-letter it */ }
+        } catch {
+          /* malformed — still dead-letter it */
+        }
         await this.client.xAck(this.stream, this.group, entry.id);
         deadLettered.push({ entryId: entry.id, envelope });
       }
@@ -127,8 +172,16 @@ export class RedisWorkQueue implements WorkQueue {
 
   async purge(): Promise<void> {
     await this.ready;
-    try { await this.client.xGroupDestroy(this.stream, this.group); } catch { /* ignore */ }
-    try { await this.client.del(this.stream); } catch { /* ignore */ }
+    try {
+      await this.client.xGroupDestroy(this.stream, this.group);
+    } catch {
+      /* ignore */
+    }
+    try {
+      await this.client.del(this.stream);
+    } catch {
+      /* ignore */
+    }
   }
 
   async close(): Promise<void> {

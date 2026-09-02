@@ -10,6 +10,6 @@ export function shQuote(s: string): string {
  */
 export function mapPath(p: string, headCwd: string, podCwd: string): string {
   if (p === headCwd) return podCwd;
-  if (p.startsWith(headCwd + "/")) return podCwd + p.slice(headCwd.length);
+  if (p.startsWith(headCwd + '/')) return podCwd + p.slice(headCwd.length);
   return p;
 }
