@@ -21,15 +21,17 @@ laptop                                    cluster
 
 One digest names both halves. The dispatch carries the digest and nothing else about the workflow.
 
-| Act                    | What "move my workflow to the server" normally needs               | What promotion needs                                                               |
-| ---------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| **1 — Author small**   | A hand-written manifest listing what to ship, kept in sync by hand | **One env var.** `HOME=$SH_DEMO_SANDBOX` makes the sandbox its own user scope      |
-| **2 — Promote**        | An image rebuild, a redeploy, a registry push                      | `pnpm promote` — a 12 KB tar, content-addressed; re-promotion uploads **nothing**  |
-| **3 — Run it**         | A bespoke endpoint that knows about your skills                    | **One field.** `"configRef": "sha256:…"` on the existing prompt envelope           |
-| **4 — Know it landed** | Read the pod logs and hope                                         | The run cites a fact only your memory holds, and a token only the sandbox can read |
+| Act                    | What "move my workflow to the server" normally needs               | What promotion needs                                                                                  |
+| ---------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| **1 — Author small**   | A hand-written manifest listing what to ship, kept in sync by hand | **One env var.** `HOME=$SH_DEMO_SANDBOX` makes the sandbox its own user scope                         |
+| **2 — Promote**        | An image rebuild, a redeploy, a registry push                      | **`/promote`, inside Claude Code** — a 12 KB tar, content-addressed; re-promotion uploads **nothing** |
+| **3 — Run it**         | A bespoke endpoint that knows about your skills                    | **One field.** `"configRef": "sha256:…"` on the existing prompt envelope                              |
+| **4 — Know it landed** | Read the pod logs and hope                                         | The run cites a fact only your memory holds, and a token only the sandbox can read                    |
 
-Prefer it non-interactive? `make demo-promoted-workflow` does all of this and asserts every claim.
-This document is the version you drive by hand so you can explain each move.
+Promotion runs from **inside Claude Code** as `/promote`, in the same session you authored the
+workflow in — Act 0 installs it. Prefer it non-interactive? `make demo-promoted-workflow` does all of
+this and asserts every claim, driving the CLI directly since it has no Claude session to run in. This
+document is the version you drive by hand so you can explain each move.
 
 ---
 
@@ -75,10 +77,26 @@ export SH_DEMO_SANDBOX=/tmp/sh-demo
 export SH_DEMO_REDIS_PORT=16379
 export SH_MODEL=claude-haiku-4-5
 
-# Where this repo is checked out. Every `pnpm --dir` below uses it, because from Act 1b onward
-# your shell's cwd is the sandbox, not the checkout.
-export HARNESS=$(pwd)/harness
+# Where this repo is checked out. `/promote` reads this, because from Act 1b onward your shell's
+# cwd is the sandbox, not the checkout -- and the CLI has no installed binary.
+export SH_HARNESS_DIR=$(pwd)
 ```
+
+### Install the `/promote` command
+
+Act 2 runs promotion from **inside** Claude Code. Install the command once:
+
+```bash
+mkdir -p ~/.claude/commands
+cp deploy/claude/commands/promote.md ~/.claude/commands/promote.md
+```
+
+> **It belongs in your real `~/.claude/commands/`, not in the sandbox.** With `HOME` pointed at the
+> sandbox, `promote` reads the sandbox's `.claude/commands/` as its prompts directory and bundles
+> every markdown file there unconditionally — there is no exclusion flag, since the deny-list only
+> covers skills. A `/promote` living in the sandbox would therefore ship itself into every bundle as
+> a prompt template. In your real user scope, Claude Code sees it in every project and `promote`
+> never does.
 
 ### Open the two tunnels
 
@@ -177,12 +195,15 @@ does not survive the trip.
 
 ## Act 2: Promote
 
-### 2a. One command, and one env var that is the whole idea
+### 2a. One slash command, from the session you authored in
 
-```bash
-HOME=$SH_DEMO_SANDBOX pnpm --dir $HARNESS promote \
-  --entry ship-note --project $SH_DEMO_SANDBOX
+In the Claude Code session from Act 1b — still in the sandbox — run:
+
 ```
+/promote ship-note
+```
+
+Claude checks the three guards, starts the Redis tunnel if it is not up, and runs the CLI for you:
 
 ```
 project:    /tmp/sh-demo
@@ -196,17 +217,26 @@ inventory:  …/sandbox-inventory/ghcr.io_rossoctl_serverless-harness-sandbox_la
 
 preflight: no findings
 
-  bundle     sha256:46ee1106…  (12288 bytes, uploaded)
+  bundle     sha256:43b8c4c0…  (12288 bytes, uploaded)
   lockfile   .claude/promoted.lock.json
 
-dispatch with:  {"sessionId":"<run>/<item>","kind":"prompt","prompt":"…","configRef":"sha256:46ee1106…"}
+dispatch with:  {"sessionId":"<run>/<item>","kind":"prompt","prompt":"…","configRef":"sha256:43b8c4c0…"}
 ```
 
-> **`HOME=$SH_DEMO_SANDBOX` is the demo, not a shortcut.** `promote` reads _user_ scope from
-> `$HOME/.claude`. Pointing `HOME` at the sandbox makes the sandbox its own user scope, so the
-> bundle holds this workflow and nothing else. It is also what makes the **slash command** travel:
-> `promote` reads prompts from user scope only, so a project-scope `.claude/commands/` file is
-> invisible to it without this.
+> **The `HOME` override is the demo, not a shortcut** — `/promote` sets it for you, but say what it
+> does. `promote` reads _user_ scope from `$HOME/.claude`; pointing `HOME` at the sandbox makes the
+> sandbox its own user scope, so the bundle holds this workflow and nothing else. It is also what
+> makes this project's **entry prompt** travel at all, since `promote` reads prompts from user scope
+> only. The command it runs is:
+>
+> ```bash
+> HOME="$PWD" REDIS_URL=redis://localhost:16379 \
+>   pnpm --dir "$SH_HARNESS_DIR/harness" promote --entry ship-note --project "$PWD"
+> ```
+>
+> `--project "$PWD"` looks redundant and is not: without it the CLI promotes the directory the
+> process started in, which through `pnpm --dir` is the harness checkout. Measured — it reports
+> `project: …/serverless-harness/harness`.
 >
 > Note `travels 1`, `preflight: no findings`, and `12288 bytes`. Those three numbers are the
 > argument for sandbox-first authoring, and the last line hands you the exact dispatch envelope.
@@ -216,7 +246,7 @@ The lockfile is committable, and it is also the most convenient place to read th
 ```bash
 export DIGEST=$(jq -r .digest $SH_DEMO_SANDBOX/.claude/promoted.lock.json)
 echo $DIGEST
-# => sha256:46ee11062906cf70d6770a1a9c58b01429836ba4b16861b65110673904603bb4
+# => sha256:43b8c4c04fc084ed0df724572082ab35b381cd803d86675b8e52a2efb5e7cee6
 ```
 
 ### 2b. Verify it landed in the cluster's Redis, not somewhere else
@@ -231,12 +261,14 @@ kubectl exec -n $NS deploy/redis -- redis-cli EXISTS "config:bundle:$DIGEST"
 
 ### 2c. Re-promotion is free
 
-```bash
-HOME=$SH_DEMO_SANDBOX pnpm --dir $HARNESS promote --entry ship-note --project $SH_DEMO_SANDBOX | tail -3
+Run it again, unchanged:
+
+```
+/promote ship-note
 ```
 
 ```
-  bundle     sha256:46ee1106…  (12288 bytes, unchanged — upload skipped)
+  bundle     sha256:43b8c4c0…  (12288 bytes, unchanged — upload skipped)
 ```
 
 > Same digest, no upload. The bundle is content-addressed over a **canonical** tar — sorted paths,
@@ -275,9 +307,15 @@ for p in $POOL; do kubectl exec -n $NS "$p" -- find /workspace/.sh-config -type 
 
 ```bash
 for p in $POOL; do
-  kubectl exec -n $NS "$p" -- rm -rf "/workspace/.sh-config/sha256-${DIGEST#sha256:}"
+  kubectl exec -n $NS "$p" -- sh -c 'rm -rf /workspace/.sh-config/sha256-*'
 done
 ```
+
+> **Empty the whole cache, not just this digest.** Purging only the digest you are about to dispatch
+> is not enough: any _other_ cached bundle carrying the same memory fact answers the bare arm just as
+> well. That is not hypothetical — a bundle built from this same fixture before Prettier normalised
+> one emphasis marker in the memory file has a different content digest, sits alongside, and made
+> this control fail while a per-digest purge reported success.
 
 ### 3b. Run A — bare
 
@@ -377,8 +415,9 @@ You moved a workflow off your laptop without writing a manifest:
 1. **Authored small** — one skill, a `CLAUDE.md`, one memory file, one slash command, in a
    throwaway sandbox. `HOME=$SH_DEMO_SANDBOX` made it its own user scope: **1 skill, 12 KB, zero preflight
    findings**, against 56 skills and ~8.6 MB for a real `~/.claude` (Act 1, 2a).
-2. **Promoted with one command** — content-addressed over a canonical tar, so the second promotion
-   uploaded nothing and the digest was identical (Act 2a, 2c).
+2. **Promoted with one slash command, without leaving Claude Code** — `/promote ship-note`, in the
+   same session you authored the workflow in. Content-addressed over a canonical tar, so the second
+   promotion uploaded nothing and the digest was identical (Act 2a, 2c).
 3. **Dispatched with one field** — `configRef` on the existing prompt envelope. No new endpoint, no
    redeploy, no image rebuild (Act 3c).
 4. **Proved all three channels arrived** — the skill's format, the `CLAUDE.md` rule, and an

@@ -282,16 +282,33 @@ mapfile -t POOL_PODS < <(kubectl get pods -n "$NS" -l "$POOL_SEL" -o name 2>/dev
   exit 1
 }
 CACHE_DIR="/workspace/.sh-config/sha256-${DIGEST#sha256:}"
+# Purge EVERY cached bundle, not just this run's digest. Purging one digest is not enough: any other
+# bundle in the cache that happens to carry the same memory fact answers the bare arm just as well.
+# Measured -- a bundle built from this same fixture before Prettier normalised one emphasis marker
+# in the memory file has a different content digest, sat alongside, and made the control fail with
+# the per-digest purge passing.
 for p in "${POOL_PODS[@]}"; do
-  kubectl exec -n "$NS" "$p" -- rm -rf "$CACHE_DIR" 2>/dev/null || true
+  kubectl exec -n "$NS" "$p" -- sh -c 'rm -rf /workspace/.sh-config/sha256-*' 2>/dev/null || true
 done
 still=0
+unreadable=0
 for p in "${POOL_PODS[@]}"; do
-  kubectl exec -n "$NS" "$p" -- test -e "$CACHE_DIR" 2>/dev/null && still=$((still + 1))
+  # Distinguish "zero bundles" from "could not look". An empty $n means the exec failed -- pod not
+  # ready, evicted, transient API error -- and `${n:-0}` would silently score that as a clean pod,
+  # letting the run claim the cache is empty having verified nothing. That is the same shape of
+  # false green this whole purge exists to prevent, so it must not be counted as evidence.
+  n=$(kubectl exec -n "$NS" "$p" -- sh -c 'ls -1d /workspace/.sh-config/sha256-* 2>/dev/null | wc -l' 2>/dev/null | tr -d ' \r')
+  if [ -z "$n" ]; then
+    unreadable=$((unreadable + 1))
+    continue
+  fi
+  still=$((still + n))
 done
+[ "$unreadable" -eq 0 ] ||
+  ko "could not inspect the cache on $unreadable pod(s); the control is unverified"
 [ "$still" -eq 0 ] &&
-  ok "shared config cache purged from ${#POOL_PODS[@]} pool sandbox(es), so the control is honest" ||
-  ko "the digest is still cached in $still sandbox(es); the bare run could read it"
+  ok "config cache emptied on ${#POOL_PODS[@]} pool sandbox(es), so the control is honest" ||
+  ko "$still cached bundle(s) remain; the bare run could read one of them"
 
 SID_A="demo-bare-$$"
 SID_B="demo-promoted-$$"

@@ -15,8 +15,9 @@ test:
 # Cluster-free unit tests for the deploy/ shell scripts: kubectl, kind and docker are
 # mocked on PATH and only the call log is asserted. Run in CI by the `deploy-scripts` job.
 # `set -e` so one failing test file fails the target instead of being scrolled past.
+# deploy/claude/tests covers the /promote slash-command asset, which nothing else type-checks.
 test-deploy:
-	@set -e; for t in deploy/knative/tests/*.test.sh; do echo "== $$t"; bash "$$t"; done
+	@set -e; for t in deploy/knative/tests/*.test.sh deploy/claude/tests/*.test.sh; do echo "== $$t"; bash "$$t"; done
 
 typecheck:
 	cd harness && pnpm exec tsc --noEmit
