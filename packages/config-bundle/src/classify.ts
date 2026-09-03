@@ -1,35 +1,42 @@
 import type { Classification, ClassifyOptions, DroppedSkill, ResolvedSkill } from './types.js';
 
 /**
- * Skills whose subject matter does not exist in the harness. CURATED BY HAND and versioned
- * with this file — deliberately not inferred (spec §4.2). Heuristic detection was rejected
- * because the signal words ("agent", "artifact") appear in unrelated prose, and a
- * wrongly-dropped skill fails remotely and confusingly.
+ * Skills whose subject matter does not exist in the harness. Matched against the bare
+ * `name` field from SKILL.md frontmatter, not a qualified `plugin:name` form.
+ * CURATED BY HAND and versioned with this file — deliberately not inferred (spec §4.2).
+ * Heuristic detection was rejected because the signal words ("agent", "artifact") appear
+ * in unrelated prose, and a wrongly-dropped skill fails remotely and confusingly.
  */
 export const DEFAULT_DENY_LIST: readonly string[] = [
+  // Real deny-list: skills on-disk whose subject matter doesn't exist in the harness.
+  'docx',
+  'pdf',
+  'pptx',
+  'xlsx',
+  // Defensive entries: built-in Claude Code skills. Retained in case a future version
+  // ships them as SKILL.md files (so the next reader doesn't delete them as dead code).
   'artifact-design',
   'artifact-diagramming',
-  'document-skills:docx',
-  'document-skills:pdf',
-  'document-skills:pptx',
-  'document-skills:xlsx',
   'fewer-permission-prompts',
   'keybindings-help',
   'statusline-setup',
   'update-config',
 ];
 
-/** Skills whose operation IS dispatching subagents. Pi has no Task tool (spec §9). */
+/**
+ * Skills whose operation IS dispatching subagents. Pi has no Task tool (spec §9).
+ * Matched against the bare `name` field from SKILL.md frontmatter.
+ */
 export const SUBAGENT_DEPENDENT: readonly string[] = [
-  'superpowers:dispatching-parallel-agents',
-  'superpowers:subagent-driven-development',
+  'dispatching-parallel-agents',
+  'subagent-driven-development',
 ];
 
-/** Travels fine, but its method is dialogue — degrades to invented answers unattended. */
-export const INTERACTION_DEPENDENT: readonly string[] = [
-  'superpowers:brainstorming',
-  'superpowers:receiving-code-review',
-];
+/**
+ * Travels fine, but its method is dialogue — degrades to invented answers unattended.
+ * Matched against the bare `name` field from SKILL.md frontmatter.
+ */
+export const INTERACTION_DEPENDENT: readonly string[] = ['brainstorming', 'receiving-code-review'];
 
 /** Never reported as a missing binary. Complete bash builtins and keywords. */
 const SHELL_BUILTINS = new Set([

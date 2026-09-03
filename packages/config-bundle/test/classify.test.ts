@@ -4,6 +4,7 @@ import {
   detectBinaries,
   DEFAULT_DENY_LIST,
   INTERACTION_DEPENDENT,
+  SUBAGENT_DEPENDENT,
 } from '../src/classify.js';
 import type { ResolvedSkill } from '../src/types.js';
 
@@ -17,7 +18,7 @@ const s = (name: string, body = 'body'): ResolvedSkill => ({
 
 describe('classifySkills', () => {
   it('lets an ordinary prose skill travel', () => {
-    const c = classifySkills([s('superpowers:brainstorming'), s('my-skill')], {
+    const c = classifySkills([s('brainstorming'), s('my-skill')], {
       mode: 'attended',
     });
     expect(c.travels.map((x) => x.name)).toContain('my-skill');
@@ -25,7 +26,7 @@ describe('classifySkills', () => {
   });
 
   it('drops deny-listed families with no_harness_equivalent', () => {
-    const c = classifySkills([s('document-skills:xlsx'), s('artifact-design')], {
+    const c = classifySkills([s('xlsx'), s('artifact-design')], {
       mode: 'unattended',
     });
     expect(c.travels).toEqual([]);
@@ -36,7 +37,7 @@ describe('classifySkills', () => {
   });
 
   it('drops subagent-dependent skills with needs_subagent (spec §9, out of scope)', () => {
-    const c = classifySkills([s('superpowers:dispatching-parallel-agents')], {
+    const c = classifySkills([s('dispatching-parallel-agents')], {
       mode: 'unattended',
     });
     expect(c.dropped[0]!.reason).toBe('needs_subagent');
@@ -64,19 +65,60 @@ describe('classifySkills', () => {
   });
 
   it('flags interaction-dependent skills without dropping them, under unattended', () => {
-    const c = classifySkills([s('superpowers:brainstorming')], { mode: 'unattended' });
-    expect(c.interactionDependent).toEqual(['superpowers:brainstorming']);
-    expect(c.travels.map((x) => x.name)).toEqual(['superpowers:brainstorming']);
+    const c = classifySkills([s('brainstorming')], { mode: 'unattended' });
+    expect(c.interactionDependent).toEqual(['brainstorming']);
+    expect(c.travels.map((x) => x.name)).toEqual(['brainstorming']);
   });
 
   it('does not flag interaction dependence under attended mode', () => {
-    const c = classifySkills([s('superpowers:brainstorming')], { mode: 'attended' });
+    const c = classifySkills([s('brainstorming')], { mode: 'attended' });
     expect(c.interactionDependent).toEqual([]);
   });
 
   it('lists deny-list and interaction-list entries as plain data, not regexes', () => {
     expect(DEFAULT_DENY_LIST.every((n) => typeof n === 'string')).toBe(true);
-    expect(INTERACTION_DEPENDENT).toContain('superpowers:brainstorming');
+    expect(INTERACTION_DEPENDENT).toContain('brainstorming');
+  });
+
+  it('uses bare name form from SKILL.md frontmatter, never qualified scope:name', () => {
+    // All three curated lists must contain no `:` character; they are matched against
+    // ResolvedSkill.name which is the bare frontmatter name, not scope-qualified.
+    const allEntries = [...DEFAULT_DENY_LIST, ...SUBAGENT_DEPENDENT, ...INTERACTION_DEPENDENT];
+    expect(allEntries.every((e) => !e.includes(':'))).toBe(true);
+  });
+
+  it('drops subagent-dependent skills by bare name', () => {
+    const c = classifySkills([s('dispatching-parallel-agents')], {
+      mode: 'unattended',
+    });
+    expect(c.dropped[0]).toEqual({
+      name: 'dispatching-parallel-agents',
+      reason: 'needs_subagent',
+      detail: 'requires a subagent tool; Pi has none (spec §9)',
+    });
+    expect(c.travels).toEqual([]);
+  });
+
+  it('drops all subagent-dependent skills by bare name', () => {
+    const c = classifySkills([s('subagent-driven-development')], {
+      mode: 'unattended',
+    });
+    expect(c.dropped[0]!.reason).toBe('needs_subagent');
+  });
+
+  it('flags interaction-dependent skills by bare name, unattended', () => {
+    const c = classifySkills([s('brainstorming')], { mode: 'unattended' });
+    expect(c.interactionDependent).toEqual(['brainstorming']);
+    expect(c.travels.map((x) => x.name)).toEqual(['brainstorming']);
+  });
+
+  it('drops deny-listed skills by bare name', () => {
+    const c = classifySkills([s('xlsx')], { mode: 'unattended' });
+    expect(c.dropped[0]).toEqual({
+      name: 'xlsx',
+      reason: 'no_harness_equivalent',
+      detail: 'subject matter does not exist in the harness runtime',
+    });
   });
 });
 
