@@ -10,7 +10,13 @@ import {
   SecretScanError,
 } from '@sh/config-bundle';
 import { putBundle, type BundleRedisLike } from './config-store.js';
-import { LOCKFILE_OUT, parsePromoteArgs, promoteInputs, readInventory } from './promote.js';
+import {
+  LOCKFILE_OUT,
+  parsePromoteArgs,
+  promoteInputs,
+  readInventory,
+  resolveInventoryPath,
+} from './promote.js';
 
 /** Write the lockfile to the filesystem. */
 function writeLockfile(cwd: string, lockfile: ReturnType<typeof serializeLockfile>): void {
@@ -23,7 +29,15 @@ async function main(): Promise<void> {
   const args = parsePromoteArgs(process.argv.slice(2));
   const cwd = process.cwd();
 
+  const inventoryPath = resolveInventoryPath(args.sandboxImage, cwd);
   const inventory = readInventory(args.sandboxImage, cwd);
+  // Say which inventory was used. Module-relative outranks cwd-local, so a caller who dropped a
+  // deliberate override beside their project must be able to see that it was not the one read.
+  console.log(
+    inventoryPath === undefined
+      ? `inventory:  none for ${args.sandboxImage} — the binary check will warn, not verify`
+      : `inventory:  ${inventoryPath} (${inventory?.length ?? 0} binaries)`,
+  );
 
   const result = buildBundle(
     promoteInputs({

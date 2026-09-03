@@ -92,18 +92,31 @@ export function inventoryCandidates(image: string, cwd: string, moduleDir: strin
   return out;
 }
 
+/**
+ * The first existing inventory path for an image, or undefined.
+ *
+ * Exposed separately from `readInventory` so the CLI can SAY which file it used. The precedence
+ * is deliberately silent-proof: a shipped inventory outranks a cwd-local one, so without a
+ * diagnostic a caller who deliberately dropped an override next to their project would be
+ * shadowed by the shipped copy with no way to tell.
+ */
+export function resolveInventoryPath(
+  image: string,
+  cwd: string,
+  moduleDir: string = dirname(fileURLToPath(import.meta.url)),
+): string | undefined {
+  return inventoryCandidates(image, cwd, moduleDir).find((path) => existsSync(path));
+}
+
 /** Checked-in inventory for a sandbox image tag; absent => preflight warns instead of verifying. */
 export function readInventory(
   image: string,
   cwd: string,
   moduleDir: string = dirname(fileURLToPath(import.meta.url)),
 ): string[] | undefined {
-  for (const path of inventoryCandidates(image, cwd, moduleDir)) {
-    if (existsSync(path)) {
-      return JSON.parse(readFileSync(path, 'utf8')).binaries as string[];
-    }
-  }
-  return undefined;
+  const path = resolveInventoryPath(image, cwd, moduleDir);
+  if (path === undefined) return undefined;
+  return JSON.parse(readFileSync(path, 'utf8')).binaries as string[];
 }
 
 /**

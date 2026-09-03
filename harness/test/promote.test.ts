@@ -10,6 +10,7 @@ import {
   promoteInputs,
   LOCKFILE_OUT,
   readInventory,
+  resolveInventoryPath,
   inventoryCandidates,
   inventoryFileName,
   INVENTORY_SUBDIR,
@@ -245,6 +246,26 @@ describe('readInventory', () => {
     );
     write(join(INVENTORY_SUBDIR, FILE), JSON.stringify({ image: IMAGE, binaries: ['local'] }));
     expect(readInventory(IMAGE, root, moduleDir)).toEqual(['shipped']);
+  });
+
+  // The Important finding from Task 14's review: precedence was silent, so a deliberate
+  // cwd-local override was shadowed by the shipped copy with no way to tell which won.
+  it('reports which inventory path won, so silent shadowing is visible', () => {
+    const moduleDir = join(root, 'pkg', 'src');
+    mkdirSync(moduleDir, { recursive: true });
+    const shipped = join(root, 'pkg', INVENTORY_SUBDIR, FILE);
+    write(join('pkg', INVENTORY_SUBDIR, FILE), JSON.stringify({ image: IMAGE, binaries: ['a'] }));
+    write(join(INVENTORY_SUBDIR, FILE), JSON.stringify({ image: IMAGE, binaries: ['b'] }));
+    expect(resolveInventoryPath(IMAGE, root, moduleDir)).toBe(shipped);
+  });
+
+  it('resolveInventoryPath returns undefined when nothing exists', () => {
+    const moduleDir = mkdtempSync(join(tmpdir(), 'bare2-'));
+    try {
+      expect(resolveInventoryPath(IMAGE, root, moduleDir)).toBeUndefined();
+    } finally {
+      rmSync(moduleDir, { recursive: true, force: true });
+    }
   });
 
   it('candidate list ends at the cwd fallback and terminates', () => {
