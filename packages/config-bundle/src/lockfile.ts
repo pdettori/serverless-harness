@@ -14,7 +14,7 @@ export function buildLockfile(input: LockfileInput): BundleLockfile {
     builtAgainst: { harness: input.versions.harness, pi: input.versions.pi },
     context: [...input.contextPaths].sort(),
     digest: input.digest,
-    dropped: [...input.classification.dropped].sort((a, b) => (a.name < b.name ? -1 : 1)),
+    dropped: [...input.classification.dropped].sort((a, b) => a.name.localeCompare(b.name)),
     entry: input.entry,
     formatVersion: BUNDLE_FORMAT_VERSION,
     interactionDependent: [...input.classification.interactionDependent].sort(),
@@ -28,7 +28,7 @@ export function buildLockfile(input: LockfileInput): BundleLockfile {
         sourceDir: s.dir,
         contentHash: input.skillHashes[s.name] ?? '',
       }))
-      .sort((a, b) => (a.name < b.name ? -1 : 1)),
+      .sort((a, b) => a.name.localeCompare(b.name)),
   };
 }
 
