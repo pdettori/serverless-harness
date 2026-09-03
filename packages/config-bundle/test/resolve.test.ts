@@ -118,4 +118,50 @@ describe('resolveSkills', () => {
     expect(found).toHaveLength(1);
     expect(found[0]!.name).toBe('real');
   });
+
+  it('<userDir>/skills that is a symlink to a real directory is discovered', () => {
+    const realSkillsDir = join(root, 'real-skills');
+    skill(join(realSkillsDir, 'linked'), 'linked');
+    const userSkillsLink = join(root, 'user', 'skills');
+    mkdirSync(join(root, 'user'));
+    symlinkSync(realSkillsDir, userSkillsLink);
+    const found = resolveSkills({ userDir: join(root, 'user') });
+    expect(found).toHaveLength(1);
+    expect(found[0]!.name).toBe('linked');
+  });
+
+  it('a pluginDirs entry that is itself a symlink is discovered', () => {
+    const realPluginDir = join(root, 'real-plugins');
+    skill(join(realPluginDir, 'mp', 'skills', 'plugin-skill'), 'plugin-skill');
+    const pluginLink = join(root, 'plugins-link');
+    symlinkSync(realPluginDir, pluginLink);
+    const found = resolveSkills({ pluginDirs: [pluginLink] });
+    expect(found).toHaveLength(1);
+    expect(found[0]!.name).toBe('plugin-skill');
+  });
+
+  it('an individual skill directory that is a symlink is discovered', () => {
+    const realSkill = join(root, 'real-skill');
+    skill(realSkill, 'symlinked-skill');
+    const skillsDir = join(root, 'user', 'skills');
+    mkdirSync(skillsDir, { recursive: true });
+    symlinkSync(realSkill, join(skillsDir, 'linked'));
+    const found = resolveSkills({ userDir: join(root, 'user') });
+    expect(found).toHaveLength(1);
+    expect(found[0]!.name).toBe('symlinked-skill');
+  });
+
+  it('dedupes skills that canonicalize to the same real path', () => {
+    const realSkill = join(root, 'the-real-skill');
+    skill(realSkill, 'canonical');
+    const skillsDir = join(root, 'user', 'skills');
+    mkdirSync(skillsDir, { recursive: true });
+    // Create two entries: one direct, one via symlink alias
+    symlinkSync(realSkill, join(skillsDir, 'direct-link'));
+    symlinkSync(realSkill, join(skillsDir, 'alias-link'));
+    const found = resolveSkills({ userDir: join(root, 'user') });
+    // Should dedupe to one skill (the same canonical path)
+    expect(found).toHaveLength(1);
+    expect(found[0]!.name).toBe('canonical');
+  });
 });

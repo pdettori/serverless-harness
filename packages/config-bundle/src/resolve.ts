@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import type { ResolvedSkill, SkillRoots, SkillScope } from './types.js';
 
@@ -20,17 +20,38 @@ export function readSkillFrontmatterName(skillMd: string): string | null {
   return name;
 }
 
-/** Every file under `dir`, relative to it, sorted. Symlinks are skipped entirely (neither collected nor descended into). */
-function filesUnder(dir: string): string[] {
+/** Every file under `dir`, relative to it, sorted. Symlinks are followed; cycles are broken by tracking canonical paths. */
+function filesUnder(dir: string, visited = new Set<string>()): string[] {
+  let canonical: string;
+  try {
+    canonical = realpathSync(dir);
+  } catch {
+    return [];
+  }
+  if (visited.has(canonical)) return [];
+  visited.add(canonical);
+
   const out: string[] = [];
   const walk = (d: string): void => {
     for (const name of readdirSync(d).sort()) {
       const p = join(d, name);
-      const st = lstatSync(p);
-      if (st.isSymbolicLink()) {
-        // Skip symlinks entirely: don't collect, don't descend
-      } else if (st.isDirectory()) {
-        walk(p);
+      let st;
+      try {
+        st = statSync(p);
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) {
+        let pCanonical: string;
+        try {
+          pCanonical = realpathSync(p);
+        } catch {
+          continue;
+        }
+        if (!visited.has(pCanonical)) {
+          visited.add(pCanonical);
+          walk(p);
+        }
       } else if (st.isFile()) {
         out.push(relative(dir, p).split(sep).join('/'));
       }
@@ -42,17 +63,28 @@ function filesUnder(dir: string): string[] {
 
 /**
  * Pi's discovery rule (`pi-fork/.../core/skills.ts`): a directory holding SKILL.md IS a skill
- * root and is NOT recursed into; otherwise recurse looking for one. Symlinks are skipped.
+ * root and is NOT recursed into; otherwise recurse looking for one. Symlinks are followed;
+ * cycles and aliases are broken by canonical path.
  */
-function findSkillDirs(root: string, acc: string[] = []): string[] {
-  if (!existsSync(root)) return acc;
+function findSkillDirs(root: string, acc: string[] = [], visited = new Set<string>()): string[] {
+  let canonical: string;
+  try {
+    canonical = realpathSync(root);
+  } catch {
+    return acc;
+  }
+  if (visited.has(canonical)) return acc;
+
   let st;
   try {
-    st = lstatSync(root);
+    st = statSync(root);
   } catch {
     return acc;
   }
   if (!st.isDirectory()) return acc;
+
+  visited.add(canonical);
+
   if (existsSync(join(root, 'SKILL.md'))) {
     acc.push(root);
     return acc;
@@ -61,14 +93,20 @@ function findSkillDirs(root: string, acc: string[] = []): string[] {
     const p = join(root, name);
     let pst;
     try {
-      pst = lstatSync(p);
+      pst = statSync(p);
     } catch {
       continue;
     }
-    if (pst.isSymbolicLink()) {
-      // Skip symlinks: don't descend
-    } else if (pst.isDirectory()) {
-      findSkillDirs(p, acc);
+    if (pst.isDirectory()) {
+      let pCanonical: string;
+      try {
+        pCanonical = realpathSync(p);
+      } catch {
+        continue;
+      }
+      if (!visited.has(pCanonical)) {
+        findSkillDirs(p, acc, visited);
+      }
     }
   }
   return acc;
@@ -89,11 +127,14 @@ function load(dir: string, scope: SkillScope): ResolvedSkill {
 const SCOPE_RANK: Record<SkillScope, number> = { project: 0, user: 1, plugin: 2 };
 
 /**
- * Resolve every skill across the configured roots, deduped by name.
+ * Resolve every skill across the configured roots, deduped by name and canonical path.
+ *
+ * Deduping happens at two levels: by name (project > user > plugin precedence within a scope),
+ * and by canonical path (symlinked aliases are recognized and collapsed).
  *
  * Dedupe matters concretely: `~/.claude/plugins/cache/` is largely a resolved duplicate of
  * `~/.claude/plugins/marketplaces/`, so a naive scan double-counts every plugin skill (spec §4.3).
- * Precedence is project > user > plugin; within one scope, first path wins after sorting.
+ * Additionally, a skill directory can be aliased via symlinks, which we detect and dedupe.
  */
 export function resolveSkills(roots: SkillRoots): ResolvedSkill[] {
   const found: ResolvedSkill[] = [];
@@ -108,9 +149,30 @@ export function resolveSkills(roots: SkillRoots): ResolvedSkill[] {
   }
 
   const best = new Map<string, ResolvedSkill>();
+  const byCanonical = new Map<string, ResolvedSkill>();
+
   for (const skill of found) {
+    let canonical: string;
+    try {
+      canonical = realpathSync(skill.dir);
+    } catch {
+      canonical = skill.dir;
+    }
+
     const prev = best.get(skill.name);
-    if (!prev || SCOPE_RANK[skill.scope] < SCOPE_RANK[prev.scope]) best.set(skill.name, skill);
+    const prevCanonical = byCanonical.get(canonical);
+
+    if (prevCanonical) {
+      // Same canonical path: prefer higher precedence scope
+      if (SCOPE_RANK[skill.scope] < SCOPE_RANK[prevCanonical.scope]) {
+        best.set(skill.name, skill);
+        byCanonical.set(canonical, skill);
+      }
+    } else if (!prev || SCOPE_RANK[skill.scope] < SCOPE_RANK[prev.scope]) {
+      // New name or higher precedence scope
+      best.set(skill.name, skill);
+      byCanonical.set(canonical, skill);
+    }
   }
   return [...best.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
