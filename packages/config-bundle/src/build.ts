@@ -8,6 +8,7 @@ import {
   checkEntry,
   checkInteraction,
   checkMemoryLinks,
+  checkNamespacedPrompts,
   checkSiblingPaths,
 } from './preflight.js';
 import { resolveSkills } from './resolve.js';
@@ -34,6 +35,43 @@ function markdownFiles(dir: string | undefined): string[] {
   return readdirSync(dir)
     .filter((n) => n.endsWith('.md') && statSync(join(dir, n)).isFile())
     .sort();
+}
+
+/**
+ * Subdirectory names directly under `dir` that hold at least one `.md` file -- Claude Code's
+ * namespaced-command layout (`commands/<ns>/<cmd>.md`). `markdownFiles` above deliberately does
+ * not recurse into these (spec §2/§9, out of scope with MCP servers and subagents); this is the
+ * fs-scanning half of that decision, feeding `checkNamespacedPrompts` so the drop is a warning
+ * rather than silence. Sorted; empty when `dir` is absent.
+ */
+function namespacedPromptDirs(dir: string | undefined): string[] {
+  if (!dir || !existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const name of readdirSync(dir).sort()) {
+    const p = join(dir, name);
+    let st;
+    try {
+      st = statSync(p);
+    } catch {
+      continue;
+    }
+    if (!st.isDirectory()) continue;
+    let children: string[];
+    try {
+      children = readdirSync(p);
+    } catch {
+      continue;
+    }
+    const hasMd = children.some((n) => {
+      try {
+        return n.endsWith('.md') && statSync(join(p, n)).isFile();
+      } catch {
+        return false;
+      }
+    });
+    if (hasMd) out.push(name);
+  }
+  return out;
 }
 
 export function buildBundle(input: BuildBundleInput): BuildResult {
@@ -135,11 +173,15 @@ export function buildBundle(input: BuildBundleInput): BuildResult {
         message: `possible secret (${f.rule}) — verify before promoting`,
         path: `${f.path}:${f.line}`,
       })),
+    // Findings raised while resolving each skill's own files (e.g. a symlink that escaped its
+    // skill directory and was skipped -- resolve.ts's `filesUnder`).
+    ...classification.travels.flatMap((skill) => skill.findings ?? []),
     ...checkSiblingPaths(classification.travels),
     ...checkMemoryLinks(memoryIndex, memoryNames),
     ...checkBinaries(binaries, input.inventory),
     ...checkEntry(input.entry, promptNames),
     ...checkInteraction(classification),
+    ...checkNamespacedPrompts(namespacedPromptDirs(input.promptsDir)),
   ];
 
   const tar = canonicalTar([

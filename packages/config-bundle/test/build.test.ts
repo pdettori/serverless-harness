@@ -126,4 +126,25 @@ describe('buildBundle', () => {
     expect(l.sandboxImage).toBe('sandbox:pool-default');
     expect(l.binaries).toContain('gh');
   });
+
+  it("warns and excludes a namespaced prompt subdirectory (Claude Code's /<ns>:<cmd>)", () => {
+    write('prompts/ns/cmd.md', 'namespaced command body');
+    const r = buildBundle(baseInput());
+    const paths = untar(r.tar).map((e) => e.path);
+    // not recursed into: neither the file nor its containing "directory" travels
+    expect(paths.some((p) => p.startsWith('prompts/ns'))).toBe(false);
+    // the flat prompts/go.md fixture from beforeEach still travels normally
+    expect(paths).toContain('prompts/go.md');
+    const warn = r.findings.filter((f) => f.code === 'namespaced_prompt_skipped');
+    expect(warn).toHaveLength(1);
+    expect(warn[0]!.severity).toBe('warn');
+    expect(warn[0]!.message).toContain('ns');
+  });
+
+  it('raises no namespaced_prompt_skipped finding for a flat promptsDir', () => {
+    // beforeEach's fixture is already flat (prompts/go.md only); this asserts explicitly rather
+    // than relying on that being incidental to the other passing tests.
+    const r = buildBundle(baseInput());
+    expect(r.findings.some((f) => f.code === 'namespaced_prompt_skipped')).toBe(false);
+  });
 });

@@ -202,6 +202,23 @@ export function checkInteraction(classification: Classification): PreflightFindi
   }));
 }
 
+/**
+ * Claude Code exposes `commands/<ns>/<cmd>.md` as the namespaced slash command `/<ns>:<cmd>`
+ * (spec §2/§9: out of scope, alongside MCP servers and subagents). `build.ts`'s `markdownFiles`
+ * only reads `.md` files directly in `promptsDir`, so a namespaced command is silently dropped —
+ * this turns that silence into a warning naming each skipped namespace, so a promoted workflow
+ * that invokes one fails loudly and locally instead of remotely with no signal.
+ */
+export function checkNamespacedPrompts(namespacedDirs: string[]): PreflightFinding[] {
+  return namespacedDirs.map((name) => ({
+    severity: 'warn' as const,
+    code: 'namespaced_prompt_skipped',
+    message:
+      `prompts/${name}/ holds namespaced command(s) (Claude Code's '/${name}:*'); ` +
+      `only prompts directly in the prompts directory are promoted, so these are not included`,
+  }));
+}
+
 export function hasErrors(findings: PreflightFinding[]): boolean {
   return findings.some((f) => f.severity === 'error');
 }

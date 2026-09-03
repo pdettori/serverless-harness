@@ -86,6 +86,9 @@ a _separate_ sandbox pod. A "skill" therefore splits in two: its prose must be r
 - **Installing binaries.** Preflight detects and reports; the sandbox image provides.
 - **Live attach.** Driving a harness session interactively from Claude Code is the phase-2
   shape this design keeps the door open for (§6.4), not what it builds.
+- **Namespaced commands.** `commands/<ns>/<cmd>.md` (Claude Code's `/<ns>:<cmd>`) is not
+  recursed into; only prompts directly in the prompts directory travel. Preflight warns
+  (`namespaced_prompt_skipped`) rather than silently dropping them.
 
 ## 3. Design overview
 
