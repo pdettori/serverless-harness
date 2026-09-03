@@ -29,6 +29,7 @@ import { toolChoiceExtension } from './tool-choice-extension.js';
 // cycle: run-leaf.ts imports values from run-turn.js, but a `import type` adds no runtime edge.
 import type { LeafUsage } from './run-leaf.js';
 import { sseExtension, type TurnStreamFrame } from './turn-stream.js';
+import { promotedLoaderOptions, type PromotedConfig } from './config-resolver.js';
 
 /**
  * The sandbox a turn's tool calls run in: a resolved pod/pool config (null ⇒ run tools in the
@@ -368,6 +369,27 @@ export function sumBranchUsage(sm: unknown): LeafUsage {
   return { ...u, total: u.input + u.output + u.cacheRead + u.cacheWrite };
 }
 
+export interface BaseLoaderInputs {
+  cwd: string;
+  agentDir: string;
+  settingsManager: unknown;
+  extensionFactories: unknown[];
+}
+
+/**
+ * Assemble DefaultResourceLoader's options.
+ *
+ * Extracted as a pure function so the back-compat guarantee is assertable: with no promoted
+ * bundle the result has EXACTLY the four base keys, which is what makes an absent `configRef`
+ * byte-identical to today rather than merely intended to be.
+ */
+export function resourceLoaderOptionsFor(
+  base: BaseLoaderInputs,
+  promoted?: PromotedConfig,
+): Record<string, unknown> {
+  return { ...base, ...promotedLoaderOptions(promoted) };
+}
+
 export interface ExecuteTurnInput {
   prompt: string;
   sessionId?: string;
@@ -377,6 +399,8 @@ export interface ExecuteTurnInput {
   onEvent?: (frame: TurnStreamFrame) => void; // present ⇒ append sseExtension(onEvent) to the stack
   signal?: AbortSignal; // present ⇒ signal → session.abort() (client disconnect)
   sandbox?: TurnSandbox; // pre-leased sandbox; absent ⇒ resolve from the environment (/turn)
+  /** Resolved promoted Claude Code config; absent ⇒ the loader is built exactly as before. */
+  promotedConfig?: PromotedConfig;
 }
 
 /**
@@ -460,12 +484,12 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<TurnResult> 
     extensionFactories.push(sseExtension(input.onEvent));
   }
 
-  const resourceLoader = new DefaultResourceLoader({
-    cwd,
-    agentDir,
-    settingsManager,
-    extensionFactories,
-  });
+  const resourceLoader = new DefaultResourceLoader(
+    resourceLoaderOptionsFor(
+      { cwd, agentDir, settingsManager, extensionFactories },
+      input.promotedConfig,
+    ) as never,
+  );
   await resourceLoader.reload();
 
   const { provider, modelId } = input.selection ?? resolveModelSelection(config);
