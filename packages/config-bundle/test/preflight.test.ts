@@ -39,6 +39,26 @@ describe('checkSiblingPaths', () => {
     const s = skill('x', 'see `https://e.com/a.md` and `--flag` and `some text`', []);
     expect(checkSiblingPaths([s])).toEqual([]);
   });
+
+  it('ignores version numbers, IPs, semver ranges, and globs', () => {
+    const s = skill(
+      'x',
+      'see `1.2.3` and `127.0.0.1` and `node>=18.0` and `*.md` in backticks',
+      [],
+    );
+    expect(checkSiblingPaths([s])).toEqual([]);
+  });
+
+  it('still errors on genuinely missing files when filtering out false positives', () => {
+    const s = skill(
+      'x',
+      'see `1.2.3` version and `references/missing.md` file and `127.0.0.1` IP',
+      [],
+    );
+    const f = checkSiblingPaths([s]);
+    expect(f).toHaveLength(1);
+    expect(f[0]!.message).toContain('references/missing.md');
+  });
 });
 
 describe('checkMemoryLinks', () => {
@@ -54,6 +74,38 @@ describe('checkMemoryLinks', () => {
 
   it('is quiet when there is no memory index at all', () => {
     expect(checkMemoryLinks(undefined, [])).toEqual([]);
+  });
+
+  it('handles markdown links [Title](file.md) when file is present', () => {
+    expect(checkMemoryLinks('- [Alpha](alpha.md) — reference', ['alpha.md'])).toEqual([]);
+  });
+
+  it('warns for dangling markdown links', () => {
+    const f = checkMemoryLinks('- [Missing](alpha.md)', ['beta.md']);
+    expect(f).toHaveLength(1);
+    expect(f[0]!.code).toBe('dangling_memory_link');
+  });
+
+  it('handles wikilinks with |alias suffix', () => {
+    expect(checkMemoryLinks('see [[alpha|Alpha Notes]] in the docs', ['alpha.md'])).toEqual([]);
+  });
+
+  it('handles wikilinks with path prefix', () => {
+    expect(
+      checkMemoryLinks('see [[notes/alpha]] and [[beta]] in memory', ['alpha.md', 'beta.md']),
+    ).toEqual([]);
+  });
+
+  it('mixes markdown and wikilinks', () => {
+    const index = '- [Alpha](alpha.md)\n- [[beta|Beta Title]]\n- [[notes/gamma]]';
+    expect(checkMemoryLinks(index, ['alpha.md', 'beta.md', 'gamma.md'])).toEqual([]);
+  });
+
+  it('warns for any dangling form in a mixed index', () => {
+    const index = '- [Alpha](alpha.md)\n- [[gone]]';
+    const f = checkMemoryLinks(index, ['alpha.md']);
+    expect(f).toHaveLength(1);
+    expect(f[0]!.message).toContain('gone');
   });
 });
 

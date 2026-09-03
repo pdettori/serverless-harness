@@ -7,7 +7,10 @@ function referencedPaths(skillMd: string): string[] {
     const token = m[1]!.trim();
     if (!token || /^https?:\/\//.test(token) || token.startsWith('-')) continue;
     if (/\s/.test(token)) continue;
-    if (!/\.[a-z0-9]{1,5}$/i.test(token)) continue;
+    // Extension must start with a letter (kills versions like 1.2.3, IPs like 127.0.0.1)
+    if (!/\.[a-z][a-z0-9]{0,4}$/i.test(token)) continue;
+    // Reject tokens with glob/comparison operators (kills *.md, node>=18.0, etc)
+    if (/[*?<>=|]/.test(token)) continue;
     out.add(token.replace(/^\.\//, ''));
   }
   return [...out];
@@ -39,7 +42,7 @@ export function checkSiblingPaths(skills: ResolvedSkill[]): PreflightFinding[] {
   return findings;
 }
 
-/** Dangling `[[link]]` in MEMORY.md — usually a deny-listed memory file. Warn, not error. */
+/** Dangling links in MEMORY.md (both markdown `[title](file.md)` and `[[wikilink]]` forms) — usually deny-listed memory files. Warn, not error. */
 export function checkMemoryLinks(
   memoryIndex: string | undefined,
   includedMemoryNames: string[],
@@ -47,16 +50,37 @@ export function checkMemoryLinks(
   if (!memoryIndex) return [];
   const slugs = new Set(includedMemoryNames.map((n) => n.replace(/\.md$/, '')));
   const findings: PreflightFinding[] = [];
-  for (const m of memoryIndex.matchAll(/\[\[([^\]]+)\]\]/g)) {
-    const slug = m[1]!.trim();
+
+  // Extract markdown links: [Title](target.md)
+  for (const m of memoryIndex.matchAll(/\[([^\]]+)\]\(([^)]+)\)/g)) {
+    const target = m[2]!.trim();
+    // Strip directory prefix and .md extension
+    const slug = target.replace(/^.*\//, '').replace(/\.md$/, '');
     if (!slugs.has(slug)) {
       findings.push({
         severity: 'warn',
         code: 'dangling_memory_link',
-        message: `MEMORY.md links [[${slug}]], which is not included in the bundle`,
+        message: `MEMORY.md links [${m[1]}](${target}), which is not included in the bundle`,
       });
     }
   }
+
+  // Extract wikilinks: [[slug]] or [[slug|alias]] or [[path/slug]]
+  for (const m of memoryIndex.matchAll(/\[\[([^\]]+)\]\]/g)) {
+    const full = m[1]!.trim();
+    // Strip |alias suffix
+    const withoutAlias = full.split('|')[0]!.trim();
+    // Strip path prefix to get slug
+    const slug = withoutAlias.replace(/^.*\//, '');
+    if (!slugs.has(slug)) {
+      findings.push({
+        severity: 'warn',
+        code: 'dangling_memory_link',
+        message: `MEMORY.md links [[${full}]], which is not included in the bundle`,
+      });
+    }
+  }
+
   return findings;
 }
 
