@@ -59,3 +59,38 @@ export interface SecretFinding {
   rule: string;
   severity: SecretSeverity;
 }
+
+export interface LockfileSkillRecord {
+  name: string;
+  scope: SkillScope;
+  sourceDir: string;
+  contentHash: string;
+}
+
+export interface BundleLockfile {
+  binaries: string[];
+  builtAgainst: { harness: string; pi: string };
+  context: string[];
+  digest: string;
+  dropped: DroppedSkill[];
+  entry: string;
+  formatVersion: number;
+  interactionDependent: string[];
+  memory: string[];
+  mode: PromoteMode;
+  sandboxImage: string;
+  skills: LockfileSkillRecord[];
+}
+
+export interface LockfileInput {
+  digest: string;
+  mode: PromoteMode;
+  entry: string;
+  classification: Classification;
+  contextPaths: string[];
+  memoryPaths: string[];
+  sandboxImage: string;
+  binaries: string[];
+  versions: { pi: string; harness: string };
+  skillHashes: Record<string, string>;
+}
