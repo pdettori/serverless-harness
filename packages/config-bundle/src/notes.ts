@@ -54,5 +54,12 @@ export function skillsRootNote(): string {
     'When a skill instructs you to read one of its own files by a path relative to the skill,',
     'resolve that path against the skill\'s own subdirectory under the "Skill files:" directory',
     '— not against the current working directory.',
+    '',
+    // The bundle is built before any leaf exists, so this note cannot know whether a sandbox will
+    // be selected. When none is, run-leaf never appends those lines and this note would otherwise
+    // point at nothing — the same "instruction referencing something absent" failure it exists to
+    // prevent. Degrade out loud instead of letting the model invent a plausible path.
+    'If no such lines appear, the promoted skill and memory files are NOT reachable in this',
+    'session. Say so plainly rather than guessing a path or reporting a file as missing.',
   ].join('\n');
 }

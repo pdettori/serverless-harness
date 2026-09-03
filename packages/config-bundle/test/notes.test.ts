@@ -32,6 +32,18 @@ describe('skillsRootNote', () => {
     expect(note).toContain('working directory');
   });
 
+  it('tells the model what to do when those lines are absent, instead of dangling', () => {
+    // run-leaf.ts appends the "Skill files:"/"Memory files:" lines only when a sandbox is
+    // selected. The bundle is built before any leaf exists, so this note cannot be omitted
+    // conditionally -- without a fallback it points at lines that were never written, which is
+    // the same "instruction referencing something absent" defect the env-var removal fixed.
+    const note = skillsRootNote();
+    expect(note).toMatch(/if no such lines appear/i);
+    expect(note.toLowerCase()).toContain('not reachable');
+    // Must tell the model to SAY so rather than invent a path or misreport a missing file.
+    expect(note.toLowerCase()).toMatch(/say so/);
+  });
+
   it('points at the "Skill files:" / "Memory files:" fragment run-leaf.ts injects per leaf', () => {
     // This is the load-bearing link to run-leaf.ts's self-describing fragment: the note alone
     // cannot carry an absolute path (the bundle is built once, before any leaf exists), so it
