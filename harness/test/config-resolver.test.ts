@@ -19,8 +19,16 @@ const bundle = () => {
     { path: 'context/agents/0-CLAUDE.md', content: Buffer.from('# promoted project rules') },
     { path: 'context/MEMORY.md', content: Buffer.from('- [A](alpha.md)') },
     { path: 'memory/alpha.md', content: Buffer.from('fact') },
-    { path: 'prompt/append-0.md', content: Buffer.from('note zero\nsecond line') },
-    { path: 'prompt/append-1.md', content: Buffer.from('note one\nsecond line') },
+    // append-2 / append-10, not append-0 / append-1: canonicalTar always sorts entries
+    // byte-wise before writing (tar.ts), so untar hands unpackBundle entries in lexicographic
+    // path order regardless of this array's order -- reversing the source order alone changes
+    // nothing observable. What DOES distinguish "sorted" from "not sorted" is a pair whose
+    // lexicographic order differs from its numeric order: byte-wise, 'append-10.md' < 'append-2.md'
+    // ('1' < '2'), so a plain pass-through (or a non-numeric-aware sort) yields ten-before-two,
+    // while the numeric-aware comparator in unpackBundle correctly yields two-before-ten. This
+    // fixture fails if that comparator is removed, reversed, or degraded to lexicographic.
+    { path: 'prompt/append-10.md', content: Buffer.from('note ten\nsecond line') },
+    { path: 'prompt/append-2.md', content: Buffer.from('note two\nsecond line') },
   ];
   return { tar: canonicalTar(entries), digest: contentDigest(entries) };
 };
@@ -51,10 +59,13 @@ describe('unpackBundle', () => {
     expect(p.context.find((c) => c.path.endsWith('0-CLAUDE.md'))!.content).toContain('promoted');
   });
 
-  it('returns prompt fragments in append-N order', () => {
+  it('returns prompt fragments in numeric append-N order, not lexicographic', () => {
+    // 'append-10.md' sorts before 'append-2.md' lexicographically (and that is the order
+    // canonicalTar itself writes them in), so this only passes if unpackBundle's comparator is
+    // genuinely numeric-aware -- a no-op sort or a plain string sort both produce ten-before-two.
     const { tar, digest } = bundle();
-    expect(unpackBundle(tar, digest, base).promptFragments[0]).toContain('note zero');
-    expect(unpackBundle(tar, digest, base).promptFragments[1]).toContain('note one');
+    expect(unpackBundle(tar, digest, base).promptFragments[0]).toContain('note two');
+    expect(unpackBundle(tar, digest, base).promptFragments[1]).toContain('note ten');
   });
 
   it('is idempotent and leaves no temp directory behind', () => {
@@ -72,6 +83,22 @@ describe('unpackBundle', () => {
   it('rejects an entry path that escapes the unpack root', () => {
     const evil = canonicalTar([{ path: '../escape.md', content: Buffer.from('x') }]);
     expect(() => unpackBundle(evil, 'sha256:' + '0'.repeat(64), base)).toThrow(/escapes/);
+  });
+
+  it('rejects an absolutely-rooted entry path', () => {
+    // `resolve(staging, '/etc/passwd')` discards the base entirely, landing outside staging. The
+    // brief names this case explicitly, so it gets its own test rather than relying on the
+    // traversal case above.
+    const evil = canonicalTar([{ path: '/etc/passwd', content: Buffer.from('x') }]);
+    expect(() => unpackBundle(evil, 'sha256:' + '1'.repeat(64), base)).toThrow(/escapes/);
+  });
+
+  it('removes the staging directory when unpacking fails', () => {
+    // Cleanup correctness was previously verified only by reading the code, so a regression in the
+    // rmSync would have gone undetected and leaked a staging dir per failed unpack in a pod's /tmp.
+    const evil = canonicalTar([{ path: '../escape.md', content: Buffer.from('x') }]);
+    expect(() => unpackBundle(evil, 'sha256:' + '2'.repeat(64), base)).toThrow(/escapes/);
+    expect(readdirSync(base).filter((n) => n.startsWith('.tmp-'))).toEqual([]);
   });
 });
 

@@ -74,8 +74,22 @@ export function unpackBundle(
     }
   }
 
+  // Numeric-aware where an index is present: a plain lexicographic sort puts `append-10` before
+  // `append-2`, silently reordering injected prompt notes. Unreachable today (only two fragments are
+  // ever produced) but the cost of being wrong later is a scrambled system prompt.
+  const indexOf = (p: string): number => {
+    const m = /-(\d+)\.md$/.exec(p);
+    return m ? Number(m[1]) : Number.NaN;
+  };
   const text = (prefix: string) =>
-    entries.filter((e) => e.path.startsWith(prefix)).sort((a, b) => (a.path < b.path ? -1 : 1));
+    entries
+      .filter((e) => e.path.startsWith(prefix))
+      .sort((a, b) => {
+        const ia = indexOf(a.path);
+        const ib = indexOf(b.path);
+        if (!Number.isNaN(ia) && !Number.isNaN(ib) && ia !== ib) return ia - ib;
+        return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+      });
 
   return {
     digest,
