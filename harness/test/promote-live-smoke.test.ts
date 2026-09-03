@@ -52,8 +52,9 @@ describe('promoted workflow, end to end', () => {
       } as never);
 
       // THE assertion that matters: the model could only produce this word by resolving a
-      // relative path from a promoted skill's instructions against $SH_SKILLS_DIR in the
-      // sandbox. It proves path translation (spec §4.5) end to end.
+      // relative path from a promoted skill's instructions against the absolute skills-directory
+      // path the leaf injects into the prompt (run-leaf.ts) for that skill's own subdirectory in
+      // the sandbox. It proves path translation (spec §4.5) end to end.
       expect(result.status).toBe('responded');
       expect((result as { text: string }).text).toContain('PROMOTED-SIBLING-OK');
     },

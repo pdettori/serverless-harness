@@ -187,8 +187,12 @@ Iterate on a workflow locally in Claude Code — skills, `CLAUDE.md`, memory, a 
 then promote it:
 
 ```bash
-cd harness && pnpm promote --entry my-workflow
+cd harness && pnpm promote --entry my-workflow --project /path/to/your/project
 ```
+
+`promote` reads the workflow — skills, `CLAUDE.md` chain, and memory — from `--project`, so
+running it from the harness checkout without `--project` promotes the harness's own
+configuration, not yours.
 
 `promote` dedupes and classifies your local configuration, drops what cannot work in the harness
 (with a reason for each), and scans for credentials before uploading. The scan has two tiers: a

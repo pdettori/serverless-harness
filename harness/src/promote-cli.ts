@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createClient } from 'redis';
@@ -16,6 +16,7 @@ import {
   promoteInputs,
   readInventory,
   resolveInventoryPath,
+  resolveProjectDir,
 } from './promote.js';
 
 /** Write the lockfile to the filesystem. */
@@ -27,7 +28,16 @@ function writeLockfile(cwd: string, lockfile: ReturnType<typeof serializeLockfil
 
 async function main(): Promise<void> {
   const args = parsePromoteArgs(process.argv.slice(2));
-  const cwd = process.cwd();
+  // `--project` names the project being promoted; without it, promote reads whatever directory
+  // the process happens to be started from -- which, run via `pnpm promote` from `harness/`, is
+  // the harness checkout itself, not the caller's project. That silently bundled the harness's
+  // own CLAUDE.md and zero memory. Fail loudly rather than promote the wrong thing.
+  const cwd = resolveProjectDir(args, process.cwd());
+  if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
+    console.error(`promote aborted: project directory does not exist: ${cwd}`);
+    process.exit(1);
+  }
+  console.log(`project:    ${cwd}`);
 
   const inventoryPath = resolveInventoryPath(args.sandboxImage, cwd);
   const inventory = readInventory(args.sandboxImage, cwd);

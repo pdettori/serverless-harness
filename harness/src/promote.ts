@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, parse } from 'node:path';
+import { dirname, join, parse, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { BuildBundleInput, PromoteMode } from '@sh/config-bundle';
 
@@ -12,6 +12,7 @@ export interface PromoteArgs {
   sandboxImage: string;
   deny: string[];
   dryRun: boolean;
+  project?: string;
 }
 
 export function parsePromoteArgs(argv: string[]): PromoteArgs {
@@ -35,11 +36,28 @@ export function parsePromoteArgs(argv: string[]): PromoteArgs {
       i++;
     } else if (flag === '--sandbox-image') ((args.sandboxImage = value ?? ''), i++);
     else if (flag === '--deny') (args.deny.push(value ?? ''), i++);
-    else if (flag === '--dry-run') args.dryRun = true;
+    else if (flag === '--project') {
+      if (!value) throw new Error('--project requires a directory');
+      args.project = value;
+      i++;
+    } else if (flag === '--dry-run') args.dryRun = true;
     else throw new Error(`unknown flag: ${flag}`);
   }
   if (!args.entry) throw new Error('usage: sh promote --entry <prompt-name> [--mode attended]');
   return args;
+}
+
+/**
+ * The project directory to promote from: `--project` resolved to an absolute path, or `cwd`
+ * (the process's own working directory) when `--project` was not given.
+ *
+ * This is the fix for the only shipped invocation (`cd harness && pnpm promote`) silently
+ * promoting the harness checkout's own configuration: `pnpm run` sets `cwd` to the package
+ * directory, not the directory the caller actually meant, so an explicit `--project` is the only
+ * reliable way to name "the project" from inside a workspace script.
+ */
+export function resolveProjectDir(args: Pick<PromoteArgs, 'project'>, cwd: string): string {
+  return args.project !== undefined ? resolve(args.project) : cwd;
 }
 
 /**

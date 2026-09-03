@@ -8,6 +8,7 @@ import {
   projectRoot,
   collectContextFiles,
   promoteInputs,
+  resolveProjectDir,
   LOCKFILE_OUT,
   readInventory,
   resolveInventoryPath,
@@ -67,6 +68,57 @@ describe('parsePromoteArgs', () => {
 
   it('rejects an unknown mode rather than silently defaulting', () => {
     expect(() => parsePromoteArgs(['--entry', 'go', '--mode', 'sideways'])).toThrow(/mode/);
+  });
+
+  it('parses --project', () => {
+    const a = parsePromoteArgs(['--entry', 'go', '--project', '/some/dir']);
+    expect(a.project).toBe('/some/dir');
+  });
+
+  it('leaves project undefined when --project is not given', () => {
+    const a = parsePromoteArgs(['--entry', 'go']);
+    expect(a.project).toBeUndefined();
+  });
+
+  it('rejects an empty --project value', () => {
+    expect(() => parsePromoteArgs(['--entry', 'go', '--project', ''])).toThrow(/--project/);
+  });
+});
+
+describe('resolveProjectDir', () => {
+  it('resolves a relative --project to an absolute path against process cwd semantics', () => {
+    // resolve() anchors relative paths at process.cwd(); pass a distinct fallback cwd to prove
+    // the returned path is NOT that fallback -- it comes from resolving `args.project`.
+    const resolved = resolveProjectDir({ project: 'some/relative/dir' }, '/fallback/cwd');
+    expect(resolved).not.toBe('/fallback/cwd');
+    expect(resolved.endsWith('/some/relative/dir')).toBe(true);
+    expect(resolved.startsWith('/')).toBe(true);
+  });
+
+  it('resolves an absolute --project unchanged', () => {
+    expect(resolveProjectDir({ project: '/abs/dir' }, '/fallback/cwd')).toBe('/abs/dir');
+  });
+
+  it('falls back to cwd when --project is not given -- this is the bug this fix closes', () => {
+    // Before this fix, promote-cli.ts always used process.cwd(), which under
+    // `cd harness && pnpm promote` is the harness package directory, not the caller's project.
+    expect(resolveProjectDir({}, '/fallback/cwd')).toBe('/fallback/cwd');
+  });
+
+  it('redirects the memory lookup: projectMemoryDir differs for the resolved project vs. the harness subdirectory', () => {
+    // This is the actual defect from C1: `cd harness && pnpm promote` (no --project) slugs to
+    // ".../serverless-harness/harness", which Claude Code never created, so memory is always
+    // empty. With --project pointed at the repo root, the slug matches the real project dir.
+    const repoRoot = '/Users/p/Projects/aiplatform/serverless-harness';
+    const harnessSubdir = join(repoRoot, 'harness');
+    const withoutProjectFlag = resolveProjectDir({}, harnessSubdir);
+    const withProjectFlag = resolveProjectDir({ project: repoRoot }, harnessSubdir);
+    expect(projectMemoryDir(withoutProjectFlag, '/Users/p')).not.toBe(
+      projectMemoryDir(withProjectFlag, '/Users/p'),
+    );
+    expect(projectMemoryDir(withProjectFlag, '/Users/p')).toBe(
+      '/Users/p/.claude/projects/-Users-p-Projects-aiplatform-serverless-harness/memory',
+    );
   });
 });
 
