@@ -42,6 +42,19 @@ export function checkSiblingPaths(skills: ResolvedSkill[]): PreflightFinding[] {
   return findings;
 }
 
+/** Skip non-local link targets (external URLs, protocol-relative, fragments, queries, or outside memory dir). */
+function isLocalMemoryLink(target: string): boolean {
+  // Has URI scheme (https:, http:, mailto:, etc)
+  if (/^[a-z][a-z0-9+.-]*:/.test(target)) return false;
+  // Protocol-relative
+  if (/^\/\//.test(target)) return false;
+  // Fragment or query-only
+  if (/^[#?]/.test(target)) return false;
+  // Contains .. path segment (outside memory directory)
+  if (/\.\./.test(target)) return false;
+  return true;
+}
+
 /** Dangling links in MEMORY.md (both markdown `[title](file.md)` and `[[wikilink]]` forms) — usually deny-listed memory files. Warn, not error. */
 export function checkMemoryLinks(
   memoryIndex: string | undefined,
@@ -54,6 +67,8 @@ export function checkMemoryLinks(
   // Extract markdown links: [Title](target.md)
   for (const m of memoryIndex.matchAll(/\[([^\]]+)\]\(([^)]+)\)/g)) {
     const target = m[2]!.trim();
+    // Skip non-local targets (external URLs, relative paths outside memory, etc)
+    if (!isLocalMemoryLink(target)) continue;
     // Strip directory prefix and .md extension
     const slug = target.replace(/^.*\//, '').replace(/\.md$/, '');
     if (!slugs.has(slug)) {
@@ -70,6 +85,8 @@ export function checkMemoryLinks(
     const full = m[1]!.trim();
     // Strip |alias suffix
     const withoutAlias = full.split('|')[0]!.trim();
+    // Skip non-local targets (external URLs, relative paths outside memory, etc)
+    if (!isLocalMemoryLink(withoutAlias)) continue;
     // Strip path prefix to get slug
     const slug = withoutAlias.replace(/^.*\//, '');
     if (!slugs.has(slug)) {

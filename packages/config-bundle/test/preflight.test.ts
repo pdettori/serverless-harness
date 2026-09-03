@@ -107,6 +107,27 @@ describe('checkMemoryLinks', () => {
     expect(f).toHaveLength(1);
     expect(f[0]!.message).toContain('gone');
   });
+
+  it('ignores external URLs in markdown links', () => {
+    expect(checkMemoryLinks('[doc](https://example.com/file.md)', [])).toEqual([]);
+  });
+
+  it('ignores relative paths outside memory in markdown links', () => {
+    expect(checkMemoryLinks('[x](../elsewhere/x.md)', ['alpha.md'])).toEqual([]);
+  });
+
+  it('still catches dangling local markdown links after filtering non-local', () => {
+    // Present: should be quiet
+    expect(checkMemoryLinks('[t](alpha.md)', ['alpha.md'])).toEqual([]);
+    // Absent: should warn
+    const f = checkMemoryLinks('[t](alpha.md)', ['beta.md']);
+    expect(f).toHaveLength(1);
+    expect(f[0]!.code).toBe('dangling_memory_link');
+  });
+
+  it('ignores wikilinks with .. path segments', () => {
+    expect(checkMemoryLinks('see [[../outside/x]] in backlinks', ['alpha.md'])).toEqual([]);
+  });
 });
 
 describe('checkBinaries', () => {
