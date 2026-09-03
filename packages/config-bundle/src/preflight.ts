@@ -17,26 +17,40 @@ function referencedPaths(skillMd: string): string[] {
 }
 
 /**
- * A skill referencing a sibling that is not in the bundle would fail remotely as a confusing
- * read miss, so it is an error here (spec §4.6, tier 1). A reference is considered satisfied if
- * any bundled file path ends with it — skills write paths relative to their own dir or to the
- * plugin root, and both forms are legitimate.
+ * A skill referencing one of its OWN files that the bundle omits would fail remotely as a
+ * confusing read miss. Two deliberate restrictions, both measured against a real `~/.claude`:
+ *
+ * 1. **Only references the skill plausibly owns are flagged** — the reference must contain a `/`
+ *    AND its directory prefix must be a directory the skill actually ships files in. Without this
+ *    the check fired 182 times across 28 skills, because a skill's prose names plenty of paths it
+ *    does not ship: `main.py`, `requirements.txt`, `package.json` (files the reader will create),
+ *    `window.open` and `sys.path` (code), bare `.md`/`.py` (from "a `.md` file"), and example
+ *    project trees. `main.py` and `references/guide.md` are indistinguishable in shape, so no
+ *    regex separates them — only "does the skill own this directory" does. The rule cuts 182 to 9.
+ * 2. **Warn, not error.** The 9 survivors are still false positives (one skill documenting
+ *    hypothetical `references/*.md` because its subject is how to write skills), so blocking would
+ *    refuse promotion for anyone who has it installed. Preflight blocks only on facts.
+ *
+ * Satisfaction stays deliberately loose: a reference counts if any bundled path equals it, ends
+ * with `/<ref>`, or the reference ends with the path — skills write paths relative to their own
+ * directory or to the plugin root, and both are legitimate.
  */
 export function checkSiblingPaths(skills: ResolvedSkill[]): PreflightFinding[] {
   const findings: PreflightFinding[] = [];
   for (const skill of skills) {
+    const ownedDirs = new Set(
+      skill.files.filter((f) => f.includes('/')).map((f) => f.slice(0, f.lastIndexOf('/') + 1)),
+    );
     for (const ref of referencedPaths(skill.skillMd)) {
-      const satisfied = skill.files.some(
-        (f) => f === ref || f.endsWith('/' + ref) || ref.endsWith(f),
-      );
-      if (!satisfied) {
-        findings.push({
-          severity: 'error',
-          code: 'missing_sibling',
-          message: `skill '${skill.name}' references '${ref}', which is not in its directory`,
-          path: skill.dir,
-        });
-      }
+      if (skill.files.some((f) => f === ref || f.endsWith('/' + ref) || ref.endsWith(f))) continue;
+      if (!ref.includes('/')) continue; // a bare filename is prose, not a sibling claim
+      if (!ownedDirs.has(ref.slice(0, ref.lastIndexOf('/') + 1))) continue; // skill does not own it
+      findings.push({
+        severity: 'warn',
+        code: 'missing_sibling',
+        message: `skill '${skill.name}' references '${ref}', which is not in its directory`,
+        path: skill.dir,
+      });
     }
   }
   return findings;

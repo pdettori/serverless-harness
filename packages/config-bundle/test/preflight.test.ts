@@ -26,13 +26,27 @@ describe('checkSiblingPaths', () => {
     expect(checkSiblingPaths([s])).toEqual([]);
   });
 
-  it('errors when a referenced sibling is absent from the bundle', () => {
-    const s = skill('x', 'see `references/missing.md` for detail', []);
+  it('warns when a sibling under a directory the skill owns is absent', () => {
+    // The skill ships references/guide.md, so it demonstrably owns references/ — a missing file
+    // there is a real packaging gap. Warn, not error: preflight blocks only on facts.
+    const s = skill('x', 'see `references/missing.md` for detail', ['references/guide.md']);
     const f = checkSiblingPaths([s]);
     expect(f).toHaveLength(1);
-    expect(f[0]!.severity).toBe('error');
+    expect(f[0]!.severity).toBe('warn');
     expect(f[0]!.code).toBe('missing_sibling');
     expect(f[0]!.message).toContain('references/missing.md');
+  });
+
+  it('ignores paths the skill does not own, which is what prose is full of', () => {
+    // Measured: without these two exclusions the check fired 182 times across 28 real skills.
+    const bare = skill('x', 'create `main.py` and `requirements.txt` yourself', [
+      'references/g.md',
+    ]);
+    expect(checkSiblingPaths([bare])).toEqual([]);
+    const unowned = skill('y', 'see `src/server.ts` in your project', ['references/g.md']);
+    expect(checkSiblingPaths([unowned])).toEqual([]);
+    const code = skill('z', 'call `window.open` and read `sys.path`', ['references/g.md']);
+    expect(checkSiblingPaths([code])).toEqual([]);
   });
 
   it('ignores URLs and non-file-looking backticks', () => {
@@ -49,14 +63,17 @@ describe('checkSiblingPaths', () => {
     expect(checkSiblingPaths([s])).toEqual([]);
   });
 
-  it('still errors on genuinely missing files when filtering out false positives', () => {
+  it('still warns on genuinely missing owned files when filtering out false positives', () => {
+    // The skill owns references/ (it ships references/guide.md), so references/missing.md is a
+    // real gap even alongside version numbers and IPs that must NOT be mistaken for paths.
     const s = skill(
       'x',
       'see `1.2.3` version and `references/missing.md` file and `127.0.0.1` IP',
-      [],
+      ['references/guide.md'],
     );
     const f = checkSiblingPaths([s]);
     expect(f).toHaveLength(1);
+    expect(f[0]!.severity).toBe('warn');
     expect(f[0]!.message).toContain('references/missing.md');
   });
 });
