@@ -96,7 +96,10 @@ export function digestOf(tar: Buffer): string {
   return 'sha256:' + createHash('sha256').update(tar).digest('hex');
 }
 
-/** Filesystem-safe form of a digest, for use as a directory name. */
+/** Filesystem-safe form of a digest, for use as a directory name. `replaceAll`, not `replace`:
+ * a digest has exactly one `:` today (`sha256:<hex>`), but a single `replace` silently stops
+ * after the first match, so a future multi-colon shape would collide two distinct digests into
+ * the same directory name instead of erroring. */
 export function digestDirName(digest: string): string {
-  return digest.replace(':', '-');
+  return digest.replaceAll(':', '-');
 }

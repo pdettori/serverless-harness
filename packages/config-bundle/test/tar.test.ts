@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { canonicalTar, untar, digestOf, MAX_USTAR_PATH } from '../src/tar.js';
+import { canonicalTar, untar, digestOf, MAX_USTAR_PATH, digestDirName } from '../src/tar.js';
 
 const e = (path: string, body: string, mode?: number) => ({
   path,
@@ -74,5 +74,18 @@ describe('digestOf', () => {
     const a = digestOf(canonicalTar([e('a.md', 'x')]));
     const b = digestOf(canonicalTar([e('a.md', 'y')]));
     expect(a).not.toBe(b);
+  });
+});
+
+describe('digestDirName', () => {
+  it('replaces the colon in a normal digest', () => {
+    expect(digestDirName('sha256:' + 'a'.repeat(64))).toBe('sha256-' + 'a'.repeat(64));
+  });
+
+  it('replaces every colon, not just the first (replaceAll, not replace)', () => {
+    // A single `.replace(':', '-')` only swaps the first ':' and silently leaves the rest, so
+    // 'a:b:c' would become 'a-b:c' instead of 'a-b-c' -- this fails if replaceAll is reverted to
+    // replace.
+    expect(digestDirName('a:b:c')).toBe('a-b-c');
   });
 });
