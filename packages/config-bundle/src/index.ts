@@ -6,3 +6,4 @@ export * from './secret-scan.js';
 export * from './lockfile.js';
 export * from './notes.js';
 export * from './preflight.js';
+export * from './build.js';

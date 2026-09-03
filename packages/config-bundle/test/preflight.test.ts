@@ -131,10 +131,11 @@ describe('checkMemoryLinks', () => {
 });
 
 describe('checkBinaries', () => {
-  it('errors for a binary absent from the sandbox inventory', () => {
+  it('warns, and never errors, for a binary absent from the sandbox inventory', () => {
     const f = checkBinaries(['gh', 'kubectl'], ['kubectl']);
     expect(f).toHaveLength(1);
     expect(f[0]!.code).toBe('missing_binary');
+    expect(f[0]!.severity).toBe('warn');
     expect(f[0]!.message).toContain('gh');
   });
 

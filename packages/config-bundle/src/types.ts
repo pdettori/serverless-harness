@@ -101,3 +101,30 @@ export interface PreflightFinding {
   message: string;
   path?: string;
 }
+
+export interface BuildBundleInput {
+  roots: SkillRoots;
+  /** Directory holding MEMORY.md plus one-fact-per-file memories. */
+  memoryDir?: string;
+  /** Directory of slash-command templates; each `<name>.md` becomes prompt `<name>`. */
+  promptsDir?: string;
+  /** Already-read CLAUDE.md/AGENTS.md chain, outermost first. */
+  contextFiles?: Array<{ path: string; content: string }>;
+  entry: string;
+  mode: PromoteMode;
+  userDenyList?: string[];
+  sandboxImage: string;
+  /** Commands the sandbox image provides; undefined ⇒ cannot verify. */
+  inventory?: string[];
+  versions: { pi: string; harness: string };
+  /** Extra appendSystemPrompt fragments beyond the two standard notes. */
+  extraPromptFragments?: string[];
+}
+
+export interface BuildResult {
+  tar: Buffer;
+  digest: string;
+  lockfile: BundleLockfile;
+  findings: PreflightFinding[];
+  promptNames: string[];
+}

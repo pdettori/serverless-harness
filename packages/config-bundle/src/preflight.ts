@@ -102,9 +102,14 @@ export function checkMemoryLinks(
 }
 
 /**
- * The highest-value check: a missing `gh` is the classic silent remote failure. With no
- * inventory to compare against we WARN rather than pass silently — a check that cannot run is
- * not a check that succeeded.
+ * Warns, never errors. Measured against a real ~/.claude (55 travelling skills), the fenced-block
+ * scan that feeds `detected` produced 44 binaries and 32 "missing" against the shipped inventory —
+ * roughly half not commands at all (`angular`, `django`, `express`, `fastapi`, `vue`, `prisma`,
+ * `branch`, `rev-parse`, even the literal placeholder `your_command`). First-word-of-a-shell-fence
+ * cannot distinguish a command from prose, so blocking on it refused nearly every real promotion
+ * for mostly bogus reasons. A genuinely missing tool still fails remotely with a legible
+ * `gh: not found`, which is diagnosable and re-promotable — that is an acceptable failure mode;
+ * refusing every promotion up front is not.
  */
 export function checkBinaries(
   detected: string[],
@@ -127,7 +132,7 @@ export function checkBinaries(
   return detected
     .filter((b) => !have.has(b))
     .map((b) => ({
-      severity: 'error' as const,
+      severity: 'warn' as const,
       code: 'missing_binary',
       message: `binary '${b}' is used by a skill but is not in the sandbox image inventory`,
     }));
