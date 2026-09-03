@@ -94,3 +94,10 @@ export interface LockfileInput {
   versions: { pi: string; harness: string };
   skillHashes: Record<string, string>;
 }
+
+export interface PreflightFinding {
+  severity: 'error' | 'warn' | 'info';
+  code: string;
+  message: string;
+  path?: string;
+}
