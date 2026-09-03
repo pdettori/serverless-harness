@@ -222,3 +222,18 @@ describe('renderPreflight / hasErrors', () => {
     expect(renderPreflight([]).toLowerCase()).toContain('no findings');
   });
 });
+
+describe('checkMemoryLinks ReDoS resistance', () => {
+  // CodeQL flagged both link regexes as polynomial on uncontrolled data, and it was right:
+  // measured on the unbounded forms, 40 KB of '[' took 2281 ms and 80 KB of '[[' took 9186 ms,
+  // growing quadratically -- a crafted MEMORY.md in a third-party plugin skill would hang the
+  // promote CLI for minutes. Bounded, the same inputs take 33 ms and 62 ms.
+  // The budget is ~25x the fixed cost and ~1/6 of the broken cost, so it cannot pass unfixed.
+  it('does not blow up on pathological bracket runs', () => {
+    for (const evil of ['['.repeat(40000), '[['.repeat(40000), '[](' + '[(](('.repeat(8000)]) {
+      const t = performance.now();
+      checkMemoryLinks(evil, ['a.md']);
+      expect(performance.now() - t).toBeLessThan(1500);
+    }
+  });
+});

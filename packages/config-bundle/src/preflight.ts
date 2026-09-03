@@ -99,7 +99,11 @@ export function checkMemoryLinks(
   const findings: PreflightFinding[] = [];
 
   // Extract markdown links: [Title](target.md)
-  for (const m of memoryIndex.matchAll(/\[([^\]]+)\]\(([^)]+)\)/g)) {
+  // Quantifiers are BOUNDED and newline-excluded to stop a quadratic blow-up: the unbounded
+  // /\[([^\]]+)\]\(([^)]+)\)/ rescans from every '[', measured at 2.3 s on 40 KB of '[' and
+  // getting quadratically worse. Promote scans third-party plugin skills, so this input is not
+  // necessarily the user's own. Real memory links are far inside these bounds.
+  for (const m of memoryIndex.matchAll(/\[([^\]\n]{1,300})\]\(([^)\n]{1,500})\)/g)) {
     const target = m[2]!.trim();
     // Skip non-local targets (external URLs, relative paths outside memory, etc)
     if (!isLocalMemoryLink(target)) continue;
@@ -115,7 +119,8 @@ export function checkMemoryLinks(
   }
 
   // Extract wikilinks: [[slug]] or [[slug|alias]] or [[path/slug]]
-  for (const m of memoryIndex.matchAll(/\[\[([^\]]+)\]\]/g)) {
+  // Bounded for the same reason: the unbounded form measured 9.2 s on 80 KB of '[['.
+  for (const m of memoryIndex.matchAll(/\[\[([^\]\n]{1,300})\]\]/g)) {
     const full = m[1]!.trim();
     // Strip |alias suffix
     const withoutAlias = full.split('|')[0]!.trim();

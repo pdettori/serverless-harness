@@ -38,7 +38,13 @@ const WARNING_RULES: Array<{ rule: string; re: RegExp }> = [
  * warning list stays short enough that a human actually reads it.
  */
 const PLACEHOLDER =
-  /your[_-]?|example|placeholder|change[_-]?me|xxx+|dummy|fake|<[^>]+>|\bREPLACE|\bTODO|\.\.\./i;
+  // `<[^>\n]{1,200}>` is bounded and newline-excluded to clear a CodeQL polynomial-regex alert.
+  // In isolation the unbounded `<[^>]+>` measured 5.2 s on 60 KB of '<' -- but it is NOT
+  // reachable that way today: PLACEHOLDER only ever runs on a WARNING_RULES match, and both of
+  // those rules' value character classes ([A-Za-z0-9._~+/-]) exclude '<', so the matched text
+  // can never contain one. The bound is defence in depth against a future rule that admits '<',
+  // not a fix for a live denial of service. (The two bounds in preflight.ts ARE reachable.)
+  /your[_-]?|example|placeholder|change[_-]?me|xxx+|dummy|fake|<[^>\n]{1,200}>|\bREPLACE|\bTODO|\.\.\./i;
 
 /** Heuristic: a NUL byte means binary, so line-based scanning would be noise. */
 function looksBinary(buf: Buffer): boolean {

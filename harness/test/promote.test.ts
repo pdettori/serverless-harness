@@ -188,8 +188,8 @@ describe('collectContextFiles', () => {
     const cwd = join(root, 'sub');
     write('sub/CLAUDE.md', '# inner');
     // Create a file above the repo that would be collected if .git did not bound it
-    const above = join(tmpdir(), 'promote-above-' + Math.random().toString(36).slice(2));
-    mkdirSync(above, { recursive: true });
+    // mkdtempSync creates it atomically with 0700; a Math.random() name is predictable.
+    const above = mkdtempSync(join(tmpdir(), 'promote-above-'));
     try {
       writeFileSync(join(above, 'CLAUDE.md'), '# above-root');
       // Even if our cwd is moved above root, projectRoot finds the .git and bounds there
