@@ -40,6 +40,8 @@ spec). Chronological by the spec's date; numbers are permanent.
 | [0027](0027-rc1-control-gate-and-hop2-realization.md) | RC1 control gate as IBAC-only; Hop-2 egress interception over plain HTTP                    | Accepted    |
 | [0028](0028-async-prompt-dispatch.md)                 | Async prompt dispatch as a `kind:"prompt"` leaf sharing the `/turn` core                    | Proposed    |
 | [0029](0029-turn-sse-streaming.md)                    | Streaming `/turn` responses as an SSE representation via content negotiation                | Proposed    |
+| [0030](0030-claude-code-workflow-promotion.md)        | Promote local Claude Code workflows as a content-addressed config bundle                    | Proposed    |
+| [0031](0031-promoted-memory-read-only.md)             | Promoted memory travels read-only; discoveries return in the leaf result                    | Proposed    |
 
 ## What an ADR is (and isn't)
 

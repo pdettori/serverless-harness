@@ -49,6 +49,12 @@ import {
   GATE_DECISION_ENTRY_TYPE,
 } from './gate.js';
 import { requestApprovalExtension } from './request-approval-tool.js';
+import { gzipSync } from 'node:zlib';
+import { createClient } from 'redis';
+import { canonicalTar } from '@sh/config-bundle';
+import { resolvePromotedConfig, type PromotedConfig } from './config-resolver.js';
+import { overlayConfig, buildConfigCleanupScript } from './config-overlay.js';
+import type { BundleRedisLike } from './config-store.js';
 
 /**
  * Recover a verdict from a persisted `verdict` custom session entry (written by
@@ -103,6 +109,12 @@ export interface LeafEnvelope {
   maxTurns?: number;
   async?: boolean; // when true, the HTTP layer enqueues instead of running inline
   tenant?: string; // namespaces the session id
+  /**
+   * Digest of a promoted Claude Code config bundle (`sha256:…`). Absent ⇒ no promoted config and
+   * behavior is exactly as before. Flows through the server and the work queue untouched, because
+   * both pass the envelope through whole.
+   */
+  configRef?: string;
   kind?: 'converge' | 'solve' | 'prompt'; // absent/"converge" => existing behavior; "solve" => runSolveLeaf
   problemStatement?: string; // required when kind === "solve": the task the agent must implement
   prompt?: string; // required when kind === "prompt": the free-form prompt to run
@@ -113,6 +125,33 @@ export interface LeafEnvelope {
 function sandboxEnvironment(env: LeafEnvelope): NodeJS.ProcessEnv {
   if (!env.sandboxPoolSelector) return process.env;
   return { ...process.env, KAGENTI_SANDBOX_POOL_SELECTOR: env.sandboxPoolSelector };
+}
+
+/**
+ * Lazily-created Redis client for the bundle store. Kept separate from the session backend's client
+ * so a bundle fetch cannot interfere with session buffering.
+ *
+ * Caches the in-flight PROMISE, not the resolved client, mirroring RedisLeaseStore
+ * (sandbox-lease.ts:38-45). Caching only the resolved value is a check-then-act race: two leaves
+ * arriving before the first connect() settles would both pass the `!client` test, each create and
+ * connect a client, and the loser's connection would be silently leaked — never closed, never
+ * referenced again. Awaiting one shared promise makes concurrent callers converge on one client.
+ */
+let bundleRedisPromise: Promise<BundleRedisLike> | undefined;
+function getBundleRedis(redisUrl?: string): Promise<BundleRedisLike> {
+  if (!bundleRedisPromise) {
+    bundleRedisPromise = (async () => {
+      const client = createClient({ url: redisUrl ?? process.env.REDIS_URL });
+      await client.connect();
+      return client as unknown as BundleRedisLike;
+    })().catch((err) => {
+      // Do not cache a failed connect: clear the slot so the next leaf retries rather than
+      // inheriting a permanently rejected promise.
+      bundleRedisPromise = undefined;
+      throw err;
+    });
+  }
+  return bundleRedisPromise;
 }
 
 /** The Pi/Redis session id for a leaf: tenant-prefixed (if any), then sanitized. */
@@ -251,6 +290,9 @@ export async function runLeaf(
     produceVerdict?: ProduceVerdict;
     produceSolve?: ProduceSolve;
     executeTurn?: typeof executeTurn;
+    resolvePromotedConfig?: typeof resolvePromotedConfig;
+    overlayConfig?: typeof overlayConfig;
+    bundleRedis?: BundleRedisLike;
   },
 ): Promise<LeafResult> {
   if (env.kind === 'solve') return runSolveLeaf(env, config, deps);
@@ -318,7 +360,12 @@ export async function runSolveLeaf(
 async function runPromptLeaf(
   env: LeafEnvelope,
   config?: TurnConfig,
-  deps?: { executeTurn?: typeof executeTurn },
+  deps?: {
+    executeTurn?: typeof executeTurn;
+    resolvePromotedConfig?: typeof resolvePromotedConfig;
+    overlayConfig?: typeof overlayConfig;
+    bundleRedis?: BundleRedisLike;
+  },
 ): Promise<LeafResult> {
   if (!env.prompt) return { status: 'failed', reason: 'bad_inputs' };
   const cwd = config?.cwd ?? process.cwd();
@@ -359,6 +406,13 @@ async function runPromptLeaf(
   }
 
   let heartbeat: ReturnType<typeof setInterval> | undefined;
+  // Set once the sandbox overlay actually lands, so the finally block below knows there is a
+  // per-leaf /workspace/leaves/<sid>/.sh-config link to tear down. runPromptLeaf never converges a
+  // workspace (it has no repoUrl/ref and never calls convergeWorkspace/cleanupWorkspace), so
+  // without this nothing else ever removes that link -- it leaks on every promoted prompt leaf on a
+  // long-lived pooled pod. Declared here (not inside the try below) so the finally block -- a
+  // sibling block, not nested inside try -- can actually see it.
+  let overlayCreated = false;
   try {
     if (selected) {
       const hbMs = Number(process.env.KAGENTI_SANDBOX_HEARTBEAT_MS ?? '20000');
@@ -367,6 +421,69 @@ async function runPromptLeaf(
         void lease.heartbeat();
       }, hbMs);
     }
+    // Promoted config: resolve the prose half into this pod's /tmp and mirror the bundle into the
+    // sandbox we hold a lease on. Both halves come from one digest, and a failure of either fails
+    // the leaf — running a turn with silently-absent configuration produces plausible-but-wrong
+    // work, which is exactly the remote failure this design exists to prevent (spec §4.4). Resolving
+    // this AFTER the heartbeat starts (not before) matters operationally: resolve+overlay fetches a
+    // multi-MB bundle from Redis and pushes it into the pod over up to three kubectl execs, and with
+    // no heartbeat running during that window a slow cluster could have the lease reclaimed mid-overlay.
+    let promotedConfig: PromotedConfig | undefined;
+    if (env.configRef) {
+      const resolveFn = deps?.resolvePromotedConfig ?? resolvePromotedConfig;
+      const overlayFn = deps?.overlayConfig ?? overlayConfig;
+      try {
+        promotedConfig = await resolveFn(
+          deps?.bundleRedis ?? (await getBundleRedis(config?.redisUrl)),
+          env.configRef,
+        );
+        if (selected) {
+          // SelectedSandbox.transport is present ONLY for a leased grpc presence record and is
+          // undefined for pods (select-sandbox.ts:33-34), which is the DEFAULT deployment. Guarding
+          // on `selected.transport` would therefore skip the overlay entirely on pods: the sandbox
+          // half of the bundle would never arrive, so skill sibling files and memory would be
+          // unreadable — and a unit test injecting a fake transport could not detect it. Use the
+          // same fallback the converge path uses (run-leaf.ts:579-584): build a KubectlTransport
+          // when none is leased, and close only what we created.
+          const overlayTransport = selected.transport ?? KubectlTransport(selected.config);
+          try {
+            const paths = await overlayFn(
+              overlayTransport,
+              env.configRef,
+              sid,
+              gzipSync(canonicalTar(promotedConfig.entries)),
+            );
+            overlayCreated = true;
+            promotedConfig = {
+              ...promotedConfig,
+              promptFragments: [
+                ...promotedConfig.promptFragments,
+                // Self-describing and multi-line on purpose: this is the ONLY place the absolute
+                // sandbox paths exist (the bundle is content-addressed and built before any leaf
+                // or sandbox does, so notes.ts's skillsRootNote() cannot bake them in — it instead
+                // points back at these two lines). A single-line string here would also risk
+                // pi-fork's resolvePromptInput treating it as a file path when existsSync(input)
+                // is true.
+                [
+                  'The following are absolute sandbox paths for this session:',
+                  '',
+                  `Skill files: ${paths.skillsDir}`,
+                  `Memory files: ${paths.memoryDir}`,
+                ].join('\n'),
+              ],
+            };
+          } finally {
+            if (!selected.transport) await overlayTransport.close();
+          }
+        }
+      } catch (err) {
+        return {
+          status: 'failed',
+          reason: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
     const r: TurnResult = await exec({
       prompt: env.prompt,
       sessionId: env.sessionId,
@@ -374,6 +491,7 @@ async function runPromptLeaf(
       createIfAbsent: true,
       selection,
       sandbox: { config: selected?.config ?? null, transport: selected?.transport },
+      ...(promotedConfig ? { promotedConfig } : {}),
     });
     if (r.stopReason === 'aborted') return { status: 'aborted' };
     if (r.stopReason === 'error')
@@ -389,6 +507,20 @@ async function runPromptLeaf(
     };
   } finally {
     if (heartbeat) clearInterval(heartbeat);
+    if (overlayCreated && selected) {
+      // Best-effort, matching cleanupWorkspace (converge.ts): swallow errors so a teardown hiccup
+      // never masks the leaf's actual verdict. Follows the same transport fallback used above and
+      // at run-leaf.ts:579-584 -- reuse a leased grpc transport if present, otherwise build a
+      // KubectlTransport, and close only the transport we created ourselves.
+      const cleanupTransport = selected.transport ?? KubectlTransport(selected.config);
+      try {
+        await cleanupTransport.exec(buildConfigCleanupScript(sid), { timeout: 60 });
+      } catch {
+        /* ignore */
+      } finally {
+        if (!selected.transport) await cleanupTransport.close();
+      }
+    }
     if (selected) await selected.release();
     if (selected?.transport) await selected.transport.close();
   }

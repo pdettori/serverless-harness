@@ -11,14 +11,20 @@
     "./budget-voter": "./src/budget-voter.ts",
     "./leaf-job-runner": "./src/leaf-job-runner.ts",
     "./leaf-result-store": "./src/leaf-result-store.ts",
-    "./sandbox-lease": "./src/sandbox-lease.ts"
+    "./sandbox-lease": "./src/sandbox-lease.ts",
+    "./config-store": "./src/config-store.ts",
+    "./config-resolver": "./src/config-resolver.ts",
+    "./config-overlay": "./src/config-overlay.ts",
+    "./promote": "./src/promote.ts"
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "promote": "tsx src/promote-cli.ts"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.12.0",
+    "@sh/config-bundle": "workspace:*",
     "@sh/session-backend": "workspace:*",
     "@sh/k8s-sandbox": "workspace:*",
     "@sh/work-queue": "workspace:*",

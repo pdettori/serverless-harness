@@ -102,6 +102,9 @@ flowchart LR
   `RuntimeDefault` seccomp, no service-account token automount.
 - **Built on Pi** — wraps a pinned [`kagenti/pi`](https://github.com/kagenti/pi) coding agent through
   an injectable `SessionStorageBackend` seam; the agent itself is unmodified.
+- **Promote a local Claude Code workflow** — `cd harness && pnpm promote` bundles skills, `CLAUDE.md`,
+  memory, and a slash command from your local `~/.claude` into a content-addressed bundle a leaf can
+  dispatch by digest (see [Promoting a local Claude Code workflow](#promoting-a-local-claude-code-workflow)).
 
 ---
 
@@ -175,6 +178,41 @@ troubleshooting — is in **[`deploy/knative/README-ocp.md`](deploy/knative/READ
    pod dies mid-run.
 6. **Results land as files** on a shared PVC, and a **done-marker** signals completion to the
    orchestrator.
+
+---
+
+### Promoting a local Claude Code workflow
+
+Iterate on a workflow locally in Claude Code — skills, `CLAUDE.md`, memory, a slash command —
+then promote it:
+
+```bash
+cd harness && pnpm promote --entry my-workflow --project /path/to/your/project
+```
+
+`promote` reads the workflow — skills, `CLAUDE.md` chain, and memory — from `--project`, so
+running it from the harness checkout without `--project` promotes the harness's own
+configuration, not yours.
+
+`promote` dedupes and classifies your local configuration, drops what cannot work in the harness
+(with a reason for each), and scans for credentials before uploading. The scan has two tiers: a
+structural match on a known key shape (an AWS access key, a PEM private-key block, a GitHub or
+Slack token, an OpenAI-style key) **refuses the upload** and exits non-zero; a weaker prose
+heuristic (`token: <value>`-shaped lines) only **warns and proceeds**, leaving the judgement to
+you — that heuristic matches code and documentation placeholders too often to block on safely. It
+writes a committable `.claude/promoted.lock.json` and uploads a content-addressed bundle; an
+unchanged re-promotion uploads nothing.
+
+Dispatch it by adding one field to any prompt leaf:
+
+```json
+{ "sessionId": "run-1/item-1", "kind": "prompt", "prompt": "…", "configRef": "sha256:…" }
+```
+
+Memory travels **read-only** — a promoted run consumes what you taught it locally and reports
+discoveries back in the leaf result, which keeps leaf replay reproducible
+([ADR-0031](docs/adrs/0031-promoted-memory-read-only.md)). MCP servers and subagents are not
+promoted; see the [design](docs/specs/2026-09-02-claude-code-workflow-promotion-design.md) §2, §9.
 
 ---
 
