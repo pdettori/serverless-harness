@@ -6,8 +6,11 @@
 # promote-live-smoke.test.ts sat broken for a whole PR. These checks pin the parts that make it
 # correct rather than merely present:
 #
-#   - `allowed-tools` must cover every command the body actually invokes, or the user approves a
-#     permission prompt on every run and the "one command" claim is false.
+#   - `allowed-tools` must cover every command the body actually invokes -- including after `&&` and
+#     `||`, which is where `echo` hid while an earlier version of this check claimed to cover
+#     "every command" and did not -- or the user approves a permission prompt on every run and the
+#     "one command" claim is false. Grants are matched whole, so tightening `kubectl:*` to per-verb
+#     grants strengthens the check instead of bypassing it.
 #   - the two flags whose absence silently promotes the WRONG THING (`--project`, `HOME=`) must be
 #     in the documented invocation. Both were verified by measurement: without --project the CLI
 #     promotes the harness checkout it was launched from, and without HOME it resolves 56
@@ -38,20 +41,55 @@ for key in description argument-hint allowed-tools; do
 done
 
 echo "== allowed-tools covers every command the body invokes"
-# Permitted command prefixes, e.g. "Bash(kubectl:*)" -> kubectl
-PERMITTED="$(grep -oE 'Bash\([a-z]+' <<< "$FM" | sed 's/Bash(//' | sort -u)"
-check "permits at least pnpm and kubectl" \
-  "$(grep -cE '^(pnpm|kubectl)$' <<< "$PERMITTED")" "2"
-# Commands the body actually runs: the first word of every !`...` context probe, plus the first
-# word of each line inside fenced bash blocks (skipping continuations and env assignments).
+# Grants, kept WHOLE: "Bash(kubectl port-forward:*)" -> "kubectl port-forward". Collapsing these to
+# a first word would accept any `kubectl` subcommand against a deliberately per-verb grant, so the
+# check would silently weaken exactly when the grant is tightened.
+PERMITTED="$(grep -oE 'Bash\([^):]+' <<< "$FM" | sed 's/^Bash(//' | sort -u)"
+check "permits pnpm" "$(grep -cE '^pnpm' <<< "$PERMITTED")" "1"
+check "grants kubectl per verb, not kubectl:*" \
+  "$(grep -cxF 'kubectl' <<< "$PERMITTED")" "0"
+
+# Commands the body actually runs. Split on && || ; | and newlines FIRST: keeping only the first
+# word of each probe hid every `&& echo`/`|| echo`, which is how `echo` stayed ungranted while a
+# test claiming to cover "every command" passed. Env assignments are stripped so
+# `HOME=... pnpm ...` is seen as pnpm.
 USED="$( {
   grep -oE '!`[^`]+`' "$CMD" | sed 's/^!`//; s/`$//'
   awk '/^```bash$/{f=1; next} /^```$/{f=0} f' "$CMD"
-} | sed -E 's/^[[:space:]]+//' |
+} | sed -E 's/[[:space:]]*(&&|\|\||;|\|)[[:space:]]*/\n/g' |
+  sed -E 's/^[[:space:]]+//; s/^[0-9]*>[^[:space:]]*[[:space:]]*//' |
   sed -E 's/^([A-Za-z_][A-Za-z0-9_]*=("[^"]*"|[^[:space:]]*)[[:space:]]+)+//' |
-  grep -oE '^[a-z][a-z0-9_-]*' | sort -u | grep -vE '^(echo|then|else|fi|do|done)$')"
-for c in $USED; do
-  check "allowed-tools covers '$c'" "$(grep -cxF "$c" <<< "$PERMITTED")" "1"
+  grep -oE '^[a-z][a-z0-9_-]*([[:space:]]+[a-z][a-z0-9_-]*)?' | sort -u)"
+
+# Each invocation must be covered by SOME grant, matched as a prefix so a two-word grant
+# ("kubectl port-forward") covers a longer invocation and a one-word grant ("ls") still covers "ls -d".
+for u in $(printf '%s\n' "$USED" | tr ' ' '@'); do
+  inv="$(printf '%s' "$u" | tr '@' ' ')"
+  covered=no
+  while read -r g; do
+    [ -z "$g" ] && continue
+    case "$inv " in "$g "*) covered=yes; break ;; esac
+    case "$inv" in "$g") covered=yes; break ;; esac
+  done <<< "$PERMITTED"
+  # A bare first word of a two-word grant is not itself an invocation (e.g. "kubectl" alone never
+  # runs); skip it rather than demanding a grant that would have to be widened.
+  if [ "$covered" = no ] && grep -qE "^$inv " <<< "$PERMITTED"; then covered=skip; fi
+  case "$covered" in
+    yes) echo "  ok: allowed-tools covers '$inv'" ;;
+    skip) echo "  ok: '$inv' is a grant prefix, not an invocation" ;;
+    *)
+      echo "  FAIL: '$inv' is invoked but not granted"
+      fails=$((fails + 1))
+      ;;
+  esac
+done
+
+# kubectl is instructed in prose (guard 3's port-forward, the redis-cli EXISTS verify) rather than
+# inside a ! probe or a bash fence, so the extraction above cannot see it. This floor exists to
+# cover that blind spot -- it is not redundant with the loop.
+for needed in "kubectl port-forward" "kubectl exec"; do
+  check "grants '$needed', which appears only in prose" \
+    "$(grep -cxF "$needed" <<< "$PERMITTED")" "1"
 done
 
 echo "== the invocation cannot silently promote the wrong thing"

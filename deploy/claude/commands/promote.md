@@ -1,8 +1,21 @@
 ---
 description: Promote this project's Claude Code workflow into the serverless harness
 argument-hint: <entry-prompt> [--dry-run] [--deny <skill>] [--sandbox-image <ref>]
-allowed-tools: Bash(pnpm:*), Bash(kubectl:*), Bash(test:*), Bash(ls:*), Bash(jq:*), Bash(lsof:*), Bash(pwd), Bash(git rev-parse:*), Bash(git init:*)
+allowed-tools: Bash(pnpm:*), Bash(kubectl port-forward:*), Bash(kubectl exec:*), Bash(test:*), Bash(ls:*), Bash(lsof:*), Bash(pwd), Bash(echo:*), Bash(git init:*)
 ---
+
+<!--
+allowed-tools notes, so a later edit does not widen this back:
+  * kubectl is granted per verb (port-forward, exec) rather than as `kubectl:*`, because this file is
+    installed into real user scope and is therefore visible in every project -- `kubectl:*` would
+    carry `kubectl delete` with it.
+  * pnpm stays broad on purpose. The documented invocation begins with env assignments
+    (`HOME="$PWD" REDIS_URL=... pnpm --dir ...`), so a narrower `Bash(pnpm --dir:*)` prefix is not
+    reliably matched, and the env has to be inline because exports do not survive between tool calls.
+  * echo is granted because five of the six Context probes end in `&& echo`/`|| echo`.
+  * jq and `git rev-parse` were granted but never invoked, and are gone. `git init` stays: guard 1
+    offers it.
+-->
 
 ## Context
 
