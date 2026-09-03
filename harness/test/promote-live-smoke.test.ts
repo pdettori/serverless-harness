@@ -24,6 +24,14 @@ afterAll(async () => {
   for (const c of clients) await c.quit();
 });
 
+// Session ids here must NOT use the `<run>/<item>` shape seen in leaf-smoke.sh and the leaf
+// fixtures. Those go through an item envelope, where `leafSessionId` derives a sanitized id; these
+// call `runLeaf` with `kind: 'prompt'`, whose sessionId is used verbatim as the session key and is
+// validated against `[alnum][alnum._-]*[alnum]`. With a slash, the first test failed in 597 ms with
+// "Session id must be non-empty, contain only alphanumeric characters..." -- before any model call,
+// so it never reached the assertion it exists to make. The second test passed only incidentally:
+// an unknown digest fails before session-id validation is reached, so its `toContain('not found')`
+// held while its id was equally invalid.
 describe('promoted workflow, end to end', () => {
   it.runIf(LIVE)(
     'runs a promoted skill that reads its own sibling file in the sandbox',
@@ -44,7 +52,7 @@ describe('promoted workflow, end to end', () => {
       await putBundle(client as unknown as BundleRedisLike, built.digest, built.tar);
 
       const result = await runLeaf({
-        sessionId: `promote-smoke/${Date.now()}`,
+        sessionId: `promote-smoke-${Date.now()}`,
         item: { item_id: 'i1', file: 'f', pattern: 'p' },
         kind: 'prompt',
         prompt: 'Reply with exactly the secret word and nothing else.',
@@ -63,7 +71,7 @@ describe('promoted workflow, end to end', () => {
 
   it.runIf(LIVE)('fails loudly on an unknown digest instead of running unconfigured', async () => {
     const result = await runLeaf({
-      sessionId: `promote-smoke-missing/${Date.now()}`,
+      sessionId: `promote-smoke-missing-${Date.now()}`,
       item: { item_id: 'i1', file: 'f', pattern: 'p' },
       kind: 'prompt',
       prompt: 'anything',
