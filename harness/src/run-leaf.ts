@@ -50,6 +50,7 @@ import {
 } from './gate.js';
 import { requestApprovalExtension } from './request-approval-tool.js';
 import { gzipSync } from 'node:zlib';
+import { createClient } from 'redis';
 import { canonicalTar } from '@sh/config-bundle';
 import { resolvePromotedConfig, type PromotedConfig } from './config-resolver.js';
 import { overlayConfig } from './config-overlay.js';
@@ -127,18 +128,30 @@ function sandboxEnvironment(env: LeafEnvelope): NodeJS.ProcessEnv {
 }
 
 /**
- * Lazily-created Redis client for the bundle store. Kept separate from the session backend's
- * client so a bundle fetch cannot interfere with session buffering.
+ * Lazily-created Redis client for the bundle store. Kept separate from the session backend's client
+ * so a bundle fetch cannot interfere with session buffering.
+ *
+ * Caches the in-flight PROMISE, not the resolved client, mirroring RedisLeaseStore
+ * (sandbox-lease.ts:38-45). Caching only the resolved value is a check-then-act race: two leaves
+ * arriving before the first connect() settles would both pass the `!client` test, each create and
+ * connect a client, and the loser's connection would be silently leaked — never closed, never
+ * referenced again. Awaiting one shared promise makes concurrent callers converge on one client.
  */
-let bundleRedis: BundleRedisLike | undefined;
-async function getBundleRedis(redisUrl?: string): Promise<BundleRedisLike> {
-  if (!bundleRedis) {
-    const { createClient } = await import('redis');
-    const client = createClient({ url: redisUrl ?? process.env.REDIS_URL });
-    await client.connect();
-    bundleRedis = client as unknown as BundleRedisLike;
+let bundleRedisPromise: Promise<BundleRedisLike> | undefined;
+function getBundleRedis(redisUrl?: string): Promise<BundleRedisLike> {
+  if (!bundleRedisPromise) {
+    bundleRedisPromise = (async () => {
+      const client = createClient({ url: redisUrl ?? process.env.REDIS_URL });
+      await client.connect();
+      return client as unknown as BundleRedisLike;
+    })().catch((err) => {
+      // Do not cache a failed connect: clear the slot so the next leaf retries rather than
+      // inheriting a permanently rejected promise.
+      bundleRedisPromise = undefined;
+      throw err;
+    });
   }
-  return bundleRedis;
+  return bundleRedisPromise;
 }
 
 /** The Pi/Redis session id for a leaf: tenant-prefixed (if any), then sanitized. */
@@ -394,10 +407,20 @@ async function runPromptLeaf(
 
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   try {
+    if (selected) {
+      const hbMs = Number(process.env.KAGENTI_SANDBOX_HEARTBEAT_MS ?? '20000');
+      const lease = selected;
+      heartbeat = setInterval(() => {
+        void lease.heartbeat();
+      }, hbMs);
+    }
     // Promoted config: resolve the prose half into this pod's /tmp and mirror the bundle into the
     // sandbox we hold a lease on. Both halves come from one digest, and a failure of either fails
     // the leaf — running a turn with silently-absent configuration produces plausible-but-wrong
-    // work, which is exactly the remote failure this design exists to prevent (spec §4.4).
+    // work, which is exactly the remote failure this design exists to prevent (spec §4.4). Resolving
+    // this AFTER the heartbeat starts (not before) matters operationally: resolve+overlay fetches a
+    // multi-MB bundle from Redis and pushes it into the pod over up to three kubectl execs, and with
+    // no heartbeat running during that window a slow cluster could have the lease reclaimed mid-overlay.
     let promotedConfig: PromotedConfig | undefined;
     if (env.configRef) {
       const resolveFn = deps?.resolvePromotedConfig ?? resolvePromotedConfig;
@@ -442,13 +465,6 @@ async function runPromptLeaf(
           message: err instanceof Error ? err.message : String(err),
         };
       }
-    }
-    if (selected) {
-      const hbMs = Number(process.env.KAGENTI_SANDBOX_HEARTBEAT_MS ?? '20000');
-      const lease = selected;
-      heartbeat = setInterval(() => {
-        void lease.heartbeat();
-      }, hbMs);
     }
     const r: TurnResult = await exec({
       prompt: env.prompt,

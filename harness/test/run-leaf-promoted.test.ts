@@ -161,6 +161,7 @@ describe('configRef on a prompt leaf', () => {
   });
 
   it('fails the leaf when the sandbox overlay fails', async () => {
+    kubectlTransportMock.mockClear();
     const executeTurn = okTurn();
     selectPoolSandboxMock.mockReset().mockResolvedValue(podLease());
     const r = await runLeaf(env({ configRef: digest }), undefined, {
@@ -176,5 +177,10 @@ describe('configRef on a prompt leaf', () => {
     expect(r.status).toBe('failed');
     expect(r.reason).toBe('error');
     expect(executeTurn).not.toHaveBeenCalled();
+    // The fallback transport is built for a transport-less (pod) lease even on this failure path,
+    // and must still be closed -- it is created inside the try, so only its own local `finally`
+    // (not the leaf-level cleanup) is responsible for tearing it down.
+    expect(kubectlTransportMock).toHaveBeenCalledTimes(1);
+    expect(kubectlTransportMock.mock.results[0]!.value.close).toHaveBeenCalledTimes(1);
   });
 });
