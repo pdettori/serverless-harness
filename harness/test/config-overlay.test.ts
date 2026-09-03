@@ -39,6 +39,24 @@ describe('buildCachePopulateScript', () => {
   it('makes .sh scripts executable (tar-over-exec does not preserve the bit reliably)', () => {
     expect(s).toContain('chmod +x');
   });
+  it('enables pipefail so a failed base64 cannot be masked by a successful tar', () => {
+    // Without pipefail the pipeline reports only tar's status, and a truncated stdin would produce
+    // exit 0 with an incompletely populated cache.
+    expect(s).toContain('set -euo pipefail');
+  });
+
+  it('traps EXIT to remove the staging dir, so failures do not accumulate stale dirs', () => {
+    expect(s).toMatch(/trap 'rm -rf "\$TMP"' EXIT/);
+    // and the trap must be armed BEFORE extraction, or it cannot clean up a failed extract
+    expect(s.indexOf('trap')).toBeLessThan(s.indexOf('base64 -d'));
+  });
+
+  it('documents the tolerated undrained-stdin race next to the early exit', () => {
+    // A future reader "fixing" this race would either reintroduce the transfer the probe avoids or
+    // re-extract over a populated cache, so the reasoning has to live in the source.
+    expect(s).toMatch(/race|undrained|tolerat/i);
+  });
+
   it('single-quote-escapes the digest', () => {
     expect(buildCachePopulateScript("x'; rm -rf /; '")).toContain(`'\\''`);
   });
