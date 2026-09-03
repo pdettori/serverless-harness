@@ -14,11 +14,13 @@
     "./sandbox-lease": "./src/sandbox-lease.ts",
     "./config-store": "./src/config-store.ts",
     "./config-resolver": "./src/config-resolver.ts",
-    "./config-overlay": "./src/config-overlay.ts"
+    "./config-overlay": "./src/config-overlay.ts",
+    "./promote": "./src/promote.ts"
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "promote": "tsx src/promote-cli.ts"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.12.0",
