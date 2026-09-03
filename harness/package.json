@@ -13,7 +13,8 @@
     "./leaf-result-store": "./src/leaf-result-store.ts",
     "./sandbox-lease": "./src/sandbox-lease.ts",
     "./config-store": "./src/config-store.ts",
-    "./config-resolver": "./src/config-resolver.ts"
+    "./config-resolver": "./src/config-resolver.ts",
+    "./config-overlay": "./src/config-overlay.ts"
   },
   "scripts": {
     "test": "vitest run",
