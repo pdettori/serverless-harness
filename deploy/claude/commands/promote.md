@@ -12,7 +12,8 @@ allowed-tools notes, so a later edit does not widen this back:
   * pnpm stays broad on purpose. The documented invocation begins with env assignments
     (`HOME="$PWD" REDIS_URL=... pnpm --dir ...`), so a narrower `Bash(pnpm --dir:*)` prefix is not
     reliably matched, and the env has to be inline because exports do not survive between tool calls.
-  * echo is granted because five of the six Context probes end in `&& echo`/`|| echo`.
+  * echo is granted because the Context probes end in `&& echo`/`|| echo`.
+  * the self-exclusion probe needs nothing new: `test -f` and `echo` are already granted.
   * jq and `git rev-parse` were granted but never invoked, and are gone. `git init` stays: guard 1
     offers it.
 -->
@@ -25,6 +26,7 @@ allowed-tools notes, so a later edit does not widen this back:
 - Workflow config here: !`ls -d .claude/skills .claude/commands 2>/dev/null || echo "no .claude/skills or .claude/commands"`
 - Repo boundary for the context walk: !`test -e .git && echo ".git present" || echo "NO .git — see guard 1"`
 - Cluster Redis tunnel on 16379: !`lsof -nP -iTCP:16379 -sTCP:LISTEN >/dev/null 2>&1 && echo "listening" || echo "absent"`
+- This command lives in the project: !`test -f .claude/commands/promote.md && echo "yes — must self-exclude" || echo "no"`
 
 ## Your task
 
@@ -61,6 +63,12 @@ These are not hypothetical — each one produced a confident, wrong result durin
 HOME="$PWD" REDIS_URL=redis://localhost:16379 \
   pnpm --dir "$SH_HARNESS_DIR/harness" promote --entry <entry> --project "$PWD" <extra-args>
 ```
+
+**If the Context above says this command lives in the project, add
+`--exclude-prompt promote`.** Otherwise it ships itself into the bundle as a prompt template, since
+`HOME="$PWD"` makes this project's `.claude/commands/` the prompts directory. Add it **only** in that
+case: passing it when there is no local `promote.md` produces a `prompt_exclude_unmatched` warning,
+which is the flag's own typo guard firing on a false alarm.
 
 Two parts of that are load-bearing, so do not "simplify" them:
 

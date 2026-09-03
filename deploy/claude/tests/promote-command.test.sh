@@ -103,6 +103,17 @@ check "runs the CLI via --dir on the harness checkout" \
 check "explains why --project is not redundant" \
   "$(grep -ciE 'do not "simplify"|not "simplify" them' "$CMD")" "1"
 
+echo "== it self-excludes when it lives in the project it promotes"
+# Without this the command ships itself as a prompt template whenever it is installed in the project
+# (which is the placement that buys local/remote parity). The conditional matters as much as the
+# flag: passing --exclude-prompt unconditionally would trip the flag's own typo guard.
+check "probes whether the project carries this command" \
+  "$(grep -c 'test -f .claude/commands/promote.md' "$CMD")" "1"
+check "tells the model to pass --exclude-prompt promote" \
+  "$(grep -c -- '--exclude-prompt promote' "$CMD")" "1"
+check "says to add it ONLY when the command is local" \
+  "$(grep -ciE 'only.*in that case|prompt_exclude_unmatched' "$CMD" | awk '$1>0{print 1; exit} {print 0}')" "1"
+
 echo "== the redis tunnel is the private port, not 6379"
 check "port-forwards 16379:6379" "$(grep -c '16379:6379' "$CMD")" "1"
 check "REDIS_URL uses 16379" "$(grep -c 'redis://localhost:16379' "$CMD")" "1"
