@@ -1,10 +1,28 @@
 # Claude Code workflow promotion: design
 
-**Date:** 2026-09-02 · **Status:** Proposed · **ADRs:**
+**Date:** 2026-09-02 · **Status:** Proposed (amended 2026-09-02 during implementation) · **ADRs:**
 [ADR-0030](../adrs/0030-claude-code-workflow-promotion.md),
 [ADR-0031](../adrs/0031-promoted-memory-read-only.md) · **Builds on:** M1 (Redis session
 backend), M2/M3 (sandbox client + persistent channel), P1 (fs-free harness), P2 (shared
 sandbox pool)
+
+> **Amendment, 2026-09-02 — five claims corrected by measurement during implementation.** Each was
+> tested against a real `~/.claude` (61 bundled skills, 586 files) rather than reasoned about, and
+> each had shipped as fact in the version above:
+>
+> 1. **The secret scan is now two-tier, not blocking** (§4.3, §4.6, §6 D7, §8). A single blocking
+>    heuristic produced 11 hits on a normal machine, every one a false positive — 7 documentation
+>    placeholders and 4 _code_ expressions (`TOKEN = crypto.randomUUID`) matching because the value
+>    character class accepts dotted identifiers. Two sat inside the `brainstorming` skill itself. As
+>    originally specified, promotion would have been impossible on day one.
+> 2. **Skill identity is the bare frontmatter `name`, never `plugin:skill`** (§4.2). All 60 on-disk
+>    skills use bare names, so the namespaced deny-list entries never matched and the
+>    subagent-dependency check never fired — the drop promised in §9 would silently not have happened.
+> 3. **Memory indexes use markdown links, not `[[wikilinks]]`** (§4.6). The real `MEMORY.md` holds 9
+>    `[Title](file.md)` links and zero wikilinks, so that check could never fire.
+> 4. **The `promote` sample output below was illustrative and is now measured.**
+> 5. Implementation detail worth recording because it silently untracked a module: `.gitignore`'s
+>    unanchored `secrets.*` pattern means the scanner lives in `secret-scan.ts`, not `secrets.ts`.
 
 ## 1. Problem
 
@@ -108,9 +126,12 @@ the detected-binary list. It is committed for diffability and is preflight's inp
 A skill either **travels** or is **dropped with a reason**. There is deliberately no
 "travels with rewriting" bucket (§7, A1).
 
-- **Shipped default deny-list**, by skill and family: the Artifact skills, `document-skills:*`,
-  `statusline-setup`, `keybindings-help`, `update-config` — subject matter that does not exist
-  in the harness.
+- **Shipped default deny-list**, matched against the **bare** frontmatter `name` — which is the
+  identity `resolveSkills` dedupes on, the lockfile records, and the bundle path uses. Measured
+  against 60 on-disk skills: `docx`, `pdf`, `pptx`, `xlsx` are present and drop; `artifact-design`,
+  `artifact-diagramming`, `fewer-permission-prompts`, `keybindings-help`, `statusline-setup` and
+  `update-config` have no `SKILL.md` on disk at all (they are Claude Code built-ins) and are retained
+  only as defensive entries. A `plugin:skill` qualified form matches nothing and must not be used.
 - **Subagent dependency**: skills whose operation _is_ dispatching subagents
   (`dispatching-parallel-agents`, `subagent-driven-development`) drop until §9 lands.
 - **User deny-list**, additive, for personal or sensitive content. Never an allow-list — an
@@ -145,25 +166,35 @@ ships each skill twice. Of ~62 MB on disk, ~11 MB is markdown; a pruned bundle i
 carries named templates in `prompts/`; the envelope names one plus arguments. One bundle
 therefore serves many dispatches, which is what the harness's fan-out model wants.
 
-**The secret scan blocks.** Promotion reads the memory directory and `settings.json`, which in
-practice contain operational notes about credentials. Every file entering the bundle is
-pattern-scanned; a hit **refuses the upload** with path and line. This is the one place
-friction is wanted: credentials reaching a shared cluster's store is not recoverable by
-re-promoting.
+**The secret scan is two-tier, and the split is empirical.** Promotion reads the memory directory
+and `settings.json`, which in practice contain operational notes about credentials, so every file
+entering the bundle is pattern-scanned. Five **structural** rules — AWS access key ids, private-key
+blocks, GitHub, OpenAI-style and Slack tokens — **refuse the upload** with path and line, because a
+credential reaching a shared cluster's store is not recoverable by re-promoting. The prose-shaped
+**heuristic** rules (`assigned-secret`, `bearer-token`) only **warn**, with documentation-placeholder
+suppression.
+
+That asymmetry was measured, not chosen for taste. Over a real `~/.claude` the structural rules
+produced zero hits and the heuristic produced 11, all false positives: 7 placeholders and 4 code
+expressions such as `TOKEN = crypto.randomUUID`, which match because the value character class
+accepts dotted identifiers. Two were inside the `brainstorming` skill. A blocking heuristic would
+refuse essentially every promotion, and a gate nobody can pass gets bypassed or deleted.
+
+**Accepted residual gap:** a pasted bare credential (`password: hunter2hunter2`) warns rather than
+blocks. Structural formats — the shapes real leaked credentials actually take — still block.
 
 **Idempotence.** The digest is computed locally; if the store holds it, upload is a no-op.
 
 ```
 $ sh promote --entry brainstorm-and-plan
 
-  resolved   87 skills (149 SKILL.md → 87 after cache/marketplace dedupe)
-  travels    79
-  dropped     8   document-skills:xlsx,docx,pptx,pdf  (no harness equivalent)
-                  artifact-design, artifact-diagramming  (no artifact runtime)
+  resolved   60 skills (149 SKILL.md → 60 after cache/marketplace dedupe)
+  travels    54
+  dropped     6   docx, pdf, pptx, xlsx        (no_harness_equivalent)
                   dispatching-parallel-agents, subagent-driven-development
-                                                       (needs subagent extension)
+                                               (needs_subagent)
   context    CLAUDE.md (2 files) + 10 memory files
-  secrets    scan clean
+  secrets    no blocking findings, 4 warning(s) — see below
   binaries   gh, kubectl, pnpm  →  present in sandbox:pool-default
   entry      brainstorm-and-plan
   bundle     sha256:4f2a…c19  (3.2 MB, unchanged — upload skipped)
@@ -256,9 +287,11 @@ Preflight's value is entirely in being honest about its limits.
 
 **Caught locally, no cluster.** Deny-listed skill (dropped, reason recorded); a skill
 referencing a sibling absent from the bundle, found by resolving path-like references in
-`SKILL.md`; secret-scan hit (blocks); entry prompt not present in `prompts/`; duplicate skill
-names surviving dedupe, surfaced through Pi's existing `ResourceCollision` diagnostics rather
-than a parallel mechanism; dangling `[[links]]` in `MEMORY.md` to deny-listed files (warn).
+`SKILL.md`; a **structural** secret-scan hit (blocks) while a heuristic hit only warns (§4.3);
+entry prompt not present in `prompts/`; duplicate skill names surviving dedupe, surfaced through
+Pi's existing `ResourceCollision` diagnostics rather than a parallel mechanism; dangling links in
+`MEMORY.md` pointing at deny-listed files (warn) — matching both the `[Title](file.md)` markdown
+form that real indexes actually use and the `[[wikilink]]` form found inside memory bodies.
 
 **Caught locally with inventory data.** Missing binary — the highest-value check, since a
 missing `gh` is the classic silent remote failure. Also sandbox pool/image-tag existence, and
@@ -330,7 +363,8 @@ free. See [ADR-0031](../adrs/0031-promoted-memory-read-only.md).
 - **D5 — Read-only memory; findings return in the leaf result.**
 - **D6 — Materialization split follows fs-free.** Prose to the harness pod's emptyDir; anything
   executable to the sandbox. One digest covers both.
-- **D7 — Secret scan blocks promotion.** The only deliberate friction.
+- **D7 — Secret scan is two-tier**: structural credential formats block promotion (the only
+  deliberate friction), the prose-shaped heuristic warns. Measured, not assumed — see §4.3.
 - **D8 — Interaction dependence is mode-sensitive**, not a hard incompatibility, which keeps
   the classifier valid for phase-2 live attach.
 - **D9 — Subagent support is a separate spec** (§9).
@@ -409,7 +443,8 @@ in the evidence trail rather than in an assertion.
 1. A bundle promoted from a real `~/.claude` runs a leaf that invokes a promoted skill and
    reads a sibling file from it.
 2. With `configRef` absent, the existing suite is green unmodified.
-3. A planted credential blocks promotion.
+3. A planted **structural** credential (e.g. an AWS access key id) blocks promotion, while a
+   heuristic-only hit warns and lets it proceed.
 4. A missing binary is reported by preflight _before_ dispatch.
 5. Re-promoting unchanged configuration uploads nothing.
 6. The harness's own `CLAUDE.md` is provably absent from a promoted session.

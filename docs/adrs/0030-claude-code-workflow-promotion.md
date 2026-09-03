@@ -1,6 +1,6 @@
 # ADR-0030: Promote local Claude Code workflows as a content-addressed config bundle
 
-- **Status:** Proposed <!-- Proposed → Accepted → Superseded by ADR-NNNN / Deprecated -->
+- **Status:** Proposed, amended 2026-09-02 during implementation (still unaccepted; see Amendments below) <!-- Proposed → Accepted → Superseded by ADR-NNNN / Deprecated -->
 - **Date:** 2026-09-02
 - **Deciders:** Serverless Harness team
 - **Spec:** [`../specs/2026-09-02-claude-code-workflow-promotion-design.md`](../specs/2026-09-02-claude-code-workflow-promotion-design.md)
@@ -37,7 +37,9 @@ We will promote a local Claude Code workflow as a **content-addressed configurat
 uploaded once and referenced by a single new optional envelope field `configRef: sha256:…`. A
 local `sh promote` CLI (with a thin Claude Code slash-command wrapper) resolves user and project
 scope, dedupes, prunes, scans for secrets, uploads, and emits a **generated lockfile** — never a
-hand-authored manifest.
+hand-authored manifest. The secret scan is **two-tier**: structural credential formats block the
+upload, the prose-shaped heuristic only warns. Skills are identified by their **bare** frontmatter
+`name` — the same identity dedupe, the lockfile and bundle paths use — never a `plugin:skill` form.
 
 Pruning is **by compatibility, never by relevance**: everything that can work travels, and only
 what provably cannot is dropped, each with a machine-readable reason. The classifier has two
@@ -65,7 +67,25 @@ behavior is unchanged.
 
 - Positive: promotion is one command with no manifest to maintain, and re-promotion of unchanged configuration uploads nothing because the digest is computed locally. The feature is opt-in by construction — an absent `configRef` leaves every existing path byte-identical. One digest covers both halves, so prose and scripts cannot drift. The resolver is pure with respect to the digest, so a promoted leaf stays replayable and the idempotency contract at `run-leaf.ts:67` survives. Existing machinery carries most of the weight: Pi's resource loader, `converge.ts`'s transport and flock discipline, and `packages/session-backend`.
 - Negative / accepted cost: the deny-list is **curated**, so it rots — a new local skill family that cannot work remotely misfires until the list catches up. We accepted that over heuristic inference, because grepping for `Agent` false-positives on nearly every superpowers skill and a wrongly-dropped skill fails remotely and confusingly. Preflight cannot catch a whole tier of failures (binary present at a wrong version, missing credentials, denied egress, prose assuming absent host behavior), and it must state those edges rather than imply completeness. A blob store in Redis wants TTLs and size caps and is an object store's job if bundles grow. `noContextFiles: true` is load-bearing in a way that is invisible when wrong: without it, this repository's own `CLAUDE.md` leaks into every promoted session as if it were the user's. Cold start now has a fetch-and-unpack step on the critical path.
+- Negative / accepted cost, added by amendment: the secret scan's heuristic tier **warns rather than blocks**, so a pasted bare credential (`password: hunter2hunter2`) reaches the bundle with only a printed warning; structural formats — the shapes real leaked credentials take — still block. This was measured, not assumed: a blocking heuristic produced 11 hits on a real `~/.claude`, all false positives (7 documentation placeholders, 4 code expressions such as `TOKEN = crypto.randomUUID`), two of them inside the `brainstorming` skill. A gate that refuses every promotion gets bypassed or deleted, which protects nothing.
 - Follow-up owed: CI must assert the checked-in sandbox binary inventory matches the image it describes, or preflight starts lying. Cold-start delta must be measured into `deploy/knative/EXPERIMENTS.md` against the README's sub-second claim, not assumed. Subagent support needs its own spec (Pi has no Task equivalent; `createAgentSession` is exported but budget roll-up, checkpoint interaction, and a depth cap are net-new). MCP promotion remains out of scope, deferred to the code-mode path ([ADR-0005](0005-mcp-code-mode.md)). Interaction-dependent skills warn under `--mode unattended` today; mapping them onto real human gates ([ADR-0016](0016-human-gate.md)) is a possible future.
+
+## Amendments
+
+**2026-09-02, during implementation.** Amended in place rather than superseded, because this ADR is
+still `Proposed` — `docs/adrs/README.md` Rule 1 makes an ADR immutable only once Accepted. Two
+decisions above were corrected by measuring the design against a real `~/.claude` (61 bundled skills,
+586 files) instead of reasoning about it:
+
+1. **The secret scan became two-tier.** Originally it blocked on any hit. See the accepted cost in
+   Consequences.
+2. **Skill identity is the bare frontmatter `name`.** The original design assumed a `plugin:skill`
+   qualified form; all 60 on-disk skills use bare names, so the deny-list and the
+   subagent-dependency check never matched anything — meaning the drop this ADR promises for
+   subagent-dependent skills would silently not have happened.
+
+Both are recorded here rather than left to the spec alone, because each changes what this decision
+guarantees. The spec (§4.3, §4.2, §4.6, §6, §8) carries the detail and the measurements.
 
 ---
 
