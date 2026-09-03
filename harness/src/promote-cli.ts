@@ -25,6 +25,13 @@ function readInventory(cwd: string, image: string): string[] | undefined {
   return JSON.parse(readFileSync(path, 'utf8')).binaries as string[];
 }
 
+/** Write the lockfile to the filesystem. */
+function writeLockfile(cwd: string, lockfile: ReturnType<typeof serializeLockfile>): void {
+  const lockPath = join(cwd, LOCKFILE_OUT);
+  mkdirSync(dirname(lockPath), { recursive: true });
+  writeFileSync(lockPath, lockfile);
+}
+
 async function main(): Promise<void> {
   const args = parsePromoteArgs(process.argv.slice(2));
   const cwd = process.cwd();
@@ -68,15 +75,11 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const lockPath = join(cwd, LOCKFILE_OUT);
-  mkdirSync(dirname(lockPath), { recursive: true });
-  writeFileSync(lockPath, serializeLockfile(result.lockfile));
-
   if (args.dryRun) {
     console.log(
       `  bundle     ${result.digest}  (${result.tar.length} bytes, --dry-run: not uploaded)`,
     );
-    console.log(`  lockfile   ${LOCKFILE_OUT}`);
+    console.log(`  lockfile   ${LOCKFILE_OUT}  (--dry-run: not written)`);
     return;
   }
 
@@ -88,6 +91,7 @@ async function main(): Promise<void> {
       result.digest,
       result.tar,
     );
+    writeLockfile(cwd, serializeLockfile(result.lockfile));
     console.log(
       `  bundle     ${result.digest}  (${result.tar.length} bytes, ${uploaded ? 'uploaded' : 'unchanged — upload skipped'})`,
     );

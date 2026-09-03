@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import {
   parsePromoteArgs,
   projectMemoryDir,
+  projectRoot,
   collectContextFiles,
   promoteInputs,
   LOCKFILE_OUT,
@@ -70,17 +71,64 @@ describe('projectMemoryDir', () => {
       '/Users/p/.claude/projects/-Users-p-Projects-x/memory',
     );
   });
+
+  it('preserves hyphens in the final path segment', () => {
+    // Slug collision is inherited from Claude Code; we match upstream behavior
+    // so we find the directory it already created, even with hyphens present.
+    expect(projectMemoryDir('/Users/p/my-project', '/Users/p')).toBe(
+      '/Users/p/.claude/projects/-Users-p-my-project/memory',
+    );
+  });
+});
+
+describe('projectRoot', () => {
+  it('bounds the walk at .git when one exists', () => {
+    write('.git/config', 'dummy');
+    write('CLAUDE.md', 'root');
+    write('sub/CLAUDE.md', 'sub');
+    const root_path = projectRoot(join(root, 'sub'));
+    expect(root_path).toBe(root);
+  });
+
+  it('returns cwd when no .git is found', () => {
+    write('CLAUDE.md', 'no git');
+    const root_path = projectRoot(root);
+    expect(root_path).toBe(root);
+  });
 });
 
 describe('collectContextFiles', () => {
-  it('collects the CLAUDE.md chain outermost-first', () => {
+  it('collects the CLAUDE.md chain from project root to cwd, outermost-first', () => {
+    write('.git/config', 'dummy');
     write('CLAUDE.md', '# outer');
     write('sub/CLAUDE.md', '# inner');
     const files = collectContextFiles(join(root, 'sub'));
     expect(files.map((f) => f.content)).toEqual(['# outer', '# inner']);
   });
 
+  it('does not collect files above the .git boundary', () => {
+    // Create a repo with .git
+    write('.git/config', 'dummy');
+    write('CLAUDE.md', '# in-repo');
+    const cwd = join(root, 'sub');
+    write('sub/CLAUDE.md', '# inner');
+    // Create a file above the repo that would be collected if .git did not bound it
+    const above = join(tmpdir(), 'promote-above-' + Math.random().toString(36).slice(2));
+    mkdirSync(above, { recursive: true });
+    try {
+      writeFileSync(join(above, 'CLAUDE.md'), '# above-root');
+      // Even if our cwd is moved above root, projectRoot finds the .git and bounds there
+      const files = collectContextFiles(cwd);
+      const contents = files.map((f) => f.content);
+      expect(contents).toEqual(['# in-repo', '# inner']);
+      expect(contents).not.toContain('# above-root');
+    } finally {
+      rmSync(above, { recursive: true, force: true });
+    }
+  });
+
   it('accepts AGENTS.md as an alternative and returns [] when there is none', () => {
+    write('.git/config', 'dummy');
     write('AGENTS.md', '# agents');
     expect(collectContextFiles(root)[0]!.content).toBe('# agents');
     const empty = mkdtempSync(join(tmpdir(), 'promote-empty-'));

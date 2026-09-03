@@ -46,14 +46,30 @@ export function projectMemoryDir(cwd: string, home: string): string {
   return join(home, '.claude', 'projects', cwd.split(/[/\\]/).join('-'), 'memory');
 }
 
-/** The CLAUDE.md / AGENTS.md chain from the filesystem root down to `cwd`, outermost first. */
+/** Find the project root by walking up until we find a .git directory, or cwd if none found. */
+export function projectRoot(cwd: string): string {
+  let dir = cwd;
+  for (;;) {
+    if (existsSync(join(dir, '.git'))) {
+      return dir;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) {
+      // Reached filesystem root without finding .git, return the original cwd.
+      return cwd;
+    }
+    dir = parent;
+  }
+}
+
+/** The CLAUDE.md / AGENTS.md chain from the project root down to `cwd`, outermost first. */
 export function collectContextFiles(cwd: string): Array<{ path: string; content: string }> {
   const out: Array<{ path: string; content: string }> = [];
-  const stop = parse(cwd).root;
+  const root = projectRoot(cwd);
   const dirs: string[] = [];
   for (let dir = cwd; ; dir = dirname(dir)) {
     dirs.unshift(dir);
-    if (dir === stop || dirname(dir) === dir) break;
+    if (dir === root) break;
   }
   for (const dir of dirs) {
     for (const name of ['AGENTS.md', 'CLAUDE.md']) {
