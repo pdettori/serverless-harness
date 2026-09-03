@@ -11,6 +11,8 @@ export interface PromoteArgs {
   mode: PromoteMode;
   sandboxImage: string;
   deny: string[];
+  /** Prompt names to keep out of the bundle; see BuildBundleInput.excludePrompts. */
+  excludePrompts: string[];
   dryRun: boolean;
   project?: string;
 }
@@ -22,6 +24,7 @@ export function parsePromoteArgs(argv: string[]): PromoteArgs {
     // Matches deploy/knative/setup-k8s.sh:30 so the checked-in inventory (Task 14) resolves.
     sandboxImage: 'ghcr.io/rossoctl/serverless-harness-sandbox:latest',
     deny: [],
+    excludePrompts: [],
     dryRun: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -36,14 +39,24 @@ export function parsePromoteArgs(argv: string[]): PromoteArgs {
       i++;
     } else if (flag === '--sandbox-image') ((args.sandboxImage = value ?? ''), i++);
     else if (flag === '--deny') (args.deny.push(value ?? ''), i++);
-    else if (flag === '--project') {
+    else if (flag === '--exclude-prompt') {
+      // Unlike --deny, reject an empty value: a silently-empty exclusion matches no prompt and
+      // ships the one the caller meant to omit.
+      if (!value) throw new Error('--exclude-prompt requires a prompt name');
+      args.excludePrompts.push(value);
+      i++;
+    } else if (flag === '--project') {
       if (!value) throw new Error('--project requires a directory');
       args.project = value;
       i++;
     } else if (flag === '--dry-run') args.dryRun = true;
     else throw new Error(`unknown flag: ${flag}`);
   }
-  if (!args.entry) throw new Error('usage: sh promote --entry <prompt-name> [--mode attended]');
+  if (!args.entry) {
+    throw new Error(
+      'usage: promote --entry <prompt-name> [--mode attended] [--exclude-prompt <name>]',
+    );
+  }
   return args;
 }
 
@@ -206,6 +219,7 @@ export function promoteInputs(opts: {
     entry: opts.args.entry,
     mode: opts.args.mode,
     userDenyList: opts.args.deny,
+    excludePrompts: opts.args.excludePrompts,
     sandboxImage: opts.args.sandboxImage,
     ...(opts.inventory ? { inventory: opts.inventory } : {}),
     versions: opts.versions,

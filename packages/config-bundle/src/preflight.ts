@@ -219,6 +219,52 @@ export function checkNamespacedPrompts(namespacedDirs: string[]): PreflightFindi
   }));
 }
 
+/**
+ * Account for every `--exclude-prompt`, in both directions.
+ *
+ * Excluding the entry is an **error**: the bundle would otherwise build happily and then fail as
+ * `unknown_entry`, which names the symptom rather than the cause the user typed.
+ *
+ * An exclusion matching nothing is a **warning**, because that is what a typo looks like — and a
+ * typo here fails in the worst way available, by shipping the very prompt the user asked to keep
+ * out. Both directions are reported so an omission is never silent.
+ */
+export function checkExcludedPrompts(
+  entry: string,
+  requested: string[],
+  actuallyExcluded: Set<string>,
+): PreflightFinding[] {
+  const findings: PreflightFinding[] = [];
+  for (const name of requested) {
+    if (name === entry) {
+      findings.push({
+        severity: 'error',
+        code: 'entry_excluded',
+        message:
+          `--exclude-prompt '${name}' names the entry prompt, so the bundle would carry no entry; ` +
+          `choose a different entry or drop the exclusion`,
+      });
+      continue;
+    }
+    if (actuallyExcluded.has(name)) {
+      findings.push({
+        severity: 'warn',
+        code: 'prompt_excluded',
+        message: `prompt '${name}' was excluded by --exclude-prompt and is not in the bundle`,
+      });
+    } else {
+      findings.push({
+        severity: 'warn',
+        code: 'prompt_exclude_unmatched',
+        message:
+          `--exclude-prompt '${name}' matched no prompt, so nothing was excluded for it ` +
+          `(check the spelling: an unmatched exclusion ships the prompt you meant to omit)`,
+      });
+    }
+  }
+  return findings;
+}
+
 export function hasErrors(findings: PreflightFinding[]): boolean {
   return findings.some((f) => f.severity === 'error');
 }

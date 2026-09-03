@@ -115,6 +115,14 @@ export interface BuildBundleInput {
   entry: string;
   mode: PromoteMode;
   userDenyList?: string[];
+  /**
+   * Prompt names (no `.md`) to leave out of the bundle.
+   *
+   * Exists so a slash command that drives promotion can live in the project it promotes without
+   * shipping itself: with `HOME` pointed at the project, `promptsDir` IS that project's
+   * `.claude/commands/`, and every markdown file in it otherwise travels.
+   */
+  excludePrompts?: string[];
   sandboxImage: string;
   /** Commands the sandbox image provides; undefined ⇒ cannot verify. */
   inventory?: string[];

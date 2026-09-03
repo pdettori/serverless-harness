@@ -148,3 +148,54 @@ describe('buildBundle', () => {
     expect(r.findings.some((f) => f.code === 'namespaced_prompt_skipped')).toBe(false);
   });
 });
+
+describe('buildBundle --exclude-prompt', () => {
+  // Local to this suite: adding these to the shared fixture would change promptNames for every
+  // other test, which is collateral damage rather than coverage.
+  beforeEach(() => {
+    write('prompts/promote.md', 'promote this project');
+    write('prompts/helper.md', 'a second prompt');
+  });
+
+  it('omits an excluded prompt from the bundle while keeping the others', () => {
+    const paths = untar(buildBundle({ ...baseInput(), excludePrompts: ['promote'] }).tar).map(
+      (e) => e.path,
+    );
+    expect(paths).not.toContain('prompts/promote.md');
+    expect(paths).toContain('prompts/go.md');
+    expect(paths).toContain('prompts/helper.md');
+  });
+
+  it('records each exclusion as a warning, so a silent omission is impossible', () => {
+    const r = buildBundle({ ...baseInput(), excludePrompts: ['promote'] });
+    const f = r.findings.find((x) => x.code === 'prompt_excluded');
+    expect(f?.severity).toBe('warn');
+    expect(f?.message).toContain('promote');
+  });
+
+  it('warns when an exclusion matches nothing, which is how a typo surfaces', () => {
+    const r = buildBundle({ ...baseInput(), excludePrompts: ['promotte'] });
+    const f = r.findings.find((x) => x.code === 'prompt_exclude_unmatched');
+    expect(f?.severity).toBe('warn');
+    expect(f?.message).toContain('promotte');
+  });
+
+  it('refuses to exclude the entry prompt instead of failing later as unknown_entry', () => {
+    const r = buildBundle({ ...baseInput(), entry: 'go', excludePrompts: ['go'] });
+    const f = r.findings.find((x) => x.code === 'entry_excluded');
+    expect(f?.severity).toBe('error');
+    expect(r.findings.some((x) => x.code === 'unknown_entry')).toBe(false);
+  });
+
+  it('changes the digest, because the bundle content changed', () => {
+    const withAll = buildBundle(baseInput()).digest;
+    const without = buildBundle({ ...baseInput(), excludePrompts: ['promote'] }).digest;
+    expect(without).not.toBe(withAll);
+  });
+
+  it('is a no-op when no exclusions are given', () => {
+    expect(buildBundle({ ...baseInput(), excludePrompts: [] }).digest).toBe(
+      buildBundle(baseInput()).digest,
+    );
+  });
+});
