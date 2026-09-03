@@ -37,6 +37,18 @@ describe('checkSiblingPaths', () => {
     expect(f[0]!.message).toContain('references/missing.md');
   });
 
+  it('treats every ancestor directory as owned, not just the leaf parent', () => {
+    // A skill shipping only a nested file still owns the ancestor directory.
+    const nested = skill('x', 'see `references/missing.md`', ['references/deep/x.md']);
+    expect(checkSiblingPaths([nested])).toHaveLength(1);
+    // And symmetrically: shipping a shallow file means it owns the dir for a deep reference too.
+    const shallow = skill('y', 'see `references/deep/missing.md`', ['references/guide.md']);
+    expect(checkSiblingPaths([shallow])).toHaveLength(1);
+    // Prefix matching stays EXACT — a sibling directory must not satisfy it.
+    const neighbour = skill('z', 'see `references/missing.md`', ['references-old/g.md']);
+    expect(checkSiblingPaths([neighbour])).toEqual([]);
+  });
+
   it('ignores paths the skill does not own, which is what prose is full of', () => {
     // Measured: without these two exclusions the check fired 182 times across 28 real skills.
     const bare = skill('x', 'create `main.py` and `requirements.txt` yourself', [

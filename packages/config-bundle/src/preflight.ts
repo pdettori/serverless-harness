@@ -16,6 +16,15 @@ function referencedPaths(skillMd: string): string[] {
   return [...out];
 }
 
+/** Every ancestor directory prefix of a path, e.g. `a/b/c.md` -> [`a/`, `a/b/`]. Exact strings; no `startsWith` fuzz. */
+function ancestorPrefixes(p: string): string[] {
+  const out: string[] = [];
+  for (let i = p.indexOf('/'); i !== -1; i = p.indexOf('/', i + 1)) {
+    out.push(p.slice(0, i + 1));
+  }
+  return out;
+}
+
 /**
  * A skill referencing one of its OWN files that the bundle omits would fail remotely as a
  * confusing read miss. Two deliberate restrictions, both measured against a real `~/.claude`:
@@ -27,6 +36,19 @@ function referencedPaths(skillMd: string): string[] {
  *    `window.open` and `sys.path` (code), bare `.md`/`.py` (from "a `.md` file"), and example
  *    project trees. `main.py` and `references/guide.md` are indistinguishable in shape, so no
  *    regex separates them — only "does the skill own this directory" does. The rule cuts 182 to 9.
+ *
+ *    Ownership must be checked symmetrically against EVERY ancestor on both sides, not just each
+ *    path's immediate parent — two failure directions, both measured:
+ *      - ships `references/deep/x.md`, references missing `references/missing.md`: the skill's
+ *        immediate parent is `references/deep/`, but it still owns `references/` (an ancestor of
+ *        what it ships).
+ *      - ships `references/guide.md`, references missing `references/deep/missing.md`: the
+ *        reference's immediate directory `references/deep/` was never shipped, but its ancestor
+ *        `references/` demonstrably is owned.
+ *    Both sides are expanded into their full ancestor-prefix set and checked for exact-string
+ *    intersection — never `startsWith` — so `references-old/` still does not satisfy a reference
+ *    under `references/`; `references-old` and `references` are different path segments and never
+ *    appear as the same string in either set.
  * 2. **Warn, not error.** The 9 survivors are still false positives (one skill documenting
  *    hypothetical `references/*.md` because its subject is how to write skills), so blocking would
  *    refuse promotion for anyone who has it installed. Preflight blocks only on facts.
@@ -38,13 +60,11 @@ function referencedPaths(skillMd: string): string[] {
 export function checkSiblingPaths(skills: ResolvedSkill[]): PreflightFinding[] {
   const findings: PreflightFinding[] = [];
   for (const skill of skills) {
-    const ownedDirs = new Set(
-      skill.files.filter((f) => f.includes('/')).map((f) => f.slice(0, f.lastIndexOf('/') + 1)),
-    );
+    const ownedDirs = new Set(skill.files.flatMap(ancestorPrefixes));
     for (const ref of referencedPaths(skill.skillMd)) {
       if (skill.files.some((f) => f === ref || f.endsWith('/' + ref) || ref.endsWith(f))) continue;
       if (!ref.includes('/')) continue; // a bare filename is prose, not a sibling claim
-      if (!ownedDirs.has(ref.slice(0, ref.lastIndexOf('/') + 1))) continue; // skill does not own it
+      if (!ancestorPrefixes(ref).some((d) => ownedDirs.has(d))) continue; // skill does not own it
       findings.push({
         severity: 'warn',
         code: 'missing_sibling',
