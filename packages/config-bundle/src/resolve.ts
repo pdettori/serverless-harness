@@ -192,8 +192,14 @@ export function resolveSkills(roots: SkillRoots): ResolvedSkill[] {
     const prevCanonical = byCanonical.get(canonical);
 
     if (prevCanonical) {
-      // Same canonical path: prefer higher precedence scope
+      // Same canonical path: prefer higher precedence scope. When the winning name differs from
+      // the name this same canonical path was previously filed under (SKILL.md has no `name:`
+      // frontmatter, so `load` falls back to the link directory's basename, and that basename
+      // differs across the two aliasing scopes), the old name's entry in `best` must be removed
+      // too -- otherwise it is never overwritten and the same physical skill is emitted twice,
+      // under two separate `skills/<name>/` prefixes.
       if (SCOPE_RANK[skill.scope] < SCOPE_RANK[prevCanonical.scope]) {
+        best.delete(prevCanonical.name);
         best.set(skill.name, skill);
         byCanonical.set(canonical, skill);
       }

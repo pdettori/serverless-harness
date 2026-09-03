@@ -217,4 +217,35 @@ describe('resolveSkills', () => {
     expect(findings).toHaveLength(1);
     expect(findings[0]!.code).toBe('skill_symlink_escaped');
   });
+
+  it('dedupes an aliased directory across two scopes even when the fallback names differ', () => {
+    // NOTE ON COVERAGE: this exercises the overall dedupe-by-canonical-path guarantee (exactly
+    // one entry survives, under the winning scope's name), which the maintainer's fix targets.
+    // It does NOT, however, fail if `best.delete(prevCanonical.name)` in resolve.ts's dedupe loop
+    // is reverted: resolveSkills() always processes roots in strict project -> user -> plugin
+    // (precedence-ascending) order, so a later-processed entry can never have STRICTLY better
+    // precedence than an earlier-recorded one for the same canonical path -- the `if` branch that
+    // guards the delete is therefore unreachable via this (or any) two-scope alias through the
+    // public API today, and removing the delete line was verified (by hand, outside this suite)
+    // to produce byte-identical output for this exact scenario. Kept as defense-in-depth per the
+    // review comment; documented here rather than claimed as a regression test for that line.
+    const realSkill = join(root, 'real-skill');
+    mkdirSync(realSkill, { recursive: true });
+    writeFileSync(join(realSkill, 'SKILL.md'), 'no frontmatter name here');
+
+    const projSkills = join(root, 'proj', 'skills');
+    const userSkills = join(root, 'user', 'skills');
+    mkdirSync(projSkills, { recursive: true });
+    mkdirSync(userSkills, { recursive: true });
+    symlinkSync(realSkill, join(projSkills, 'project-alias'));
+    symlinkSync(realSkill, join(userSkills, 'user-alias'));
+
+    const found = resolveSkills({
+      projectDir: join(root, 'proj'),
+      userDir: join(root, 'user'),
+    });
+    expect(found).toHaveLength(1);
+    expect(found[0]!.name).toBe('project-alias');
+    expect(found[0]!.scope).toBe('project');
+  });
 });
