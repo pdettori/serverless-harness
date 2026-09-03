@@ -21,6 +21,10 @@ FILE="$DIR/$(printf '%s' "$IMAGE" | tr ':/' '__').json"
 
 RUNTIME="${CONTAINER_RUNTIME:-docker}"
 mapfile -t declared < <(jq -r '.binaries[]' "$FILE")
+# Third silent-pass path: process substitution failure does not trip `set -e`, so malformed JSON
+# or a missing `.binaries` key would leave `declared` empty -- the container then checks nothing,
+# still prints the sentinel, and the script would report "PASS ... (0 binaries verified)".
+[ "${#declared[@]}" -gt 0 ] || { echo "ERROR: no binaries parsed from $FILE"; exit 1; }
 echo "verifying ${#declared[@]} declared binaries in $IMAGE"
 
 # A drift check that cannot fail is worthless, so the container's own failure must never be
