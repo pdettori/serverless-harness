@@ -30,6 +30,9 @@
 #   bash deploy/knative/demo-promoted-workflow.sh --keep-sandbox   # leave /tmp/sh-demo in place
 #   bash deploy/knative/demo-promoted-workflow.sh --teardown       # remove the sandbox and exit
 set -euo pipefail
+# Resolve $0 BEFORE the cd: --help re-reads this file, and a relative argv[0] (the usual
+# `bash deploy/knative/demo-promoted-workflow.sh --help`) stops resolving once the cwd moves.
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")"
 source ./lib.sh # NS, BASE, HOST_HEADER, CURL_HDR, CURL_OPTS, ok/ko, PASS/FAIL
 
@@ -53,7 +56,7 @@ for a in "$@"; do
     --keep-sandbox) KEEP_SANDBOX=1 ;;
     --teardown) TEARDOWN=1 ;;
     -h | --help)
-      sed -n '2,32p' "$0"
+      sed -n '2,31p' "$SELF" # 31 is the last comment line; 32 is `set -euo pipefail`
       exit 0
       ;;
     *)
@@ -64,8 +67,13 @@ for a in "$@"; do
 done
 
 PFS=() # port-forward pids we started; only ours are killed on exit
+# Initialised before cleanup() can run: it is the EXIT trap, and `set -u` would abort on an unset
+# name if a claim failed before these were assigned.
+promote_log=""
+repromote_log=""
 cleanup() {
   for pid in ${PFS[@]+"${PFS[@]}"}; do kill "$pid" 2>/dev/null || true; done
+  rm -f "$promote_log" "$repromote_log" 2>/dev/null || true
   if [ "$KEEP_SANDBOX" -eq 0 ] && [ -f "$SANDBOX/$MARKER" ]; then rm -rf "$SANDBOX"; fi
 }
 trap cleanup EXIT
@@ -184,7 +192,7 @@ The cluster is serving a harness image without PR #214. Rebuild, load and force 
   kubectl wait ksvc/$KSVC -n $NS --for=condition=Ready --timeout=180s
 
 EOF
-  echo "=== Results: $PASS passed, $((FAIL)) failed ==="
+  echo "=== Results: $PASS passed, $FAIL failed ==="
   exit 1
 fi
 
@@ -242,12 +250,18 @@ fi
 # --- Claim 2: re-promotion of unchanged config uploads nothing --------------------------------
 claim 2 "re-promoting unchanged configuration uploads nothing"
 repromote_log="$(mktemp)"
-HOME="$SANDBOX" pnpm --dir "$REPO_ROOT/harness" promote \
-  --entry ship-note --project "$SANDBOX" > "$repromote_log" 2>&1
-d2=$(grep -oE 'sha256:[0-9a-f]{64}' "$repromote_log" | head -1)
-[ "$d2" = "$DIGEST" ] && ok "digest is stable" || ko "digest changed: $d2"
-grep -q 'upload skipped' "$repromote_log" &&
-  ok "upload skipped (content-addressed)" || ko "re-promotion re-uploaded the bundle"
+if ! HOME="$SANDBOX" pnpm --dir "$REPO_ROOT/harness" promote \
+  --entry ship-note --project "$SANDBOX" > "$repromote_log" 2>&1; then
+  # Report and carry on rather than exiting: Claim 3 only needs $DIGEST from Claim 1, and an
+  # aborted run here would hide the A/B behind a re-promotion failure.
+  ko "re-promote failed"
+  cat "$repromote_log" >&2
+else
+  d2=$(grep -oE 'sha256:[0-9a-f]{64}' "$repromote_log" | head -1)
+  [ "$d2" = "$DIGEST" ] && ok "digest is stable" || ko "digest changed: $d2"
+  grep -q 'upload skipped' "$repromote_log" &&
+    ok "upload skipped (content-addressed)" || ko "re-promotion re-uploaded the bundle"
+fi
 
 # --- Claim 3: the A/B — same prompt, one field ------------------------------------------------
 # The bare run is the CONTROL, and on a warm cluster it is not automatically a valid one.
@@ -343,7 +357,6 @@ status=$(curl -s $CURL_OPTS --max-time 30 ${CURL_HDR[@]+"${CURL_HDR[@]}"} \
   ok "/runs/status replays 'responded'" ||
   ko "/runs/status did not report the run: $(head -c 200 <<< "$status")"
 
-rm -f "$promote_log" "$repromote_log"
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ "$FAIL" -gt 0 ]; then

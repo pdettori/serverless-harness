@@ -467,7 +467,7 @@ plausible thing to erode it, so the cost belongs in the evidence trail rather th
 assertion. The end-to-end, in-cluster comparison (baseline vs. `configRef` set, against a
 scaled-to-zero Revision) could not be taken during this implementation: the deployed image
 predates this branch, and taking it needs a full image build, `kind load`, and a forced new
-Revision. It has since been taken (see **In-cluster result**, below); the reproduction is:
+Revision. It has since been taken (see **In-cluster result**, below).
 
 The snippet originally recorded here forced `--replicas=0` and slept 5 s. Do not use it: it does
 not produce a cold start (see the second false start below), and its selector named `harness`

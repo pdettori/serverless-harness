@@ -23,7 +23,7 @@ One digest names both halves. The dispatch carries the digest and nothing else a
 
 | Act                    | What "move my workflow to the server" normally needs               | What promotion needs                                                               |
 | ---------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| **1 — Author small**   | A hand-written manifest listing what to ship, kept in sync by hand | **One env var.** `HOME=$SANDBOX` makes the sandbox its own user scope              |
+| **1 — Author small**   | A hand-written manifest listing what to ship, kept in sync by hand | **One env var.** `HOME=$SH_DEMO_SANDBOX` makes the sandbox its own user scope      |
 | **2 — Promote**        | An image rebuild, a redeploy, a registry push                      | `pnpm promote` — a 12 KB tar, content-addressed; re-promotion uploads **nothing**  |
 | **3 — Run it**         | A bespoke endpoint that knows about your skills                    | **One field.** `"configRef": "sha256:…"` on the existing prompt envelope           |
 | **4 — Know it landed** | Read the pod logs and hope                                         | The run cites a fact only your memory holds, and a token only the sandbox can read |
@@ -68,8 +68,16 @@ Set the convenience vars used throughout:
 export NS=default KSVC=serverless-harness
 export HOSTHDR='Host: serverless-harness.default.example.com'
 export BASE=http://localhost:8080
-export SANDBOX=/tmp/sh-demo
-export MODEL=claude-haiku-4-5
+
+# The SH_* names are the ones demo-promoted-workflow.sh and the make targets read, so the
+# hand-driven and scripted halves of this walkthrough stay on the same sandbox and port.
+export SH_DEMO_SANDBOX=/tmp/sh-demo
+export SH_DEMO_REDIS_PORT=16379
+export SH_MODEL=claude-haiku-4-5
+
+# Where this repo is checked out. Every `pnpm --dir` below uses it, because from Act 1b onward
+# your shell's cwd is the sandbox, not the checkout.
+export HARNESS=$(pwd)/harness
 ```
 
 ### Open the two tunnels
@@ -122,16 +130,21 @@ Four files. A skill that defines a format, a `CLAUDE.md` that sets a house rule,
 holding a fact, and a slash command as the entry point:
 
 ```bash
-mkdir -p $SANDBOX/.claude/skills/ship-note/references $SANDBOX/.claude/commands
-cp -R deploy/knative/fixtures/promoted-demo/skills/. $SANDBOX/.claude/skills/
-cp -R deploy/knative/fixtures/promoted-demo/commands/. $SANDBOX/.claude/commands/
-cp deploy/knative/fixtures/promoted-demo/CLAUDE.md $SANDBOX/CLAUDE.md
+mkdir -p $SH_DEMO_SANDBOX/.claude/skills/ship-note/references $SH_DEMO_SANDBOX/.claude/commands
+cp -R deploy/knative/fixtures/promoted-demo/skills/. $SH_DEMO_SANDBOX/.claude/skills/
+cp -R deploy/knative/fixtures/promoted-demo/commands/. $SH_DEMO_SANDBOX/.claude/commands/
+cp deploy/knative/fixtures/promoted-demo/CLAUDE.md $SH_DEMO_SANDBOX/CLAUDE.md
 
 # Claude Code's own memory layout: every path separator in the project path becomes '-'
-MEM="$SANDBOX/.claude/projects/-$(echo "${SANDBOX#/}" | tr '/' '-')/memory"
+MEM="$SH_DEMO_SANDBOX/.claude/projects/-$(echo "${SH_DEMO_SANDBOX#/}" | tr '/' '-')/memory"
 mkdir -p "$MEM" && cp deploy/knative/fixtures/promoted-demo/memory/*.md "$MEM/"
 
-git -C $SANDBOX init -q
+git -C $SH_DEMO_SANDBOX init -q
+
+# Claim this directory as the demo's own. demo-promoted-workflow.sh gates every destructive
+# touch -- including `--teardown` -- on this marker, so without it the scripted teardown will
+# (correctly) refuse to remove the sandbox you just built.
+touch $SH_DEMO_SANDBOX/.sh-demo-sandbox
 ```
 
 > **Why `git init`.** `promote` bounds its `CLAUDE.md` walk at a `.git` entry. Without one it climbs
@@ -150,7 +163,7 @@ It records that the regression is tracked as **KAG-4471** and ships behind
 ### 1b. Watch it work locally first
 
 ```bash
-cd $SANDBOX && claude
+cd $SH_DEMO_SANDBOX && claude
 ```
 
 Ask it: `Write the ship note for the auth timeout fix.` You get the house `SHIP NOTE` block with
@@ -167,8 +180,8 @@ does not survive the trip.
 ### 2a. One command, and one env var that is the whole idea
 
 ```bash
-HOME=$SANDBOX pnpm --dir ~/path/to/serverless-harness/harness promote \
-  --entry ship-note --project $SANDBOX
+HOME=$SH_DEMO_SANDBOX pnpm --dir $HARNESS promote \
+  --entry ship-note --project $SH_DEMO_SANDBOX
 ```
 
 ```
@@ -189,7 +202,7 @@ preflight: no findings
 dispatch with:  {"sessionId":"<run>/<item>","kind":"prompt","prompt":"…","configRef":"sha256:46ee1106…"}
 ```
 
-> **`HOME=$SANDBOX` is the demo, not a shortcut.** `promote` reads _user_ scope from
+> **`HOME=$SH_DEMO_SANDBOX` is the demo, not a shortcut.** `promote` reads _user_ scope from
 > `$HOME/.claude`. Pointing `HOME` at the sandbox makes the sandbox its own user scope, so the
 > bundle holds this workflow and nothing else. It is also what makes the **slash command** travel:
 > `promote` reads prompts from user scope only, so a project-scope `.claude/commands/` file is
@@ -201,7 +214,7 @@ dispatch with:  {"sessionId":"<run>/<item>","kind":"prompt","prompt":"…","conf
 The lockfile is committable, and it is also the most convenient place to read the digest back from:
 
 ```bash
-export DIGEST=$(jq -r .digest $SANDBOX/.claude/promoted.lock.json)
+export DIGEST=$(jq -r .digest $SH_DEMO_SANDBOX/.claude/promoted.lock.json)
 echo $DIGEST
 # => sha256:46ee11062906cf70d6770a1a9c58b01429836ba4b16861b65110673904603bb4
 ```
@@ -219,7 +232,7 @@ kubectl exec -n $NS deploy/redis -- redis-cli EXISTS "config:bundle:$DIGEST"
 ### 2c. Re-promotion is free
 
 ```bash
-HOME=$SANDBOX pnpm --dir harness promote --entry ship-note --project $SANDBOX | tail -3
+HOME=$SH_DEMO_SANDBOX pnpm --dir $HARNESS promote --entry ship-note --project $SH_DEMO_SANDBOX | tail -3
 ```
 
 ```
@@ -243,7 +256,10 @@ cache inside the **shared pool sandbox** and leaves it there for reuse. It is wo
 contains `context/agents/0-CLAUDE.md` and `memory/`, and it **outlives the leaf**:
 
 ```bash
-kubectl exec -n $NS sandbox-0 -- find /workspace/.sh-config -type f | sed 's|.*/sha256-[0-9a-f]*/||'
+# The leaf may have leased ANY pool sandbox, so ask the pool rather than guessing a pod.
+export POOL=$(kubectl get pods -n $NS -l 'sh.kagenti.io/sandbox-pool=default' -o name | sed 's|pod/||')
+for p in $POOL; do kubectl exec -n $NS "$p" -- find /workspace/.sh-config -type f 2>/dev/null; done \
+  | sed 's|.*/sha256-[0-9a-f]*/||'
 # context/MEMORY.md
 # context/agents/0-CLAUDE.md
 # memory/auth-timeout-incident.md
@@ -258,7 +274,7 @@ kubectl exec -n $NS sandbox-0 -- find /workspace/.sh-config -type f | sed 's|.*/
 > The A/B still looked plausible; it had just stopped proving anything.
 
 ```bash
-for p in $(kubectl get pods -n $NS -l 'sh.kagenti.io/sandbox-pool=default' -o name | sed 's|pod/||'); do
+for p in $POOL; do
   kubectl exec -n $NS "$p" -- rm -rf "/workspace/.sh-config/sha256-${DIGEST#sha256:}"
 done
 ```
@@ -267,7 +283,7 @@ done
 
 ```bash
 curl -s -H "$HOSTHDR" -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg m "$MODEL" '{sessionId:"demo-bare-1", kind:"prompt", model:$m,
+  -d "$(jq -nc --arg m "$SH_MODEL" '{sessionId:"demo-bare-1", kind:"prompt", model:$m,
         prompt:"Write the ship note for the auth timeout fix."}')" \
   $BASE/runs | jq -r .text
 ```
@@ -287,7 +303,7 @@ The workspace appears to be empty. Could you provide me with:
 
 ```bash
 curl -s -H "$HOSTHDR" -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg m "$MODEL" --arg c "$DIGEST" '{sessionId:"demo-promoted-1", kind:"prompt", model:$m,
+  -d "$(jq -nc --arg m "$SH_MODEL" --arg c "$DIGEST" '{sessionId:"demo-promoted-1", kind:"prompt", model:$m,
         prompt:"Write the ship note for the auth timeout fix.", configRef:$c}')" \
   $BASE/runs | jq -r .text
 ```
@@ -324,10 +340,17 @@ The `TOKEN:` line is the model _telling_ you it read the file. Now check the cla
 holds even on a run where the model declines to read:
 
 ```bash
-kubectl exec -n $NS sandbox-0 -- \
-  cat "/workspace/.sh-config/sha256-${DIGEST#sha256:}/skills/ship-note/references/release-token.md"
+TOKEN_PATH="/workspace/.sh-config/sha256-${DIGEST#sha256:}/skills/ship-note/references/release-token.md"
+for p in $POOL; do
+  kubectl exec -n $NS "$p" -- cat "$TOKEN_PATH" 2>/dev/null && echo "  ^ in $p" && break
+done
 # => SHIPNOTE-7F3A-SANDBOX-OK
+#      ^ in sandbox-0
 ```
+
+> Which pod it lands in is not fixed — the leaf leases whichever pool sandbox is free, which is why
+> this loops instead of naming `sandbox-0`. A hardcoded pod here fails as "broken feature" when it
+> was only a wrong guess.
 
 > You purged this path in 3a and dispatched nothing but a digest. It is back, `references/` and all,
 > because the overlay put it there under `flock` and made it read-only with `chmod -R a-w` — which
@@ -352,7 +375,7 @@ curl -s -H "$HOSTHDR" "$BASE/runs/status?sessionId=demo-promoted-1" | jq -c '{st
 You moved a workflow off your laptop without writing a manifest:
 
 1. **Authored small** — one skill, a `CLAUDE.md`, one memory file, one slash command, in a
-   throwaway sandbox. `HOME=$SANDBOX` made it its own user scope: **1 skill, 12 KB, zero preflight
+   throwaway sandbox. `HOME=$SH_DEMO_SANDBOX` made it its own user scope: **1 skill, 12 KB, zero preflight
    findings**, against 56 skills and ~8.6 MB for a real `~/.claude` (Act 1, 2a).
 2. **Promoted with one command** — content-addressed over a canonical tar, so the second promotion
    uploaded nothing and the digest was identical (Act 2a, 2c).
@@ -375,10 +398,10 @@ make demo-promoted-workflow
 
 ---
 
-# Cleanup
+## Cleanup
 
 ```bash
-make demo-promoted-workflow-teardown        # removes the sandbox (refuses any dir it did not create)
+make demo-promoted-workflow-teardown        # removes the sandbox (needs the Act 1a marker)
 pkill -f 'kubectl port-forward -n kourier-system svc/kourier'
 pkill -f 'kubectl port-forward -n default svc/redis'
 ```
@@ -392,7 +415,7 @@ kubectl exec -n $NS deploy/redis -- redis-cli DEL "config:bundle:$DIGEST"
 
 ---
 
-# Notes and limits
+## Notes and limits
 
 - **The `TOKEN:` line is the one model-dependent claim.** The format and the token both require the
   model to choose to `read` the skill body. `CLAUDE.md` says it MUST, and the deterministic channel
