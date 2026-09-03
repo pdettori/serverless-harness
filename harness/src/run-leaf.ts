@@ -53,7 +53,7 @@ import { gzipSync } from 'node:zlib';
 import { createClient } from 'redis';
 import { canonicalTar } from '@sh/config-bundle';
 import { resolvePromotedConfig, type PromotedConfig } from './config-resolver.js';
-import { overlayConfig } from './config-overlay.js';
+import { overlayConfig, buildConfigCleanupScript } from './config-overlay.js';
 import type { BundleRedisLike } from './config-store.js';
 
 /**
@@ -406,6 +406,13 @@ async function runPromptLeaf(
   }
 
   let heartbeat: ReturnType<typeof setInterval> | undefined;
+  // Set once the sandbox overlay actually lands, so the finally block below knows there is a
+  // per-leaf /workspace/leaves/<sid>/.sh-config link to tear down. runPromptLeaf never converges a
+  // workspace (it has no repoUrl/ref and never calls convergeWorkspace/cleanupWorkspace), so
+  // without this nothing else ever removes that link -- it leaks on every promoted prompt leaf on a
+  // long-lived pooled pod. Declared here (not inside the try below) so the finally block -- a
+  // sibling block, not nested inside try -- can actually see it.
+  let overlayCreated = false;
   try {
     if (selected) {
       const hbMs = Number(process.env.KAGENTI_SANDBOX_HEARTBEAT_MS ?? '20000');
@@ -435,10 +442,9 @@ async function runPromptLeaf(
           // undefined for pods (select-sandbox.ts:33-34), which is the DEFAULT deployment. Guarding
           // on `selected.transport` would therefore skip the overlay entirely on pods: the sandbox
           // half of the bundle would never arrive, so skill sibling files and memory would be
-          // unreadable and $SH_SKILLS_DIR would point at nothing — and a unit test injecting a fake
-          // transport could not detect it. Use the same fallback the converge path uses
-          // (run-leaf.ts:579-584): build a KubectlTransport when none is leased, and close only what
-          // we created.
+          // unreadable — and a unit test injecting a fake transport could not detect it. Use the
+          // same fallback the converge path uses (run-leaf.ts:579-584): build a KubectlTransport
+          // when none is leased, and close only what we created.
           const overlayTransport = selected.transport ?? KubectlTransport(selected.config);
           try {
             const paths = await overlayFn(
@@ -447,11 +453,23 @@ async function runPromptLeaf(
               sid,
               gzipSync(canonicalTar(promotedConfig.entries)),
             );
+            overlayCreated = true;
             promotedConfig = {
               ...promotedConfig,
               promptFragments: [
                 ...promotedConfig.promptFragments,
-                `Skill files: ${paths.skillsDir}\nMemory files: ${paths.memoryDir}`,
+                // Self-describing and multi-line on purpose: this is the ONLY place the absolute
+                // sandbox paths exist (the bundle is content-addressed and built before any leaf
+                // or sandbox does, so notes.ts's skillsRootNote() cannot bake them in — it instead
+                // points back at these two lines). A single-line string here would also risk
+                // pi-fork's resolvePromptInput treating it as a file path when existsSync(input)
+                // is true.
+                [
+                  'The following are absolute sandbox paths for this session:',
+                  '',
+                  `Skill files: ${paths.skillsDir}`,
+                  `Memory files: ${paths.memoryDir}`,
+                ].join('\n'),
               ],
             };
           } finally {
@@ -489,6 +507,20 @@ async function runPromptLeaf(
     };
   } finally {
     if (heartbeat) clearInterval(heartbeat);
+    if (overlayCreated && selected) {
+      // Best-effort, matching cleanupWorkspace (converge.ts): swallow errors so a teardown hiccup
+      // never masks the leaf's actual verdict. Follows the same transport fallback used above and
+      // at run-leaf.ts:579-584 -- reuse a leased grpc transport if present, otherwise build a
+      // KubectlTransport, and close only the transport we created ourselves.
+      const cleanupTransport = selected.transport ?? KubectlTransport(selected.config);
+      try {
+        await cleanupTransport.exec(buildConfigCleanupScript(sid), { timeout: 60 });
+      } catch {
+        /* ignore */
+      } finally {
+        if (!selected.transport) await cleanupTransport.close();
+      }
+    }
     if (selected) await selected.release();
     if (selected?.transport) await selected.transport.close();
   }

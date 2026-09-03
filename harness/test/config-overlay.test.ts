@@ -16,7 +16,7 @@ describe('paths', () => {
   it('caches by digest, shared across leaves', () => {
     expect(configCacheDir(DIGEST)).toBe(`/workspace/.sh-config/sha256-${'a'.repeat(64)}`);
   });
-  it('binds per leaf under the leaf workspace, so cleanupWorkspace still owns teardown', () => {
+  it('binds per leaf under the leaf workspace, torn down by run-leaf.ts on the prompt-leaf path (buildConfigCleanupScript) or by cleanupWorkspace when the leaf converges', () => {
     expect(leafConfigDir('leaf-1')).toBe('/workspace/leaves/leaf-1/.sh-config');
   });
 });
@@ -46,9 +46,31 @@ describe('buildCachePopulateScript', () => {
   });
 
   it('traps EXIT to remove the staging dir, so failures do not accumulate stale dirs', () => {
-    expect(s).toMatch(/trap 'rm -rf "\$TMP"' EXIT/);
+    expect(s).toMatch(/trap '.*rm -rf "\$TMP"' EXIT/);
     // and the trap must be armed BEFORE extraction, or it cannot clean up a failed extract
     expect(s.indexOf('trap')).toBeLessThan(s.indexOf('base64 -d'));
+  });
+
+  it('restores write permission in the trap before rm -rf, so a read-only staged tree can still be removed on failure', () => {
+    // ADR-0031 makes the staged tree read-only (chmod -R a-w) before the mv. If the trap's rm -rf
+    // ever runs on that read-only tree without first restoring write permission, `rm -rf` can fail
+    // to remove it (a directory needs write permission on itself to unlink its own entries), and a
+    // staging dir leaks on every failure -- exactly the bug this fix must not introduce.
+    expect(s).toMatch(/trap 'chmod -R u\+w "\$TMP".*rm -rf "\$TMP"' EXIT/);
+  });
+
+  it('drops write permission on the staged tree (ADR-0031: promoted memory/skills must be read-only) after chmod +x and before the mv', () => {
+    const chmodExecIdx = s.indexOf('chmod +x');
+    const chmodReadonlyIdx = s.indexOf('chmod -R a-w');
+    const mvIdx = s.lastIndexOf('mv "$TMP" "$DIR"');
+    expect(chmodExecIdx).toBeGreaterThan(-1);
+    expect(chmodReadonlyIdx).toBeGreaterThan(-1);
+    expect(mvIdx).toBeGreaterThan(-1);
+    // Order matters: +x must land before the tree goes read-only (or the scripts it ships could
+    // not be marked executable), and both must land before the mv (so the canonical shared cache
+    // is never briefly writable).
+    expect(chmodExecIdx).toBeLessThan(chmodReadonlyIdx);
+    expect(chmodReadonlyIdx).toBeLessThan(mvIdx);
   });
 
   it('documents the tolerated undrained-stdin race next to the early exit', () => {
@@ -78,6 +100,9 @@ describe('buildLeafBindScript', () => {
   });
 });
 
+// Invoked from run-leaf.ts's runPromptLeaf teardown (in the `finally`, guarded on `overlayCreated`)
+// for a promoted prompt leaf, which never converges a workspace and so has no other path that would
+// ever remove this per-leaf link -- see run-leaf-promoted.test.ts for the wiring-level coverage.
 describe('buildConfigCleanupScript', () => {
   it('removes only the per-leaf link, never the shared cache', () => {
     const s = buildConfigCleanupScript('leaf-1');

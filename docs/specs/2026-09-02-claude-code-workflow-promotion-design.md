@@ -96,8 +96,8 @@ a _separate_ sandbox pod. A "skill" therefore splits in two: its prose must be r
  repo/.claude├─ sh promote ──► CAS store ──► /tmp/sh-config/<digest>/    /workspace/.sh-config/<digest>/
  memory/ ───┘    │                              skills/  prompts/            exec/  memory/
                  │                                   │                            │
-                 ├─► lockfile.json (committed)   DefaultResourceLoader      $SH_SKILLS_DIR
-                 └─► preflight report            + agentsFilesOverride
+                 ├─► lockfile.json (committed)   DefaultResourceLoader      absolute path in
+                 └─► preflight report            + agentsFilesOverride      per-leaf prompt
 ```
 
 One digest names both halves. The envelope carries the digest; nothing else about the workflow
@@ -274,10 +274,14 @@ only teardown path.
 are written relative to where the skill lives _locally_ — `superpowers:brainstorming` instructs
 a read of `skills/brainstorming/visual-companion.md`. Issued into the sandbox, that path
 resolves to nothing, and the model gets a confusing miss rather than a reasonable error. So the
-bundle layout is mirrored verbatim into the sandbox, the sandbox exports `SH_SKILLS_DIR`, and
-an injected note states it: _skill files live at `$SH_SKILLS_DIR/<skill-name>/`; resolve
-relative paths in skill instructions against that root._ Without this, every skill referencing
-a sibling degrades quietly.
+bundle layout is mirrored verbatim into the sandbox, the harness appends the absolute skills-
+and memory-directory paths to the prompt per leaf (they vary per leaf and cannot be baked into
+the content-addressed bundle), and a bundle-level note points at that fragment: _resolve
+relative paths in a skill's own instructions against that skill's subdirectory under the
+"Skill files:" path given elsewhere in this prompt — not against the current working
+directory._ There is no seam to set an environment variable inside the sandbox (every tool call
+is an independent `bash -c`), so the literal path in the prompt is the only mechanism. Without
+this, every skill referencing a sibling degrades quietly.
 
 **Binary inventory contract**, so preflight's claim is true rather than aspirational:
 

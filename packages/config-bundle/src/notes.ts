@@ -1,6 +1,3 @@
-export const SKILLS_DIR_ENV = 'SH_SKILLS_DIR';
-export const MEMORY_DIR_ENV = 'SH_MEMORY_DIR';
-
 /**
  * Injected via appendSystemPrompt instead of rewriting 149 skill files (spec D4, A1). A regex
  * deciding whether "Read" is a tool reference or English will occasionally mangle a sentence,
@@ -36,15 +33,26 @@ export function toolNameMappingNote(): string {
  * instructs a read of `skills/brainstorming/visual-companion.md`. Tool calls execute in the
  * sandbox, so without this note that read resolves to nothing and the model gets a confusing
  * miss rather than an actionable error.
+ *
+ * This note deliberately names no environment variable. The bundle is content-addressed and
+ * built once, before any leaf or sandbox exists, so it cannot bake in an absolute path — and no
+ * seam exists to set an env var inside the sandbox for a tool call to read (every call is an
+ * independent `bash -c`; see run-leaf.ts's overlay fragment for the mechanism that actually
+ * carries the absolute paths). The concrete "Skill files: …" / "Memory files: …" paths are
+ * appended per leaf, later in this same prompt — this note only tells the model to use those,
+ * not the working directory.
+ *
+ * MUST stay multi-line, same reason as toolNameMappingNote above.
  */
 export function skillsRootNote(): string {
   return [
     '## Where skill files live',
     '',
-    `Skill directories are available in the sandbox at \`$${SKILLS_DIR_ENV}/<skill-name>/\`, and`,
-    `memory files at \`$${MEMORY_DIR_ENV}/\`.`,
+    'Elsewhere in this prompt, look for lines starting "Skill files:" and "Memory files:" —',
+    'those name the absolute sandbox directories for this session.',
     '',
-    'When a skill instructs you to read one of its own files, resolve that relative path against',
-    `\`$${SKILLS_DIR_ENV}/<skill-name>/\` — not against the current working directory.`,
+    'When a skill instructs you to read one of its own files by a path relative to the skill,',
+    'resolve that path against the skill\'s own subdirectory under the "Skill files:" directory',
+    '— not against the current working directory.',
   ].join('\n');
 }

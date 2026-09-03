@@ -56,7 +56,10 @@ export function buildCachePopulateScript(digest: string): string {
     // leaves $DIR.tmp.$$ behind — and since each attempt uses a fresh PID, a systemic failure
     // (a transport truncating stdin, say) accumulates stale staging dirs indefinitely on a
     // long-lived pooled sandbox. The canonical path is still never half-populated either way.
-    `  trap 'rm -rf "$TMP"' EXIT`,
+    // `chmod -R a-w` below (ADR-0031) makes the staged tree read-only before it can ever fail
+    // out of this trap, so the trap must restore write permission first, or `rm -rf` on a
+    // read-only tree can itself fail and leak the staging dir on every failure.
+    `  trap 'chmod -R u+w "$TMP" 2>/dev/null || true; rm -rf "$TMP"' EXIT`,
     // Benign race, deliberately tolerated rather than fixed: if two leaves both miss the probe,
     // the flock loser reaches this line and exits WITHOUT draining the bundle piped on stdin. The
     // exec transports tolerate an undrained stdin, and overlayConfig only sends bytes on a miss, so
@@ -68,6 +71,12 @@ export function buildCachePopulateScript(digest: string): string {
     `  rm -rf "$TMP"; mkdir -p "$TMP"`,
     `  base64 -d | tar -x -z -C "$TMP"`,
     `  find "$TMP" -name '*.sh' -exec chmod +x {} +`,
+    // ADR-0031: promoted memory (and skill bodies) must be read-only, because this cache is
+    // shared by every leaf on the pod and nothing else prevents one leaf's write from mutating
+    // what every later leaf on this pod reads. Drop write AFTER the +x pass (so the scripts this
+    // cache ships stay executable) and BEFORE the mv (so the canonical path is never briefly
+    // writable).
+    `  chmod -R a-w "$TMP"`,
     `  mv "$TMP" "$DIR"`,
     `) 9>"$LOCK"`,
     `printf 'ok'`,

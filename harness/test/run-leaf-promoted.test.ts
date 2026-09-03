@@ -154,10 +154,65 @@ describe('configRef on a prompt leaf', () => {
     expect(fragments.some((f: string) => f.includes('/.sh-config/skills'))).toBe(true);
     // Pin the fallback itself, not just that the overlay ran: with a transport-less (pod) lease,
     // the code must genuinely build a KubectlTransport for the overlay call, and — since it built
-    // one rather than reusing a leased one — must close it afterward.
-    expect(kubectlTransportMock).toHaveBeenCalledTimes(1);
+    // one rather than reusing a leased one — must close it afterward. A second KubectlTransport is
+    // built (and closed) after the turn for the post-turn config-overlay teardown -- see the
+    // dedicated teardown test below for that half in isolation.
+    expect(kubectlTransportMock).toHaveBeenCalledTimes(2);
     const builtTransport = kubectlTransportMock.mock.results[0]!.value;
     expect(builtTransport.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('tears down the per-leaf config-overlay link after the turn -- runPromptLeaf never converges a workspace, so nothing else would ever remove it', async () => {
+    // Regression guard for the config-overlay-never-cleaned-up defect: config-overlay creates
+    // /workspace/leaves/<sid>/.sh-config on every promoted prompt leaf, but this leaf kind never
+    // calls convergeWorkspace/cleanupWorkspace (it has no repoUrl/ref), so without an explicit
+    // teardown call the per-leaf link leaks forever on a long-lived pooled pod. If the teardown
+    // call in run-leaf.ts's `finally` is removed, kubectlTransportMock drops back to 1 call and
+    // the cleanup transport's `exec` below is never invoked.
+    kubectlTransportMock.mockClear();
+    const executeTurn = okTurn();
+    const overlayConfig = vi.fn(async () => ({
+      skillsDir: '/workspace/leaves/run-1-i1/.sh-config/skills',
+      memoryDir: '/workspace/leaves/run-1-i1/.sh-config/memory',
+    }));
+    selectPoolSandboxMock.mockReset().mockResolvedValue(podLease()); // pod path: no grpc transport
+    await runLeaf(env({ configRef: digest }), undefined, {
+      executeTurn,
+      resolvePromotedConfig: vi.fn(async () => fakePromoted),
+      overlayConfig,
+      bundleRedis: {} as never,
+    });
+    expect(kubectlTransportMock).toHaveBeenCalledTimes(2);
+    const cleanupTransport = kubectlTransportMock.mock.results[1]!.value;
+    expect(cleanupTransport.exec).toHaveBeenCalledWith(
+      expect.stringContaining('/workspace/leaves/run-1-i1/.sh-config'),
+      expect.objectContaining({ timeout: 60 }),
+    );
+    expect(cleanupTransport.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not build or run a cleanup transport when the overlay never ran (no configRef)', async () => {
+    // Contrast case: nothing was ever created, so nothing should be torn down.
+    kubectlTransportMock.mockClear();
+    selectPoolSandboxMock.mockReset().mockResolvedValue(podLease());
+    await runLeaf(env(), undefined, { executeTurn: okTurn() });
+    expect(kubectlTransportMock).not.toHaveBeenCalled();
+  });
+
+  it('does not run cleanup when the overlay itself failed (nothing was created to clean up)', async () => {
+    kubectlTransportMock.mockClear();
+    selectPoolSandboxMock.mockReset().mockResolvedValue(podLease());
+    await runLeaf(env({ configRef: digest }), undefined, {
+      executeTurn: okTurn(),
+      resolvePromotedConfig: vi.fn(async () => fakePromoted),
+      overlayConfig: vi.fn(async () => {
+        throw new Error('config overlay failed (exit 1)');
+      }),
+      bundleRedis: {} as never,
+    });
+    // Exactly the one transport built for the failed overlay attempt itself -- no second
+    // (cleanup) transport, since overlayCreated never flips to true on this path.
+    expect(kubectlTransportMock).toHaveBeenCalledTimes(1);
   });
 
   it('fails the leaf when the sandbox overlay fails', async () => {
