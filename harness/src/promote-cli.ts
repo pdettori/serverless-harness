@@ -1,4 +1,4 @@
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createClient } from 'redis';
@@ -10,20 +10,7 @@ import {
   SecretScanError,
 } from '@sh/config-bundle';
 import { putBundle, type BundleRedisLike } from './config-store.js';
-import { LOCKFILE_OUT, parsePromoteArgs, promoteInputs } from './promote.js';
-
-/** Checked-in inventory for a sandbox image tag; absent ⇒ preflight warns instead of verifying. */
-function readInventory(cwd: string, image: string): string[] | undefined {
-  const path = join(
-    cwd,
-    'deploy',
-    'knative',
-    'sandbox-inventory',
-    `${image.replace(/[:/]/g, '_')}.json`,
-  );
-  if (!existsSync(path)) return undefined;
-  return JSON.parse(readFileSync(path, 'utf8')).binaries as string[];
-}
+import { LOCKFILE_OUT, parsePromoteArgs, promoteInputs, readInventory } from './promote.js';
 
 /** Write the lockfile to the filesystem. */
 function writeLockfile(cwd: string, lockfile: ReturnType<typeof serializeLockfile>): void {
@@ -36,7 +23,7 @@ async function main(): Promise<void> {
   const args = parsePromoteArgs(process.argv.slice(2));
   const cwd = process.cwd();
 
-  const inventory = readInventory(cwd, args.sandboxImage);
+  const inventory = readInventory(args.sandboxImage, cwd);
 
   const result = buildBundle(
     promoteInputs({

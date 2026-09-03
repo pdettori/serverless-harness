@@ -9,6 +9,10 @@ import {
   collectContextFiles,
   promoteInputs,
   LOCKFILE_OUT,
+  readInventory,
+  inventoryCandidates,
+  inventoryFileName,
+  INVENTORY_SUBDIR,
 } from '../src/promote.js';
 
 let root: string;
@@ -184,5 +188,69 @@ describe('promoteInputs', () => {
 describe('LOCKFILE_OUT', () => {
   it('is committed inside the project .claude directory', () => {
     expect(LOCKFILE_OUT).toBe('.claude/promoted.lock.json');
+  });
+});
+
+describe('readInventory', () => {
+  const IMAGE = 'ghcr.io/rossoctl/serverless-harness-sandbox:latest';
+  const FILE = 'ghcr.io_rossoctl_serverless-harness-sandbox_latest.json';
+
+  it('derives the filename readInventory/promote-cli agree on', () => {
+    // Off by one character here and preflight degrades to inventory_unavailable forever.
+    expect(inventoryFileName(IMAGE)).toBe(FILE);
+  });
+
+  // The regression that matters: the inventory is a HARNESS-SHIPPED asset. Resolving it against
+  // the invocation cwd made it unreachable for every real caller, because `sh promote` runs from
+  // the user's own project. Measured before the fix: 29 findings from the repo root, 0 one
+  // directory deeper -- a check that silently stopped checking.
+  it('finds the shipped inventory relative to the module, not the cwd', () => {
+    const moduleDir = join(root, 'pkg', 'src');
+    mkdirSync(moduleDir, { recursive: true });
+    write(join('pkg', INVENTORY_SUBDIR, FILE), JSON.stringify({ image: IMAGE, binaries: ['tar'] }));
+    // cwd is somewhere entirely unrelated, as it is in real use.
+    const unrelated = mkdtempSync(join(tmpdir(), 'user-project-'));
+    try {
+      expect(readInventory(IMAGE, unrelated, moduleDir)).toEqual(['tar']);
+    } finally {
+      rmSync(unrelated, { recursive: true, force: true });
+    }
+  });
+
+  it('still honours a cwd-local inventory as a fallback override', () => {
+    const moduleDir = mkdtempSync(join(tmpdir(), 'no-inventory-'));
+    write(join(INVENTORY_SUBDIR, FILE), JSON.stringify({ image: IMAGE, binaries: ['flock'] }));
+    try {
+      expect(readInventory(IMAGE, root, moduleDir)).toEqual(['flock']);
+    } finally {
+      rmSync(moduleDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns undefined when no inventory exists anywhere', () => {
+    const moduleDir = mkdtempSync(join(tmpdir(), 'bare-'));
+    try {
+      expect(readInventory(IMAGE, root, moduleDir)).toBeUndefined();
+    } finally {
+      rmSync(moduleDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers the module-relative inventory over a cwd-local one', () => {
+    const moduleDir = join(root, 'pkg', 'src');
+    mkdirSync(moduleDir, { recursive: true });
+    write(
+      join('pkg', INVENTORY_SUBDIR, FILE),
+      JSON.stringify({ image: IMAGE, binaries: ['shipped'] }),
+    );
+    write(join(INVENTORY_SUBDIR, FILE), JSON.stringify({ image: IMAGE, binaries: ['local'] }));
+    expect(readInventory(IMAGE, root, moduleDir)).toEqual(['shipped']);
+  });
+
+  it('candidate list ends at the cwd fallback and terminates', () => {
+    const c = inventoryCandidates(IMAGE, '/tmp/cwd', '/a/b/c');
+    expect(c[c.length - 1]).toBe(join('/tmp/cwd', INVENTORY_SUBDIR, FILE));
+    expect(c.length).toBeLessThan(20);
+    expect(c[0]).toBe(join('/a/b/c', INVENTORY_SUBDIR, FILE));
   });
 });

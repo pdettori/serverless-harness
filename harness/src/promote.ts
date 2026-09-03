@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, parse } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { BuildBundleInput, PromoteMode } from '@sh/config-bundle';
 
 /** Where the generated lockfile is written, for committing alongside the code it configures. */
@@ -53,6 +54,56 @@ export function parsePromoteArgs(argv: string[]): PromoteArgs {
  */
 export function projectMemoryDir(cwd: string, home: string): string {
   return join(home, '.claude', 'projects', cwd.split(/[/\\]/).join('-'), 'memory');
+}
+
+/** Relative location of the checked-in sandbox inventories, from a repo or package root. */
+export const INVENTORY_SUBDIR = join('deploy', 'knative', 'sandbox-inventory');
+
+/** The inventory filename for an image ref: `:` and `/` become `_`. Mirrors readInventory's key. */
+export function inventoryFileName(image: string): string {
+  return `${image.replace(/[:/]/g, '_')}.json`;
+}
+
+/**
+ * Candidate inventory paths for an image, in precedence order.
+ *
+ * The inventory is a HARNESS-SHIPPED asset, so it must be found relative to where the harness is
+ * installed -- NOT relative to the invocation directory. `sh promote` is run from the user's own
+ * project (that is the whole point of the feature), and a user's project will never contain
+ * `deploy/knative/sandbox-inventory/`. Resolving against `cwd` alone made the binary check
+ * silently degrade to `inventory_unavailable` for every real caller, which is the "lying
+ * preflight" this inventory exists to prevent -- measured: from the repo root the check produced
+ * 29 findings, from one directory deeper it produced none.
+ *
+ * `cwd` is kept as a LOWER-precedence fallback so a caller can still override with a local file.
+ */
+export function inventoryCandidates(image: string, cwd: string, moduleDir: string): string[] {
+  const file = inventoryFileName(image);
+  const out: string[] = [];
+  // Walk up from the module: src/ -> package -> repo root (and any bundling layout in between).
+  let dir = moduleDir;
+  for (;;) {
+    out.push(join(dir, INVENTORY_SUBDIR, file));
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  out.push(join(cwd, INVENTORY_SUBDIR, file));
+  return out;
+}
+
+/** Checked-in inventory for a sandbox image tag; absent => preflight warns instead of verifying. */
+export function readInventory(
+  image: string,
+  cwd: string,
+  moduleDir: string = dirname(fileURLToPath(import.meta.url)),
+): string[] | undefined {
+  for (const path of inventoryCandidates(image, cwd, moduleDir)) {
+    if (existsSync(path)) {
+      return JSON.parse(readFileSync(path, 'utf8')).binaries as string[];
+    }
+  }
+  return undefined;
 }
 
 /**
