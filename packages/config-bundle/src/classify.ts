@@ -6,7 +6,7 @@ import type { Classification, ClassifyOptions, DroppedSkill, ResolvedSkill } fro
  * because the signal words ("agent", "artifact") appear in unrelated prose, and a
  * wrongly-dropped skill fails remotely and confusingly.
  */
-export const DEFAULT_DENY_LIST: string[] = [
+export const DEFAULT_DENY_LIST: readonly string[] = [
   'artifact-design',
   'artifact-diagramming',
   'document-skills:docx',
@@ -20,48 +20,95 @@ export const DEFAULT_DENY_LIST: string[] = [
 ];
 
 /** Skills whose operation IS dispatching subagents. Pi has no Task tool (spec §9). */
-export const SUBAGENT_DEPENDENT: string[] = [
+export const SUBAGENT_DEPENDENT: readonly string[] = [
   'superpowers:dispatching-parallel-agents',
   'superpowers:subagent-driven-development',
 ];
 
 /** Travels fine, but its method is dialogue — degrades to invented answers unattended. */
-export const INTERACTION_DEPENDENT: string[] = [
+export const INTERACTION_DEPENDENT: readonly string[] = [
   'superpowers:brainstorming',
   'superpowers:receiving-code-review',
 ];
 
-/** Never reported as a missing binary. */
+/** Never reported as a missing binary. Complete bash builtins and keywords. */
 const SHELL_BUILTINS = new Set([
+  ':',
+  '.',
+  'source',
+  'alias',
+  'bg',
+  'bind',
+  'break',
+  'builtin',
+  'caller',
   'cd',
+  'command',
+  'compgen',
+  'complete',
+  'compopt',
+  'continue',
+  'declare',
+  'dirs',
+  'disown',
   'echo',
+  'enable',
+  'eval',
+  'exec',
+  'exit',
   'export',
+  'false',
+  'fc',
+  'fg',
+  'getopts',
+  'hash',
+  'help',
+  'history',
+  'jobs',
+  'kill',
+  'let',
+  'local',
+  'logout',
+  'mapfile',
+  'popd',
+  'printf',
+  'pushd',
+  'pwd',
+  'read',
+  'readarray',
+  'readonly',
+  'return',
+  'select',
   'set',
+  'shift',
+  'shopt',
+  'suspend',
+  'test',
+  'times',
+  'trap',
+  'true',
+  'type',
+  'typeset',
+  'ulimit',
+  'umask',
+  'unalias',
+  'unset',
+  'wait',
   'if',
   'then',
   'else',
+  'elif',
   'fi',
   'for',
+  'while',
+  'until',
   'do',
   'done',
-  'while',
   'case',
   'esac',
-  'return',
-  'exit',
-  'source',
-  'eval',
-  'test',
-  'true',
-  'false',
-  'read',
-  'local',
-  'shift',
-  'trap',
-  'unset',
-  'printf',
-  'wait',
-  'exec',
+  'function',
+  'in',
+  'time',
 ]);
 
 export function classifySkills(skills: ResolvedSkill[], opts: ClassifyOptions): Classification {
@@ -102,8 +149,11 @@ export function classifySkills(skills: ResolvedSkill[], opts: ClassifyOptions): 
 }
 
 /**
- * Commands invoked inside fenced bash/sh blocks, as a *detection* signal for preflight.
+ * Commands invoked inside fenced bash/sh/shell blocks, as a *detection* signal for preflight.
  * Never installs anything; the sandbox image provides (spec §4.5).
+ *
+ * Parser is intentionally shell-naive: it does not understand quoting, so a `|` or `&&`
+ * inside a quoted string can mis-split. This is an accepted limitation.
  */
 export function detectBinaries(skills: ResolvedSkill[]): string[] {
   const found = new Set<string>();
@@ -113,7 +163,10 @@ export function detectBinaries(skills: ResolvedSkill[]): string[] {
         const line = rawLine.trim();
         if (!line || line.startsWith('#')) continue;
         for (const segment of line.split(/&&|\|\||[|;]/)) {
-          const word = segment.trim().split(/\s+/)[0];
+          let trimmed = segment.trim();
+          // Skip leading environment variable assignments (e.g. FOO=bar).
+          trimmed = trimmed.replace(/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/, '');
+          const word = trimmed.split(/\s+/)[0];
           if (!word) continue;
           if (!/^[a-z][a-z0-9._-]*$/.test(word)) continue;
           if (SHELL_BUILTINS.has(word)) continue;

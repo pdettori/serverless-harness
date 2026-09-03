@@ -96,4 +96,17 @@ describe('detectBinaries', () => {
     const b = s('b', '```bash\ngh y\npnpm i\n```');
     expect(detectBinaries([a, b])).toEqual(['gh', 'pnpm']);
   });
+
+  it('skips leading environment variable assignments', () => {
+    const skill = s('x', '```bash\nSH_PROMOTE_LIVE_SMOKE=1 pnpm exec vitest run\n```');
+    expect(detectBinaries([skill])).toEqual(['pnpm']);
+  });
+
+  it('ignores non-shell fenced blocks but finds commands in adjacent bash blocks', () => {
+    const skill = s(
+      'x',
+      '```ts\ngh pr list\n```\n```\necho hi\n```\n```bash\nkubectl get pods\n```',
+    );
+    expect(detectBinaries([skill])).toEqual(['kubectl']);
+  });
 });
