@@ -41,12 +41,32 @@ export function parsePromoteArgs(argv: string[]): PromoteArgs {
   return args;
 }
 
-/** Claude Code slugs a project path by replacing separators with '-'. */
+/**
+ * Mirror Claude Code's own project slug: path separators replaced with '-'.
+ *
+ * This scheme is lossy -- `/a/my-project` and `/a/my/project` both slug to `-a-my-project` -- and
+ * that is INHERITED ON PURPOSE. Verified against a real install: the directory Claude Code created
+ * for this repo is `-Users-paolo-Projects-aiplatform-serverless-harness`, hyphen in the final
+ * segment and all. Our job is to FIND the directory Claude Code already made, so a "safer",
+ * collision-free scheme would simply miss it and silently promote no memory at all. Do not
+ * "improve" this.
+ */
 export function projectMemoryDir(cwd: string, home: string): string {
   return join(home, '.claude', 'projects', cwd.split(/[/\\]/).join('-'), 'memory');
 }
 
-/** Find the project root by walking up until we find a .git directory, or cwd if none found. */
+/**
+ * The nearest ancestor holding a `.git` entry, or `cwd` when there is none.
+ *
+ * This bounds the context-file walk. Without it the walk reaches the filesystem root and sweeps
+ * every ancestor `CLAUDE.md` -- including a personal `~/CLAUDE.md` -- into a bundle that lands in a
+ * shared Redis store.
+ *
+ * `existsSync` is deliberate rather than a directory check: in a linked worktree `.git` is a *file*
+ * containing a `gitdir:` pointer, not a directory, and this repo uses worktrees heavily. A
+ * directory-only test would walk straight past the boundary in exactly the checkout where it is
+ * needed most.
+ */
 export function projectRoot(cwd: string): string {
   let dir = cwd;
   for (;;) {

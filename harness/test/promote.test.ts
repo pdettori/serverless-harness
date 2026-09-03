@@ -95,6 +95,24 @@ describe('projectRoot', () => {
     const root_path = projectRoot(root);
     expect(root_path).toBe(root);
   });
+
+  // In a linked worktree `.git` is a FILE holding a `gitdir:` pointer, not a directory. This repo
+  // works out of worktrees constantly, so a directory-only boundary test would walk straight past
+  // the root in the checkout where it matters most -- sweeping ancestor CLAUDE.md files into a
+  // bundle bound for a shared store. Verified against 16 live worktrees, all `.git`-as-file.
+  it('bounds the walk when .git is a file, as in a linked worktree', () => {
+    write('.git', 'gitdir: /elsewhere/.git/worktrees/wt\n');
+    write('CLAUDE.md', 'worktree root');
+    write('sub/deep/CLAUDE.md', 'inner');
+    expect(projectRoot(join(root, 'sub', 'deep'))).toBe(root);
+  });
+
+  it('terminates on the filesystem root, and on relative and nonexistent paths', () => {
+    // A missing termination check here hangs the CLI rather than failing it.
+    expect(projectRoot('/')).toBe('/');
+    expect(projectRoot('relative/not/real')).toBe('relative/not/real');
+    expect(projectRoot('/definitely/does/not/exist')).toBe('/definitely/does/not/exist');
+  });
 });
 
 describe('collectContextFiles', () => {
