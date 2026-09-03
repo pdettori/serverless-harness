@@ -10,6 +10,7 @@ import {
   checkMemoryLinks,
   checkNamespacedPrompts,
   checkSiblingPaths,
+  checkExcludedPrompts,
 } from './preflight.js';
 import { resolveSkills } from './resolve.js';
 import { blockingSecrets, scanEntriesForSecrets, SecretScanError } from './secret-scan.js';
@@ -119,13 +120,20 @@ export function buildBundle(input: BuildBundleInput): BuildResult {
     memoryPaths.push(path);
   }
 
+  const excluded = new Set(input.excludePrompts ?? []);
+  const excludedSeen = new Set<string>();
   const promptNames: string[] = [];
   for (const name of markdownFiles(input.promptsDir)) {
+    const promptName = name.replace(/\.md$/, '');
+    if (excluded.has(promptName)) {
+      excludedSeen.add(promptName);
+      continue;
+    }
     entries.push({
       path: `prompts/${name}`,
       content: readFileSync(join(input.promptsDir!, name)),
     });
-    promptNames.push(name.replace(/\.md$/, ''));
+    promptNames.push(promptName);
   }
 
   const fragments = [
@@ -179,9 +187,12 @@ export function buildBundle(input: BuildBundleInput): BuildResult {
     ...checkSiblingPaths(classification.travels),
     ...checkMemoryLinks(memoryIndex, memoryNames),
     ...checkBinaries(binaries, input.inventory),
-    ...checkEntry(input.entry, promptNames),
+    // Suppressed when the entry is what was excluded: `entry_excluded` already names the cause,
+    // and `unknown_entry` would report the symptom of it as a second, independent-looking error.
+    ...(excluded.has(input.entry) ? [] : checkEntry(input.entry, promptNames)),
     ...checkInteraction(classification),
     ...checkNamespacedPrompts(namespacedPromptDirs(input.promptsDir)),
+    ...checkExcludedPrompts(input.entry, input.excludePrompts ?? [], excludedSeen),
   ];
 
   const tar = canonicalTar([

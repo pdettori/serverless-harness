@@ -221,6 +221,13 @@ you — that heuristic matches code and documentation placeholders too often to 
 writes a committable `.claude/promoted.lock.json` and uploads a content-addressed bundle; an
 unchanged re-promotion uploads nothing.
 
+Keep a prompt out of the bundle with `--exclude-prompt <name>`, repeatable. This exists for the
+case where the command that _drives_ promotion lives in the project being promoted: with `HOME`
+pointed at that project, its `.claude/commands/` is the prompts directory, so without the flag such
+a command ships itself into every bundle. Excluding the entry prompt is refused outright, and an
+exclusion that matches nothing warns — an unmatched exclusion would otherwise ship the prompt you
+meant to omit.
+
 Dispatch it by adding one field to any prompt leaf:
 
 ```json

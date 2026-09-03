@@ -31,6 +31,29 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+describe('parsePromoteArgs --exclude-prompt', () => {
+  it('collects repeated exclusions in order', () => {
+    const a = parsePromoteArgs([
+      '--entry',
+      'go',
+      '--exclude-prompt',
+      'promote',
+      '--exclude-prompt',
+      'scratch',
+    ]);
+    expect(a.excludePrompts).toEqual(['promote', 'scratch']);
+  });
+
+  it('requires a value, rather than silently excluding the empty name', () => {
+    // Asserts the specific message, not just any error mentioning the flag: while the flag was
+    // unknown, `unknown flag: --exclude-prompt` also matched /--exclude-prompt/ and the test
+    // passed without the feature existing.
+    expect(() => parsePromoteArgs(['--entry', 'go', '--exclude-prompt'])).toThrow(
+      /--exclude-prompt requires a prompt name/,
+    );
+  });
+});
+
 describe('parsePromoteArgs', () => {
   it('requires an entry', () => {
     expect(() => parsePromoteArgs([])).toThrow(/--entry/);
@@ -45,6 +68,7 @@ describe('parsePromoteArgs', () => {
       mode: 'unattended',
       sandboxImage: 'ghcr.io/rossoctl/serverless-harness-sandbox:latest',
       deny: [],
+      excludePrompts: [],
       dryRun: false,
     });
   });
