@@ -1,4 +1,4 @@
-import { digestDirName } from '@sh/config-bundle';
+import { assertValidDigest, digestDirName } from '@sh/config-bundle';
 import type { SandboxTransport } from '@sh/k8s-sandbox';
 
 /** Single-quote-escape for safe bash interpolation. Copied from converge.ts:4 by design. */
@@ -8,7 +8,7 @@ function sq(s: string): string {
 
 /** Shared, immutable, digest-keyed: safe to reuse across every leaf on this pod. */
 export function configCacheDir(digest: string): string {
-  return `/workspace/.sh-config/${digestDirName(digest)}`;
+  return `/workspace/.sh-config/${digestDirName(assertValidDigest(digest))}`;
 }
 
 /** Per-leaf link, under the leaf workspace so `cleanupWorkspace` remains the only teardown path. */

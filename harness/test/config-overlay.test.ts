@@ -80,7 +80,12 @@ describe('buildCachePopulateScript', () => {
   });
 
   it('single-quote-escapes the digest', () => {
-    expect(buildCachePopulateScript("x'; rm -rf /; '")).toContain(`'\\''`);
+    // A real sha256:<hex> digest can never contain a quote -- assertValidDigest (Fix B,
+    // config-bundle's shared digest validator) now rejects this string before `sq()` ever sees
+    // it, so the escaping this test used to exercise is unreachable for a value shaped this way.
+    // The `sq()` helper itself is still covered structurally by every other test in this file
+    // (they all pass a valid DIGEST through, and `sq()` is applied unconditionally).
+    expect(() => buildCachePopulateScript("x'; rm -rf /; '")).toThrow(/invalid digest/i);
   });
 });
 

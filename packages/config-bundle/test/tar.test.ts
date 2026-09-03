@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { canonicalTar, untar, digestOf, MAX_USTAR_PATH, digestDirName } from '../src/tar.js';
+import {
+  canonicalTar,
+  untar,
+  digestOf,
+  MAX_USTAR_PATH,
+  assertValidDigest,
+  InvalidDigestError,
+  digestDirName,
+} from '../src/tar.js';
 
 const e = (path: string, body: string, mode?: number) => ({
   path,
@@ -74,6 +82,49 @@ describe('digestOf', () => {
     const a = digestOf(canonicalTar([e('a.md', 'x')]));
     const b = digestOf(canonicalTar([e('a.md', 'y')]));
     expect(a).not.toBe(b);
+  });
+});
+
+describe('assertValidDigest', () => {
+  it('passes through a well-formed digest unchanged', () => {
+    const good = 'sha256:' + '0123456789abcdef'.repeat(4);
+    expect(assertValidDigest(good)).toBe(good);
+  });
+
+  it('rejects a path-traversal payload disguised as a digest', () => {
+    expect(() => assertValidDigest('sha256:../../../evil')).toThrow(InvalidDigestError);
+  });
+
+  it('rejects hex of the wrong length', () => {
+    expect(() => assertValidDigest('sha256:' + 'a'.repeat(63))).toThrow(InvalidDigestError);
+    expect(() => assertValidDigest('sha256:' + 'a'.repeat(65))).toThrow(InvalidDigestError);
+  });
+
+  it('rejects uppercase hex', () => {
+    expect(() => assertValidDigest('sha256:' + 'A'.repeat(64))).toThrow(InvalidDigestError);
+  });
+
+  it('rejects a digest missing the sha256: prefix', () => {
+    expect(() => assertValidDigest('a'.repeat(64))).toThrow(InvalidDigestError);
+  });
+
+  it('rejects the empty string', () => {
+    expect(() => assertValidDigest('')).toThrow(InvalidDigestError);
+  });
+
+  it('caps how much of a long bad value the error message echoes', () => {
+    // The message must name the bad value's SHAPE without echoing an unbounded attacker string
+    // (a long or crafted digest could otherwise ride, unbounded, into logs or a rendered error).
+    const long = 'sha256:' + 'z'.repeat(5000);
+    try {
+      assertValidDigest(long);
+      throw new Error('expected assertValidDigest to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(InvalidDigestError);
+      const message = (err as Error).message;
+      expect(message.length).toBeLessThan(200);
+      expect(message).not.toContain('z'.repeat(5000));
+    }
   });
 });
 

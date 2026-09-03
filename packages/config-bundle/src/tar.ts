@@ -96,6 +96,39 @@ export function digestOf(tar: Buffer): string {
   return 'sha256:' + createHash('sha256').update(tar).digest('hex');
 }
 
+const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
+
+/**
+ * Thrown by `assertValidDigest` for anything not matching `sha256:<64 lowercase hex>`. The
+ * message caps how much of the bad value it echoes, so a long or crafted string (e.g. a
+ * path-traversal payload) doesn't ride unbounded into logs or a rendered error.
+ */
+export class InvalidDigestError extends Error {
+  constructor(digest: string) {
+    const shown =
+      digest.length > 40 ? `${digest.slice(0, 40)}...(${digest.length} chars total)` : digest;
+    super(
+      `invalid digest: expected 'sha256:' + 64 lowercase hex chars, got ${JSON.stringify(shown)}`,
+    );
+    this.name = 'InvalidDigestError';
+  }
+}
+
+/**
+ * Reject any digest string not shaped `sha256:<64 lowercase hex>`. Both `unpackBundle`
+ * (harness/src/config-resolver.ts) and `configCacheDir` (harness/src/config-overlay.ts) turn a
+ * digest into a filesystem path via `digestDirName` + `join(baseDir, ...)`; a shape like
+ * `sha256:../../../evil` would otherwise walk that join straight out of the base directory.
+ * Neither pod currently accepts an attacker-chosen digest over the wire today -- this is
+ * defense-in-depth against a digest string that originated somewhere less trusted than the
+ * builder in this package, not a demonstrated live exploit. One shared check, called from both
+ * sites, keeps that guarantee from drifting between them.
+ */
+export function assertValidDigest(digest: string): string {
+  if (!DIGEST_RE.test(digest)) throw new InvalidDigestError(digest);
+  return digest;
+}
+
 /** Filesystem-safe form of a digest, for use as a directory name. `replaceAll`, not `replace`:
  * a digest has exactly one `:` today (`sha256:<hex>`), but a single `replace` silently stops
  * after the first match, so a future multi-colon shape would collide two distinct digests into

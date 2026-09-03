@@ -100,6 +100,21 @@ describe('unpackBundle', () => {
     expect(() => unpackBundle(evil, 'sha256:' + '2'.repeat(64), base)).toThrow(/escapes/);
     expect(readdirSync(base).filter((n) => n.startsWith('.tmp-'))).toEqual([]);
   });
+
+  it('rejects a malformed digest before touching the filesystem at all (Fix B: defense-in-depth)', () => {
+    // digestDirName joins whatever it's given onto baseDir with no further checking; without
+    // assertValidDigest running first, a digest shaped 'sha256:../../../evil' would turn into a
+    // directory name that -- once digestDirName's ':' -> '-' substitution is undone by eye --
+    // walks straight out of `base`. This asserts base itself never gains a directory at all
+    // (traversal or not), which is only true if the digest is rejected before `mkdirSync(baseDir)`
+    // and the staging mkdtemp ever run.
+    const { tar } = bundle();
+    const evilDigest = 'sha256:../../../evil';
+    expect(() => unpackBundle(tar, evilDigest, base)).toThrow(/invalid digest/i);
+    // base was freshly created empty by beforeEach and nothing in this test wrote to it before the
+    // call above, so any entry here would have to have come from unpackBundle.
+    expect(readdirSync(base)).toEqual([]);
+  });
 });
 
 describe('buildLoaderOptions', () => {

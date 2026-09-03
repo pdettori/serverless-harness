@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve, sep } from 'node:path';
-import { digestDirName, untar, type TarEntry } from '@sh/config-bundle';
+import { assertValidDigest, digestDirName, untar, type TarEntry } from '@sh/config-bundle';
 import { getBundle, type BundleRedisLike } from './config-store.js';
 
 /** The harness pod mounts no writable volume except an emptyDir /tmp (ADR-0020). */
@@ -43,7 +43,7 @@ export function unpackBundle(
   baseDir: string = DEFAULT_CONFIG_BASE_DIR,
 ): PromotedConfig {
   const entries = untar(tar);
-  const root = join(baseDir, digestDirName(digest));
+  const root = join(baseDir, digestDirName(assertValidDigest(digest)));
 
   if (!existsSync(root)) {
     mkdirSync(baseDir, { recursive: true });
