@@ -12,7 +12,8 @@
     "./leaf-job-runner": "./src/leaf-job-runner.ts",
     "./leaf-result-store": "./src/leaf-result-store.ts",
     "./sandbox-lease": "./src/sandbox-lease.ts",
-    "./config-store": "./src/config-store.ts"
+    "./config-store": "./src/config-store.ts",
+    "./config-resolver": "./src/config-resolver.ts"
   },
   "scripts": {
     "test": "vitest run",
