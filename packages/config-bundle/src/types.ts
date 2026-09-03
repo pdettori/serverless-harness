@@ -50,3 +50,12 @@ export interface ClassifyOptions {
   mode: PromoteMode;
   userDenyList?: string[];
 }
+
+export type SecretSeverity = 'blocking' | 'warning';
+
+export interface SecretFinding {
+  path: string;
+  line: number;
+  rule: string;
+  severity: SecretSeverity;
+}
