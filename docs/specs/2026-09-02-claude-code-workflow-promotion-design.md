@@ -21,7 +21,14 @@ sandbox pool)
 > 3. **Memory indexes use markdown links, not `[[wikilinks]]`** (§4.6). The real `MEMORY.md` holds 9
 >    `[Title](file.md)` links and zero wikilinks, so that check could never fire.
 > 4. **The `promote` sample output below was illustrative and is now measured.**
-> 5. Implementation detail worth recording because it silently untracked a module: `.gitignore`'s
+> 5. **Preflight now blocks only on facts and warns on heuristics** (§4.6, §6 D10). The binary check
+>    reported 32 missing on a real machine (half of them not binaries) and the sibling check fired 182
+>    times across 28 skills, because skill prose names files the reader will create. Both are advisory
+>    now; the first real end-to-end build produced 183 blocking errors and would have failed outright.
+> 6. **A recommended-workflow section was added** (§11): author in a minimal sandbox rather than
+>    promoting a whole `~/.claude`. Most of the pruning machinery in this spec exists only to cope
+>    with an uncurated environment.
+> 7. Implementation detail worth recording because it silently untracked a module: `.gitignore`'s
 >    unanchored `secrets.*` pattern means the scanner lives in `secret-scan.ts`, not `secrets.ts`.
 
 ## 1. Problem
@@ -160,7 +167,9 @@ would leave the logic untestable and unusable from CI.
 **Dedupe is mandatory.** A representative laptop shows 149 `SKILL.md` files but far fewer
 skills: `plugins/cache/` (~39 MB) is largely a resolved duplicate of `plugins/marketplaces/`
 (~23 MB). Without dedupe by resolved skill identity, the lockfile double-counts and the bundle
-ships each skill twice. Of ~62 MB on disk, ~11 MB is markdown; a pruned bundle is single-digit MB.
+ships each skill twice. Of ~62 MB on disk, ~11 MB is markdown; a pruned bundle measured **8.6 MB
+across 411 entries** for 55 travelling skills — single-digit MB, but nearer the top of that range
+than first estimated, which is one of the arguments for §11's sandbox-first authoring.
 
 **Entry prompts** make a bundle a _workflow_ rather than a pile of configuration. The bundle
 carries named templates in `prompts/`; the envelope names one plus arguments. One bundle
@@ -197,7 +206,7 @@ $ sh promote --entry brainstorm-and-plan
   secrets    no blocking findings, 4 warning(s) — see below
   binaries   gh, kubectl, pnpm  →  present in sandbox:pool-default
   entry      brainstorm-and-plan
-  bundle     sha256:4f2a…c19  (3.2 MB, unchanged — upload skipped)
+  bundle     sha256:94e9…86d  (8.6 MB, unchanged — upload skipped)
   lockfile   .claude/promoted.lock.json  (2 skills changed since last promote)
 ```
 
@@ -293,7 +302,13 @@ Pi's existing `ResourceCollision` diagnostics rather than a parallel mechanism; 
 `MEMORY.md` pointing at deny-listed files (warn) — matching both the `[Title](file.md)` markdown
 form that real indexes actually use and the `[[wikilink]]` form found inside memory bodies.
 
-**Caught locally with inventory data.** Missing binary — the highest-value check, since a
+**Caught locally with inventory data (advisory).** Missing binary — valuable but **warn-only**,
+because measurement showed the detector cannot distinguish a command from prose: on a real
+`~/.claude` it reported 32 missing binaries, roughly half of which were not binaries at all
+(`angular`, `django`, `vue`, `rev-parse`, and `your_command`, a literal documentation placeholder).
+At error severity it refused every real promotion. A genuinely absent tool now fails remotely with a
+legible `gh: not found`, which is diagnosable and re-promotable. Formerly described here as "the
+highest-value check", since a
 missing `gh` is the classic silent remote failure. Also sandbox pool/image-tag existence, and
 harness-version-supports-bundle-format.
 
@@ -368,6 +383,13 @@ free. See [ADR-0031](../adrs/0031-promoted-memory-read-only.md).
 - **D8 — Interaction dependence is mode-sensitive**, not a hard incompatibility, which keeps
   the classifier valid for phase-2 live attach.
 - **D9 — Subagent support is a separate spec** (§9).
+- **D10 — Preflight blocks only on facts, and warns on heuristics.** The single blocking preflight
+  error is `unknown_entry` — the entry prompt provably is or is not in the bundle — alongside the
+  secret scan's structural-format throw. Everything derived from scanning prose warns:
+  `missing_sibling`, `missing_binary`, `dangling_memory_link`, `interaction_dependent`,
+  `possible_secret`. This was not designed in; three independent measurements forced it one check at
+  a time (11 false blocks from the secret heuristic, 32 from binaries, 182 from siblings), and the
+  principle is what connects them. A gate that refuses every legitimate promotion protects nothing.
 
 ## 7. Alternatives considered
 
@@ -445,7 +467,7 @@ in the evidence trail rather than in an assertion.
 2. With `configRef` absent, the existing suite is green unmodified.
 3. A planted **structural** credential (e.g. an AWS access key id) blocks promotion, while a
    heuristic-only hit warns and lets it proceed.
-4. A missing binary is reported by preflight _before_ dispatch.
+4. A missing binary is reported by preflight _before_ dispatch, as a warning rather than a block.
 5. Re-promoting unchanged configuration uploads nothing.
 6. The harness's own `CLAUDE.md` is provably absent from a promoted session.
 7. Cold-start delta measured and recorded.
@@ -479,3 +501,35 @@ extension lands the code flips and they travel. Nothing else in this design chan
   the escape hatch if bundles grow, and D1's digest indirection makes that swap local.
 - **Semantic drift.** A promoted workflow can behave differently for reasons no check catches
   (§4.6, tier 3). The mitigation is honesty in the report, not a promise of fidelity.
+
+## 11. Recommended workflow: author in a sandbox, not in your whole `~/.claude`
+
+Added after implementation, on the project owner's direction: _transporting a whole local
+environment to the remote harness is inherently challenging, so the better practice is to start
+Claude in a local sandbox, add only the skills and tools that workflow needs there, and run from
+there._
+
+Everything measured while building this feature argues the same way. A real `~/.claude` yielded 149
+`SKILL.md` files resolving to 60 skills, 55 of which travelled, producing an 8.6 MB bundle with 45
+preflight warnings — nearly all originating in skills the workflow never uses. More tellingly, three
+separate preflight checks had to be demoted from blocking to advisory (§6 D10) purely because an
+uncurated environment is that noisy. The classifier, the curated deny-list, and the heuristic checks
+are all machinery for _coping with_ an environment that was never curated for remote execution.
+Sandbox-first authoring removes the need for most of it rather than making it smarter.
+
+**What is unaffected**, and therefore worth building either way: the bundle format and content
+digest (§4.1), the content-addressed store, harness-side materialization (§4.4), the sandbox overlay
+and path translation (§4.5), the injected prompt notes, and the lockfile.
+
+**What it demotes:** relevance pruning and the curated deny-list (§4.2) shrink toward irrelevance
+when the environment contains only what the workflow needs.
+
+**What it would restore:** blocking preflight. D10 exists because an uncurated environment produces
+false positives at a rate that makes blocking untenable; a curated one should yield close to zero
+findings, at which point erroring on them is both safe and more useful.
+
+**The honest cost.** The original motivation in §1 was that people already know Claude Code, so they
+should be able to iterate in the environment they already have. A deliberately minimal sandbox is
+less comfortable than a real setup. That is the standard dev/prod-parity trade, and parity usually
+wins — but it does change the pitch from "keep working the way you work" to "work in a sandbox that
+resembles production."
