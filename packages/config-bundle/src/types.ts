@@ -27,3 +27,26 @@ export interface SkillRoots {
   /** e.g. [`~/.claude/plugins`]. Scanned recursively; cache/marketplace duplicates collapse. */
   pluginDirs?: string[];
 }
+
+export type DropReason = 'no_harness_equivalent' | 'needs_subagent' | 'user_denied';
+
+/** Unattended: no human can answer a question. Attended: phase-2 live attach (spec §4.6). */
+export type PromoteMode = 'unattended' | 'attended';
+
+export interface DroppedSkill {
+  name: string;
+  reason: DropReason;
+  detail: string;
+}
+
+export interface Classification {
+  travels: ResolvedSkill[];
+  dropped: DroppedSkill[];
+  /** Travels, but degrades without a human. Warned under `unattended` only. */
+  interactionDependent: string[];
+}
+
+export interface ClassifyOptions {
+  mode: PromoteMode;
+  userDenyList?: string[];
+}
