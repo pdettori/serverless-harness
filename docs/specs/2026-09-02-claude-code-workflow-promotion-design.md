@@ -1,6 +1,6 @@
 # Claude Code workflow promotion: design
 
-**Date:** 2026-09-02 · **Status:** Implemented (cold-start measurement owed) · **ADRs:**
+**Date:** 2026-09-02 · **Status:** Implemented · **ADRs:**
 [ADR-0030](../adrs/0030-claude-code-workflow-promotion.md),
 [ADR-0031](../adrs/0031-promoted-memory-read-only.md) · **Builds on:** M1 (Redis session
 backend), M2/M3 (sandbox client + persistent channel), P1 (fs-free harness), P2 (shared
@@ -467,19 +467,38 @@ plausible thing to erode it, so the cost belongs in the evidence trail rather th
 assertion. The end-to-end, in-cluster comparison (baseline vs. `configRef` set, against a
 scaled-to-zero Revision) could not be taken during this implementation: the deployed image
 predates this branch, and taking it needs a full image build, `kind load`, and a forced new
-Revision. It remains owed; reproduction, once such a cluster is available:
+Revision. It has since been taken (see **In-cluster result**, below).
+
+The snippet originally recorded here forced `--replicas=0` and slept 5 s. Do not use it: it does
+not produce a cold start (see the second false start below), and its selector named `harness`
+rather than `serverless-harness`. What was actually run:
 
 ```bash
-# baseline: no configRef
-for i in 1 2 3 4 5; do
-  kubectl -n "$NS" scale deployment -l serving.knative.dev/service=harness --replicas=0 2>/dev/null || true
-  sleep 5
-  curl -s -o /dev/null -w '%{time_total}\n' -X POST "$KSVC_URL/runs" \
-    -H 'content-type: application/json' \
-    -d '{"sessionId":"cold-base/'"$i"'","kind":"prompt","prompt":"Say PONG"}'
-done
+# Wait for Knative's OWN scale-to-zero -- do not force --replicas=0, the KPA re-scales.
+wait_zero() {
+  local waited=0
+  while [ "$waited" -lt 240 ]; do
+    [ "$(kubectl -n "$NS" get pods -l serving.knative.dev/service="$KSVC" \
+           --no-headers 2>/dev/null | grep -c Running)" = "0" ] && return 0
+    sleep 5; waited=$((waited + 5))
+  done
+  return 1
+}
 
-# with a promoted bundle: same, adding "configRef":"<digest>"
+# Alternate the arms so autoscaler and network drift hit both. A fresh output file per sample,
+# and a non-200 is a hard failure: reusing one path let a dead tunnel report stale successes.
+for i in 1 2 3 4 5; do
+  for ref in '' '"configRef":"<digest>",'; do
+    wait_zero || { echo "not cold"; continue; }
+    out=$(mktemp)
+    r=$(curl -s -o "$out" -w '%{time_total} %{http_code}' --max-time 300 \
+      -H "$HOSTHDR" -H 'content-type: application/json' \
+      -d '{"sessionId":"cold-'"$i"'","kind":"prompt",'"$ref"'"prompt":"Say PONG and nothing else."}' \
+      "$BASE/runs")
+    [ "${r##* }" = "200" ] && echo "${r%% *}" || echo "FAILED http=${r##* }"
+    rm -f "$out"
+  done
+done
 ```
 
 What IS measured, locally, is the cost promote's cold path adds beyond the existing inline
@@ -493,6 +512,33 @@ APFS rather than in-cluster (in a pod, Redis is a network hop and the unpack tar
 emptyDir on node disk); excludes container start, which dominates real cold start; excludes
 loader init.
 
+**In-cluster result (2026-09-03).** Taken on kind against a Revision built from `main` with
+this feature in it — the image blocker above was cleared by building the promoted-workflow demo
+([`../demos/promoted-workflow-demo.md`](../demos/promoted-workflow-demo.md)). N=5 per arm,
+alternating baseline/promoted, each sample preceded by a wait for Knative's own scale-to-zero, one
+real model call per sample (`claude-haiku-4-5`), promoted arm carrying a 12 KB bundle:
+
+| arm                        | median | min    | max     |
+| -------------------------- | ------ | ------ | ------- |
+| baseline (no `configRef`)  | 6.38 s | 6.18 s | 7.43 s  |
+| promoted (`configRef` set) | 7.61 s | 6.23 s | 15.31 s |
+
+**Median delta +1234 ms, which this measurement cannot resolve.** Within-arm spread reaches
+9082 ms, so the delta sits well below the noise floor: end-to-end cold start here is
+dominated by container start and one model call, both of which swamp the ~114 ms of bundle fetch,
+verify and unpack measured in isolation above. The honest reading is **no cold-start regression
+observable at this sample size**, not "promotion costs +1234 ms". Anyone wanting a resolvable
+number should measure `getBundle`+`unpackBundle` in-pod directly rather than through a cold dispatch,
+or raise N by an order of magnitude.
+
+Two false starts are recorded because both produced confident, wrong numbers. Reusing a single curl
+output path let a dead port-forward report `0.0005 s responded` for ten straight samples — curl never
+wrote the file and `jq` read the previous body; the driver now uses a fresh file per sample and fails
+on a non-200. And forcing `kubectl scale --replicas=0` fights the KPA, which re-scales after each
+served request: the first force after a served request never reached zero inside 60 s while the next
+did, so every baseline sample was skipped and every promoted sample ran — a systematically one-armed
+"comparison" that still printed five tidy promoted timings.
+
 **Done means:**
 
 1. A bundle promoted from a real `~/.claude` runs a leaf that invokes a promoted skill and
@@ -504,7 +550,8 @@ loader init.
 5. Re-promoting unchanged configuration uploads nothing.
 6. The harness's own `CLAUDE.md` is provably absent from a promoted session.
 7. Added cold-path cost (bundle fetch, verify, unpack) measured locally — 113.7 ms median; the
-   end-to-end, in-cluster cold-start delta remains owed (see §8 Measurement).
+   end-to-end, in-cluster cold-start comparison taken on kind — median delta +1234 ms, below this
+   measurement's noise floor, i.e. no observable regression (see §8 Measurement).
 8. The lockfile is committed and diffs legibly between promotions.
 
 Continuing the red-team precedent from the fs-free spec: **a grep assertion that no bundle

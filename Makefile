@@ -1,4 +1,5 @@
-.PHONY: lint fmt test test-deploy typecheck demo-remote-sandbox demo-remote-sandbox-teardown
+.PHONY: lint fmt test test-deploy typecheck demo-remote-sandbox demo-remote-sandbox-teardown \
+	demo-promoted-workflow demo-promoted-workflow-teardown
 
 lint:
 	pre-commit run --all-files
@@ -31,3 +32,12 @@ demo-remote-sandbox:
 
 demo-remote-sandbox-teardown:
 	bash deploy/knative/demo-remote-worker.sh --teardown
+
+# Promote a Claude Code workflow authored in a minimal local sandbox, then prove it ran remotely.
+# Needs a warm cluster whose image contains the promotion feature; the script gates on that.
+# See docs/demos/promoted-workflow-demo.md.
+demo-promoted-workflow:
+	bash deploy/knative/demo-promoted-workflow.sh $(DEMO_ARGS)
+
+demo-promoted-workflow-teardown:
+	bash deploy/knative/demo-promoted-workflow.sh --teardown
