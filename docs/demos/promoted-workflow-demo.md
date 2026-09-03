@@ -403,8 +403,13 @@ kubectl exec -n $NS deploy/redis -- redis-cli DEL "config:bundle:$DIGEST"
   digest-keyed directory in the pool sandbox is what makes reuse cheap, and the overlay makes it
   read-only — but read-only is not invisible. Any leaf leasing that sandbox can read another
   workflow's promoted `CLAUDE.md` and `memory/`, with or without a `configRef` of its own. Act 3a
-  works around it for the demo's sake; on a pool shared between tenants it is a confidentiality
-  question, not a demo detail, and ADR-0031 speaks to write-protection rather than to visibility.
+  works around it for the demo's sake. Tracked as
+  [#216](https://github.com/rossoctl/serverless-harness/issues/216): the narrow point is that the
+  cache outlives the leaf that made it, so a `configRef`-less leaf can answer from it — which makes
+  spec §2 goal 6 ("absent a promoted bundle, harness behavior is unchanged") true in the harness
+  process but not observably true. Cross-leaf reading itself is an accepted non-goal (P2 §9, one
+  trust domain; Kata isolation is P3/#48), and ADR-0031 speaks to write-protection rather than to
+  visibility or lifetime. Once the cache no longer outlives its leaf, Act 3a's purge can go.
 - **This demo does not show MCP servers or subagents.** Both are explicitly out of scope for
   promotion (spec §2, §9). Do not let a room infer that a promoted workflow carries its MCP config.
 - **Memory is read-only in the promoted run.** The remote agent cannot write back what it learns;

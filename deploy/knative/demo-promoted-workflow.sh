@@ -258,7 +258,8 @@ grep -q 'upload skipped' "$repromote_log" &&
 # the same sandbox can explore the filesystem, find another run's promoted workflow and answer from
 # it -- measured here: a second run of this demo had its bare arm emit "following the house rules"
 # with the ticket AND the token, having been told neither. Purge the digest before the control runs,
-# or the A/B silently proves nothing on every run after the first.
+# or the A/B silently proves nothing on every run after the first. Tracked as #216; this purge can go
+# once the cache no longer outlives the leaf that created it.
 claim 3 "the same prompt behaves differently only because of configRef"
 POOL_SEL="${KAGENTI_SANDBOX_POOL_SELECTOR:-sh.kagenti.io/sandbox-pool=default}"
 mapfile -t POOL_PODS < <(kubectl get pods -n "$NS" -l "$POOL_SEL" -o name 2>/dev/null | sed 's|pod/||')
