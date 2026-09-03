@@ -9,6 +9,7 @@ export interface BundleRedisLike {
   set(key: string, value: string, opts?: { EX?: number }): Promise<unknown>;
   get(key: string): Promise<string | null>;
   exists(key: string): Promise<number>;
+  expire(key: string, seconds: number): Promise<unknown>;
 }
 
 /** Bundles are immutable; a TTL only reclaims space for workflows nobody dispatches any more. */
@@ -38,7 +39,8 @@ export class BundleDigestMismatchError extends Error {
 /**
  * Store the bundle under its digest, gzipped and base64'd (base64 keeps the injectable
  * `BundleRedisLike` a plain string interface). Content-addressed, so an existing key means
- * identical content and the write is skipped.
+ * identical content and the write is skipped. Verify the digest matches the tar first to prevent
+ * key poisoning: a mismatched pair blocks any correct write under that digest for 30 days.
  */
 export async function putBundle(
   redis: BundleRedisLike,
@@ -46,8 +48,21 @@ export async function putBundle(
   tar: Buffer,
   ttlSeconds: number = DEFAULT_BUNDLE_TTL_SECONDS,
 ): Promise<{ uploaded: boolean }> {
+  // Verify digest matches tar before anything else
+  let actual: string;
+  try {
+    actual = contentDigest(untar(tar));
+  } catch {
+    throw new BundleDigestMismatchError(digest, 'unreadable (untar failed)');
+  }
+  if (actual !== digest) throw new BundleDigestMismatchError(digest, actual);
+
   const key = bundleKey(digest);
-  if ((await redis.exists(key)) > 0) return { uploaded: false };
+  if ((await redis.exists(key)) > 0) {
+    // Refresh TTL on skip: re-promotion must not let bundles age out while in active use
+    await redis.expire(key, ttlSeconds);
+    return { uploaded: false };
+  }
   await redis.set(key, gzipSync(tar).toString('base64'), { EX: ttlSeconds });
   return { uploaded: true };
 }
