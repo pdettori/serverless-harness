@@ -1,6 +1,6 @@
 # Claude Code workflow promotion: design
 
-**Date:** 2026-09-02 · **Status:** Proposed (amended 2026-09-02 during implementation) · **ADRs:**
+**Date:** 2026-09-02 · **Status:** Implemented (cold-start measurement owed) · **ADRs:**
 [ADR-0030](../adrs/0030-claude-code-workflow-promotion.md),
 [ADR-0031](../adrs/0031-promoted-memory-read-only.md) · **Builds on:** M1 (Redis session
 backend), M2/M3 (sandbox client + persistent channel), P1 (fs-free harness), P2 (shared
@@ -455,10 +455,36 @@ deliberately tiny two-skill fixture and runs a leaf whose success _requires_ a p
 to fire **and** that skill to read a sibling file from its own directory. That assertion is
 what proves path translation end to end — otherwise the first proof arrives in production.
 
-**Measurement** — cold start with a bundle versus without, recorded in
-[`../../deploy/knative/EXPERIMENTS.md`](../../deploy/knative/EXPERIMENTS.md). The README claims
-sub-second cold start and this feature is the most plausible thing to erode it, so it belongs
-in the evidence trail rather than in an assertion.
+**Measurement** — the README claims sub-second cold start and this feature is the most
+plausible thing to erode it, so the cost belongs in the evidence trail rather than in an
+assertion. The end-to-end, in-cluster comparison (baseline vs. `configRef` set, against a
+scaled-to-zero Revision) could not be taken during this implementation: the deployed image
+predates this branch, and taking it needs a full image build, `kind load`, and a forced new
+Revision. It remains owed; reproduction, once such a cluster is available:
+
+```bash
+# baseline: no configRef
+for i in 1 2 3 4 5; do
+  kubectl -n "$NS" scale deployment -l serving.knative.dev/service=harness --replicas=0 2>/dev/null || true
+  sleep 5
+  curl -s -o /dev/null -w '%{time_total}\n' -X POST "$KSVC_URL/runs" \
+    -H 'content-type: application/json' \
+    -d '{"sessionId":"cold-base/'"$i"'","kind":"prompt","prompt":"Say PONG"}'
+done
+
+# with a promoted bundle: same, adding "configRef":"<digest>"
+```
+
+What IS measured, locally, is the cost promote's cold path adds beyond the existing inline
+path — fetching the bundle from Redis by digest, verifying it, and unpacking it to disk — not
+an end-to-end cold start. N=10, fresh output directory per run, real bundle built from a live
+`~/.claude` (8.60 MiB, 55 skills): `getBundle` (Redis fetch + digest verify) median 52.6 ms;
+`unpackBundle` (untar to disk) median 62.1 ms — **113.7 ms added to the cold path median**
+(range 110.0–132.2 ms). Not on the cold path, promote-time only: `buildBundle` 292.7 ms,
+`putBundle` 230.1 ms. Caveats that keep this honest: measured on loopback Redis and macOS
+APFS rather than in-cluster (in a pod, Redis is a network hop and the unpack target is an
+emptyDir on node disk); excludes container start, which dominates real cold start; excludes
+loader init.
 
 **Done means:**
 
@@ -470,7 +496,8 @@ in the evidence trail rather than in an assertion.
 4. A missing binary is reported by preflight _before_ dispatch, as a warning rather than a block.
 5. Re-promoting unchanged configuration uploads nothing.
 6. The harness's own `CLAUDE.md` is provably absent from a promoted session.
-7. Cold-start delta measured and recorded.
+7. Added cold-path cost (bundle fetch, verify, unpack) measured locally — 113.7 ms median; the
+   end-to-end, in-cluster cold-start delta remains owed (see §8 Measurement).
 8. The lockfile is committed and diffs legibly between promotions.
 
 Continuing the red-team precedent from the fs-free spec: **a grep assertion that no bundle
