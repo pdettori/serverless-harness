@@ -164,4 +164,57 @@ describe('resolveSkills', () => {
     expect(found).toHaveLength(1);
     expect(found[0]!.name).toBe('canonical');
   });
+
+  it('a symlink escaping the skill directory is skipped and raises a warn finding', () => {
+    const outside = join(root, 'outside');
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, 'secret.txt'), 'secret');
+    const skillDir = join(root, 'user', 'skills', 'escapee');
+    skill(skillDir, 'escapee');
+    symlinkSync(outside, join(skillDir, 'escape'));
+
+    const found = resolveSkills({ userDir: join(root, 'user') });
+    expect(found).toHaveLength(1);
+    // the escaping symlink's content must not ride along into the bundle
+    expect(found[0]!.files).not.toContain('escape/secret.txt');
+    expect(found[0]!.files.some((f) => f.startsWith('escape/'))).toBe(false);
+
+    const findings = found[0]!.findings ?? [];
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.severity).toBe('warn');
+    expect(findings[0]!.code).toBe('skill_symlink_escaped');
+    expect(findings[0]!.message).toContain('escape');
+  });
+
+  it('a symlink pointing within the skill directory is still followed, and raises no finding', () => {
+    const skillDir = join(root, 'user', 'skills', 'aliased');
+    skill(skillDir, 'aliased');
+    mkdirSync(join(skillDir, 'real'));
+    writeFileSync(join(skillDir, 'real', 'inner.md'), 'inner');
+    // alias -> real, both inside the skill directory
+    symlinkSync(join(skillDir, 'real'), join(skillDir, 'alias'));
+
+    const found = resolveSkills({ userDir: join(root, 'user') });
+    expect(found).toHaveLength(1);
+    expect(found[0]!.files).toContain('alias/inner.md');
+    expect(found[0]!.findings ?? []).toEqual([]);
+  });
+
+  it('a symlink to a same-prefix sibling ("skillsX" vs "skills") is treated as escaped, not inside', () => {
+    // The containment check must be path-segment-aware (relative(), not a bare startsWith):
+    // '<skillDir>X' is a STRING prefix match of '<skillDir>' but is not actually inside it.
+    const skillDir = join(root, 'user', 'skills', 'trap');
+    skill(skillDir, 'trap');
+    const sibling = join(root, 'user', 'skills', 'trapX');
+    mkdirSync(sibling, { recursive: true });
+    writeFileSync(join(sibling, 'leak.txt'), 'leak');
+    symlinkSync(sibling, join(skillDir, 'link'));
+
+    const found = resolveSkills({ userDir: join(root, 'user') });
+    expect(found).toHaveLength(1);
+    expect(found[0]!.files.some((f) => f.startsWith('link/'))).toBe(false);
+    const findings = found[0]!.findings ?? [];
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.code).toBe('skill_symlink_escaped');
+  });
 });

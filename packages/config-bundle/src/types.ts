@@ -17,6 +17,8 @@ export interface ResolvedSkill {
   skillMd: string;
   files: string[];
   scope: SkillScope;
+  /** Non-fatal findings raised while resolving this skill's files (e.g. an escaped symlink). */
+  findings?: PreflightFinding[];
 }
 
 export interface SkillRoots {

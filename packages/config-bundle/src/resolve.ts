@@ -1,6 +1,16 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
-import type { ResolvedSkill, SkillRoots, SkillScope } from './types.js';
+import { isAbsolute, join, relative, sep } from 'node:path';
+import type { PreflightFinding, ResolvedSkill, SkillRoots, SkillScope } from './types.js';
+
+/**
+ * Is `pCanonical` inside `rootCanonical` (or equal to it)? Path-segment-aware: `relative()`
+ * rather than a bare `startsWith`, so `/a/skillsX` is never mistaken for being inside `/a/skills`.
+ */
+function isWithin(rootCanonical: string, pCanonical: string): boolean {
+  if (rootCanonical === pCanonical) return true;
+  const rel = relative(rootCanonical, pCanonical);
+  return rel !== '' && rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel);
+}
 
 /** Parse `name:` out of YAML frontmatter. Deliberately minimal — no YAML dependency. Strips a single matched pair of surrounding double or single quotes. */
 export function readSkillFrontmatterName(skillMd: string): string | null {
@@ -20,16 +30,23 @@ export function readSkillFrontmatterName(skillMd: string): string | null {
   return name;
 }
 
-/** Every file under `dir`, relative to it, sorted. Symlinks are followed; cycles are broken by tracking canonical paths. */
-function filesUnder(dir: string, visited = new Set<string>()): string[] {
-  let canonical: string;
+/**
+ * Every file under `dir`, relative to it, sorted. Symlinks are followed (deliberate: see
+ * `8be16bd` -> `3afe725`), but bounded to `dir`'s own canonical root — a directory symlink that
+ * resolves OUTSIDE that root (e.g. `refs/linked -> ~/Documents`) is skipped rather than walked,
+ * because `statSync` (not `lstatSync`) would otherwise resolve it and let an unrelated tree's
+ * content ride along into a bundle destined for shared Redis. The root canonical path is
+ * computed once, here, and reused for every entry rather than re-derived per entry. Cycles
+ * within the bound are broken by tracking canonical paths.
+ */
+function filesUnder(dir: string, findings: PreflightFinding[]): string[] {
+  let rootCanonical: string;
   try {
-    canonical = realpathSync(dir);
+    rootCanonical = realpathSync(dir);
   } catch {
     return [];
   }
-  if (visited.has(canonical)) return [];
-  visited.add(canonical);
+  const visited = new Set<string>([rootCanonical]);
 
   const out: string[] = [];
   const walk = (d: string): void => {
@@ -46,6 +63,15 @@ function filesUnder(dir: string, visited = new Set<string>()): string[] {
         try {
           pCanonical = realpathSync(p);
         } catch {
+          continue;
+        }
+        if (!isWithin(rootCanonical, pCanonical)) {
+          findings.push({
+            severity: 'warn',
+            code: 'skill_symlink_escaped',
+            message: `symlink '${relative(dir, p).split(sep).join('/')}' resolves outside its skill directory and was skipped`,
+            path: dir,
+          });
           continue;
         }
         if (!visited.has(pCanonical)) {
@@ -115,12 +141,15 @@ function findSkillDirs(root: string, acc: string[] = [], visited = new Set<strin
 function load(dir: string, scope: SkillScope): ResolvedSkill {
   const skillMd = readFileSync(join(dir, 'SKILL.md'), 'utf8');
   const fallback = dir.split(sep).filter(Boolean).at(-1) ?? 'skill';
+  const findings: PreflightFinding[] = [];
+  const files = filesUnder(dir, findings);
   return {
     name: readSkillFrontmatterName(skillMd) ?? fallback,
     dir,
     skillMd,
-    files: filesUnder(dir),
+    files,
     scope,
+    findings,
   };
 }
 
