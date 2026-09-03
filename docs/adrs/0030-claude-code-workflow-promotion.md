@@ -35,11 +35,12 @@ files, of which ~11 MB is markdown and much is `cache/` duplicating `marketplace
 
 We will promote a local Claude Code workflow as a **content-addressed configuration bundle**,
 uploaded once and referenced by a single new optional envelope field `configRef: sha256:…`. A
-local `sh promote` CLI (with a thin Claude Code slash-command wrapper) resolves user and project
-scope, dedupes, prunes, scans for secrets, uploads, and emits a **generated lockfile** — never a
-hand-authored manifest. The secret scan is **two-tier**: structural credential formats block the
-upload, the prose-shaped heuristic only warns. Skills are identified by their **bare** frontmatter
-`name` — the same identity dedupe, the lockfile and bundle paths use — never a `plugin:skill` form.
+local `pnpm promote` CLI (`harness/package.json`; with a thin Claude Code slash-command wrapper)
+resolves user and project scope, dedupes, prunes, scans for secrets, uploads, and emits a
+**generated lockfile** — never a hand-authored manifest. The secret scan is **two-tier**:
+structural credential formats block the upload, the prose-shaped heuristic only warns. Skills
+are identified by their **bare** frontmatter `name` — the same identity dedupe, the lockfile and
+bundle paths use — never a `plugin:skill` form.
 
 Pruning is **by compatibility, never by relevance**: everything that can work travels, and only
 what provably cannot is dropped, each with a machine-readable reason. The classifier has two

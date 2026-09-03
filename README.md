@@ -102,9 +102,9 @@ flowchart LR
   `RuntimeDefault` seccomp, no service-account token automount.
 - **Built on Pi** — wraps a pinned [`kagenti/pi`](https://github.com/kagenti/pi) coding agent through
   an injectable `SessionStorageBackend` seam; the agent itself is unmodified.
-- **Promote a local Claude Code workflow** — `sh promote` bundles skills, `CLAUDE.md`, memory, and a
-  slash command from your local `~/.claude` into a content-addressed bundle a leaf can dispatch by
-  digest (see [Promoting a local Claude Code workflow](#promoting-a-local-claude-code-workflow)).
+- **Promote a local Claude Code workflow** — `cd harness && pnpm promote` bundles skills, `CLAUDE.md`,
+  memory, and a slash command from your local `~/.claude` into a content-addressed bundle a leaf can
+  dispatch by digest (see [Promoting a local Claude Code workflow](#promoting-a-local-claude-code-workflow)).
 
 ---
 

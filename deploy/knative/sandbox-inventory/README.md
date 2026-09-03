@@ -1,6 +1,6 @@
 # Sandbox binary inventories
 
-Each file declares the commands one sandbox image provides. `sh promote` (see
+Each file declares the commands one sandbox image provides. The promote CLI (`cd harness && pnpm promote`; see
 [`../../../docs/specs/2026-09-02-claude-code-workflow-promotion-design.md`](../../../docs/specs/2026-09-02-claude-code-workflow-promotion-design.md) §4.5)
 preflights a workflow's detected binaries against these **without cluster access**, so a
 promotion can be checked on a laptop.

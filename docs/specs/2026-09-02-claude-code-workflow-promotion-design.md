@@ -96,7 +96,7 @@ a _separate_ sandbox pod. A "skill" therefore splits in two: its prose must be r
  laptop                            harness pod (fs-free)        sandbox pod (shared pool)
  ──────                            ─────────────────────        ────────────────────────
  ~/.claude ─┐
- repo/.claude├─ sh promote ──► CAS store ──► /tmp/sh-config/<digest>/    /workspace/.sh-config/<digest>/
+ repo/.claude├─ promote    ──► CAS store ──► /tmp/sh-config/<digest>/    /workspace/.sh-config/<digest>/
  memory/ ───┘    │                              skills/  prompts/            exec/  memory/
                  │                                   │                            │
                  ├─► lockfile.json (committed)   DefaultResourceLoader      absolute path in
@@ -160,9 +160,9 @@ Tool-name drift (`Bash`→`bash`, `Glob`→`find`, `LS`→`ls`) is handled by an
 
 ### 4.3 Promotion command
 
-The work lives in a testable CLI in this repo — `sh promote`, alongside `harness/src/cli.ts` —
-and the Claude Code slash command is a thin wrapper over it. Building only the slash command
-would leave the logic untestable and unusable from CI.
+The work lives in a testable CLI in this repo — `pnpm promote` (`harness/package.json`),
+alongside `harness/src/cli.ts` — and the Claude Code slash command is a thin wrapper over it.
+Building only the slash command would leave the logic untestable and unusable from CI.
 
 **Inputs**, in Claude Code's precedence order: user scope (`~/.claude/skills`,
 `~/.claude/plugins`), project scope (repo `.claude/`), and the project's memory directory.
@@ -198,7 +198,7 @@ blocks. Structural formats — the shapes real leaked credentials actually take 
 **Idempotence.** The digest is computed locally; if the store holds it, upload is a no-op.
 
 ```
-$ sh promote --entry brainstorm-and-plan
+$ pnpm promote --entry brainstorm-and-plan
 
   resolved   60 skills (149 SKILL.md → 60 after cache/marketplace dedupe)
   travels    54
@@ -331,7 +331,7 @@ at a time and waiting; promoted unattended it degenerates into the agent inventi
 broken.
 
 This is **mode-sensitive**, which is why it warns rather than drops:
-`sh promote --mode unattended|attended`. Under `unattended` it is a loud warning (opt-in drop);
+`pnpm promote --mode unattended|attended`. Under `unattended` it is a loud warning (opt-in drop);
 under `attended` — the phase-2 live-attach shape — these skills are exactly what is wanted. One
 flag, and phase 2 inherits the classifier unchanged.
 
