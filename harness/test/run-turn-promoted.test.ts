@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { canonicalTar, contentDigest } from '@sh/config-bundle';
-import { unpackBundle } from '../src/config-resolver.js';
+import { unpackBundle, promotedLoaderOptions } from '../src/config-resolver.js';
 import { resourceLoaderOptionsFor } from '../src/run-turn.js';
 
 const base = () => ({
@@ -47,6 +47,27 @@ describe('resourceLoaderOptionsFor', () => {
       expect(out.appendSystemPrompt).toEqual(promoted.promptFragments);
       // base fields survive the merge
       expect(out.cwd).toBe('/w');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('promoted option keys never collide with the base four', () => {
+    // resourceLoaderOptionsFor merges `{ ...base, ...promoted }`, so a promoted key colliding with
+    // a base key would silently win -- a promoted `cwd` would replace the harness's real working
+    // directory with a bundle path and nothing would error. No collision exists today; this pins
+    // that invariant so a future promoted option can't introduce one unnoticed.
+    const dir = mkdtempSync(join(tmpdir(), 'rt-promoted-collision-'));
+    try {
+      const entries = [
+        { path: 'skills/k/SKILL.md', content: Buffer.from('---\nname: k\ndescription: d\n---\nb') },
+        { path: 'context/agents/0-CLAUDE.md', content: Buffer.from('# promoted') },
+        { path: 'prompt/append-0.md', content: Buffer.from('note\nline two') },
+      ];
+      const promoted = unpackBundle(canonicalTar(entries), contentDigest(entries), dir);
+      const promotedKeys = Object.keys(promotedLoaderOptions(promoted));
+      const baseKeys = Object.keys(base());
+      expect(promotedKeys.filter((k) => baseKeys.includes(k))).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

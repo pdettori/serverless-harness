@@ -49,6 +49,11 @@ import {
   GATE_DECISION_ENTRY_TYPE,
 } from './gate.js';
 import { requestApprovalExtension } from './request-approval-tool.js';
+import { gzipSync } from 'node:zlib';
+import { canonicalTar } from '@sh/config-bundle';
+import { resolvePromotedConfig, type PromotedConfig } from './config-resolver.js';
+import { overlayConfig } from './config-overlay.js';
+import type { BundleRedisLike } from './config-store.js';
 
 /**
  * Recover a verdict from a persisted `verdict` custom session entry (written by
@@ -103,6 +108,12 @@ export interface LeafEnvelope {
   maxTurns?: number;
   async?: boolean; // when true, the HTTP layer enqueues instead of running inline
   tenant?: string; // namespaces the session id
+  /**
+   * Digest of a promoted Claude Code config bundle (`sha256:…`). Absent ⇒ no promoted config and
+   * behavior is exactly as before. Flows through the server and the work queue untouched, because
+   * both pass the envelope through whole.
+   */
+  configRef?: string;
   kind?: 'converge' | 'solve' | 'prompt'; // absent/"converge" => existing behavior; "solve" => runSolveLeaf
   problemStatement?: string; // required when kind === "solve": the task the agent must implement
   prompt?: string; // required when kind === "prompt": the free-form prompt to run
@@ -113,6 +124,21 @@ export interface LeafEnvelope {
 function sandboxEnvironment(env: LeafEnvelope): NodeJS.ProcessEnv {
   if (!env.sandboxPoolSelector) return process.env;
   return { ...process.env, KAGENTI_SANDBOX_POOL_SELECTOR: env.sandboxPoolSelector };
+}
+
+/**
+ * Lazily-created Redis client for the bundle store. Kept separate from the session backend's
+ * client so a bundle fetch cannot interfere with session buffering.
+ */
+let bundleRedis: BundleRedisLike | undefined;
+async function getBundleRedis(redisUrl?: string): Promise<BundleRedisLike> {
+  if (!bundleRedis) {
+    const { createClient } = await import('redis');
+    const client = createClient({ url: redisUrl ?? process.env.REDIS_URL });
+    await client.connect();
+    bundleRedis = client as unknown as BundleRedisLike;
+  }
+  return bundleRedis;
 }
 
 /** The Pi/Redis session id for a leaf: tenant-prefixed (if any), then sanitized. */
@@ -251,6 +277,9 @@ export async function runLeaf(
     produceVerdict?: ProduceVerdict;
     produceSolve?: ProduceSolve;
     executeTurn?: typeof executeTurn;
+    resolvePromotedConfig?: typeof resolvePromotedConfig;
+    overlayConfig?: typeof overlayConfig;
+    bundleRedis?: BundleRedisLike;
   },
 ): Promise<LeafResult> {
   if (env.kind === 'solve') return runSolveLeaf(env, config, deps);
@@ -318,7 +347,12 @@ export async function runSolveLeaf(
 async function runPromptLeaf(
   env: LeafEnvelope,
   config?: TurnConfig,
-  deps?: { executeTurn?: typeof executeTurn },
+  deps?: {
+    executeTurn?: typeof executeTurn;
+    resolvePromotedConfig?: typeof resolvePromotedConfig;
+    overlayConfig?: typeof overlayConfig;
+    bundleRedis?: BundleRedisLike;
+  },
 ): Promise<LeafResult> {
   if (!env.prompt) return { status: 'failed', reason: 'bad_inputs' };
   const cwd = config?.cwd ?? process.cwd();
@@ -360,6 +394,55 @@ async function runPromptLeaf(
 
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   try {
+    // Promoted config: resolve the prose half into this pod's /tmp and mirror the bundle into the
+    // sandbox we hold a lease on. Both halves come from one digest, and a failure of either fails
+    // the leaf — running a turn with silently-absent configuration produces plausible-but-wrong
+    // work, which is exactly the remote failure this design exists to prevent (spec §4.4).
+    let promotedConfig: PromotedConfig | undefined;
+    if (env.configRef) {
+      const resolveFn = deps?.resolvePromotedConfig ?? resolvePromotedConfig;
+      const overlayFn = deps?.overlayConfig ?? overlayConfig;
+      try {
+        promotedConfig = await resolveFn(
+          deps?.bundleRedis ?? (await getBundleRedis(config?.redisUrl)),
+          env.configRef,
+        );
+        if (selected) {
+          // SelectedSandbox.transport is present ONLY for a leased grpc presence record and is
+          // undefined for pods (select-sandbox.ts:33-34), which is the DEFAULT deployment. Guarding
+          // on `selected.transport` would therefore skip the overlay entirely on pods: the sandbox
+          // half of the bundle would never arrive, so skill sibling files and memory would be
+          // unreadable and $SH_SKILLS_DIR would point at nothing — and a unit test injecting a fake
+          // transport could not detect it. Use the same fallback the converge path uses
+          // (run-leaf.ts:579-584): build a KubectlTransport when none is leased, and close only what
+          // we created.
+          const overlayTransport = selected.transport ?? KubectlTransport(selected.config);
+          try {
+            const paths = await overlayFn(
+              overlayTransport,
+              env.configRef,
+              sid,
+              gzipSync(canonicalTar(promotedConfig.entries)),
+            );
+            promotedConfig = {
+              ...promotedConfig,
+              promptFragments: [
+                ...promotedConfig.promptFragments,
+                `Skill files: ${paths.skillsDir}\nMemory files: ${paths.memoryDir}`,
+              ],
+            };
+          } finally {
+            if (!selected.transport) await overlayTransport.close();
+          }
+        }
+      } catch (err) {
+        return {
+          status: 'failed',
+          reason: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
     if (selected) {
       const hbMs = Number(process.env.KAGENTI_SANDBOX_HEARTBEAT_MS ?? '20000');
       const lease = selected;
@@ -374,6 +457,7 @@ async function runPromptLeaf(
       createIfAbsent: true,
       selection,
       sandbox: { config: selected?.config ?? null, transport: selected?.transport },
+      ...(promotedConfig ? { promotedConfig } : {}),
     });
     if (r.stopReason === 'aborted') return { status: 'aborted' };
     if (r.stopReason === 'error')
