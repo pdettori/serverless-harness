@@ -84,6 +84,32 @@ describe('POST /runs', () => {
     expect(runLeaf).toHaveBeenCalledOnce();
   });
 
+  // Issue #222 (1): `configRef: ""` used to reach the leaf, which read it as "no config requested"
+  // and answered 200 as if nothing had been promoted. The leaf now fails it too; rejecting here as
+  // well costs the operator nothing and spends no model tokens.
+  it('400s on a present-but-empty configRef without running the leaf', async () => {
+    const r = await post('/runs', {
+      sessionId: 'run/i1',
+      kind: 'prompt',
+      prompt: 'Write the ship note.',
+      configRef: '',
+    });
+    expect(r.status).toBe(400);
+    expect(r.json).toEqual({ error: 'configRef_invalid' });
+    expect(runLeaf).not.toHaveBeenCalled();
+  });
+
+  it('400s on a non-string configRef', async () => {
+    const r = await post('/runs', {
+      sessionId: 'run/i1',
+      kind: 'prompt',
+      prompt: 'Write the ship note.',
+      configRef: 42,
+    });
+    expect(r.status).toBe(400);
+    expect(runLeaf).not.toHaveBeenCalled();
+  });
+
   it('does not accept a sandbox selector from the run request', async () => {
     runLeaf.mockResolvedValue({
       status: 'done',

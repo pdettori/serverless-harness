@@ -87,6 +87,49 @@ describe('configRef on a prompt leaf', () => {
     expect(executeTurn.mock.calls[0]![0].promotedConfig).toBeUndefined();
   });
 
+  // REGRESSION TEST — do not delete. Issue #222 (1): a present-but-empty configRef ran BARE.
+  //
+  // `if (env.configRef)` made `""` indistinguishable from "no config requested": the leaf answered
+  // HTTP 200 / status responded, with no bundle, no house rules and an empty workspace — exactly
+  // like an unpromoted run. Observed in a demo where the dispatching shell had $DIGEST unset, so
+  // `jq --arg c "$DIGEST"` sent `""`. That is the plausible-but-wrong remote failure the comment
+  // above this guard says the design exists to prevent, arriving one line before the check that
+  // would have caught it.
+  it('fails the leaf when configRef is present but empty, instead of silently running bare', async () => {
+    selectPoolSandboxMock.mockReset().mockResolvedValue(podLease());
+    const executeTurn = okTurn();
+    const resolvePromotedConfig = vi.fn();
+    const r = await runLeaf(env({ configRef: '' }), undefined, {
+      executeTurn,
+      resolvePromotedConfig,
+      overlayConfig: vi.fn(),
+      bundleRedis: {} as never,
+    });
+    expect(r.status).toBe('failed');
+    expect(r.reason).toBe('error');
+    expect(r.message).toContain('configRef');
+    // Never run the turn unconfigured, and never spend a resolve on an empty digest.
+    expect(executeTurn).not.toHaveBeenCalled();
+    expect(resolvePromotedConfig).not.toHaveBeenCalled();
+  });
+
+  it('fails the same way on a whitespace-only configRef', async () => {
+    selectPoolSandboxMock.mockReset().mockResolvedValue(podLease());
+    const executeTurn = okTurn();
+    const resolvePromotedConfig = vi.fn();
+    const r = await runLeaf(env({ configRef: '  ' }), undefined, {
+      executeTurn,
+      resolvePromotedConfig,
+      overlayConfig: vi.fn(),
+      bundleRedis: {} as never,
+    });
+    expect(r.status).toBe('failed');
+    expect(executeTurn).not.toHaveBeenCalled();
+    // Rejected by the guard, not incidentally by assertValidDigest deep inside the resolver: the
+    // operator-facing message differs, and only the guard covers it before any Redis round-trip.
+    expect(resolvePromotedConfig).not.toHaveBeenCalled();
+  });
+
   it('resolves the bundle and passes it to executeTurn when configRef is present', async () => {
     const executeTurn = okTurn();
     const resolvePromotedConfig = vi.fn(async () => fakePromoted);

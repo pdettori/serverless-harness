@@ -85,6 +85,36 @@ describe('async /runs', () => {
     server.close();
   });
 
+  // Issue #222 (1): an empty configRef used to be silently "no config requested". Catching it here
+  // as well as in the leaf matters for the async path specifically — the enqueue is where the
+  // operator is still watching, whereas the leaf's failure surfaces later, via /runs/status.
+  it('400 and no enqueue when configRef is present but empty', async () => {
+    const r = await req('POST', '/runs', {
+      sessionId: 'run/i1',
+      kind: 'prompt',
+      prompt: 'Write the ship note.',
+      configRef: '',
+      async: true,
+    });
+    expect(r.status).toBe(400);
+    expect(r.json).toMatchObject({ error: 'configRef_invalid' });
+    expect(enqueue).not.toHaveBeenCalled();
+    server.close();
+  });
+
+  it('still enqueues when configRef names a digest', async () => {
+    const r = await req('POST', '/runs', {
+      sessionId: 'run/i1',
+      kind: 'prompt',
+      prompt: 'Write the ship note.',
+      configRef: 'sha256:' + 'a'.repeat(64),
+      async: true,
+    });
+    expect(r.status).toBe(202);
+    expect(enqueue).toHaveBeenCalledOnce();
+    server.close();
+  });
+
   it('status returns queued when no record exists', async () => {
     const r = await req('GET', '/runs/status?sessionId=run/none');
     expect(r.status).toBe(200);

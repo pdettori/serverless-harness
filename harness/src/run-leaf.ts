@@ -429,7 +429,21 @@ async function runPromptLeaf(
     // multi-MB bundle from Redis and pushes it into the pod over up to three kubectl execs, and with
     // no heartbeat running during that window a slow cluster could have the lease reclaimed mid-overlay.
     let promotedConfig: PromotedConfig | undefined;
-    if (env.configRef) {
+    // Presence, not truthiness (issue #222). `if (env.configRef)` made `""` indistinguishable from
+    // "no config requested", so a dispatch built from an unset shell variable ran BARE and returned
+    // status: responded — plausible-but-wrong work, which is precisely the failure the paragraph
+    // above says this design exists to prevent. A field that is present is a REQUEST for promoted
+    // config; if it names no bundle, that request cannot be honoured, so fail it out loud.
+    if (env.configRef !== undefined && env.configRef !== null) {
+      if (String(env.configRef).trim() === '') {
+        return {
+          status: 'failed',
+          reason: 'error',
+          message:
+            'configRef is present but empty: it must name a bundle digest (sha256:…). ' +
+            'Omit the field entirely to run without promoted configuration.',
+        };
+      }
       const resolveFn = deps?.resolvePromotedConfig ?? resolvePromotedConfig;
       const overlayFn = deps?.overlayConfig ?? overlayConfig;
       try {
