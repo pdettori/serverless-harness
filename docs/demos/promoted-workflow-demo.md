@@ -113,7 +113,7 @@ Installing is all that happens here. The matching launch (`HOME=$SH_DEMO_SANDBOX
 on an empty sandbox with no tunnels open, and your shell would be left in `$SH_DEMO_SANDBOX`, where
 Act 1a's repo-relative `cp` paths cannot resolve.
 
-> **This is what `--exclude-prompt` is for.** With `HOME` pointed at the sandbox, that
+> **This is what `--exclude-prompt` is for.** With user scope pointed at the sandbox, that
 > `.claude/commands/` _is_ promote's prompts directory, and every markdown file in it travels — so
 > without the flag the command would ship itself into every bundle as a prompt template. `/promote`
 > detects that it lives in the project and adds `--exclude-prompt promote` itself; you do not pass
@@ -211,15 +211,39 @@ It records that the regression is tracked as **KAG-4471** and ships behind
 ### 1b. Watch it work locally first
 
 ```bash
-cd $SH_DEMO_SANDBOX && claude
+cd $SH_DEMO_SANDBOX && claude --allowedTools "Bash(pnpm --dir $SH_HARNESS_DIR/harness promote:*)"
 ```
 
 Under **Option B**, launch it this way instead — a sandbox `HOME` is what makes the local agent's
 configuration identical to the promoted run's:
 
 ```bash
-cd $SH_DEMO_SANDBOX && HOME=$SH_DEMO_SANDBOX claude
+cd $SH_DEMO_SANDBOX && HOME=$SH_DEMO_SANDBOX \
+  claude --allowedTools "Bash(pnpm --dir $SH_HARNESS_DIR/harness promote:*)"
 ```
+
+> **Why the `--allowedTools` on the launch line.** `/promote`'s own `allowed-tools` frontmatter grants
+> the CLI, but **only for the turn the slash command creates**. If that turn ends before the CLI runs
+> — you interrupt it, or a guard makes it stop and ask — then answering "go ahead" starts a _new_ turn
+> where the grant is gone, and under `defaultMode: dontAsk` the promotion is refused with no
+> explanation beyond "denied". Measured: the grant is what permits `pnpm` (there is no `pnpm` rule in
+> a default install), so the failure looks exactly like a broken command.
+>
+> Putting the rule on the launch line makes it session-level, so it outlives any turn. Your shell
+> expands `$SH_HARNESS_DIR`, which is why this line is portable as written. It stays narrow: only the
+> `promote` script, only in that one checkout — `pnpm --dir $SH_HARNESS_DIR/harness <other-script>` is
+> still refused.
+>
+> Prefer it permanent? Add the same rule to `permissions.allow` in `~/.claude/settings.json`, with the
+> path written out in full. Two caveats, both measured: a `*` inside the pattern
+> (`Bash(pnpm --dir * promote:*)`) matches **nothing**, so the literal path is required; and the same
+> rule in a project's `.claude/settings.json` is **ignored until you accept the trust dialog** for
+> that directory, which for a throwaway sandbox is easy to miss — it prints one warning and then
+> behaves as if the rule were absent. If you would rather not configure anything, run Act 2a in
+> `manual` mode (Shift+Tab) and approve the one prompt.
+>
+> Append `Skill` to that flag list — `--allowedTools "Bash(…promote:*)" Skill` — if you would rather
+> not see the harmless denial described under **Notes and limits**.
 
 Ask it: `Write the ship note for the auth timeout fix.` You get the house `SHIP NOTE` block with
 the ticket and the risk line. This is the "works on my laptop" baseline — the thing that normally
@@ -240,10 +264,15 @@ In the Claude Code session from Act 1b — still in the sandbox — run:
 /promote ship-note
 ```
 
-Claude checks the three guards, starts the Redis tunnel if it is not up, and runs the CLI for you:
+Claude checks the three guards, starts the Redis tunnel if it is not up, and runs the CLI for you.
+**Let that turn finish.** If it stops early — you interrupt it, or it pauses to ask — re-run
+`/promote ship-note` rather than replying "go ahead": a follow-up turn has weaker permissions than the
+command's own, and unless you launched with the `--allowedTools` line above, the CLI call is refused
+there. Expect output like:
 
 ```
 project:    /tmp/sh-demo
+user scope: /tmp/sh-demo (--home)
 inventory:  …/sandbox-inventory/ghcr.io_rossoctl_serverless-harness-sandbox_latest.json (347 binaries)
   resolved   1 skills
   travels    1
@@ -260,24 +289,35 @@ preflight: no findings
 dispatch with:  {"sessionId":"<run>/<item>","kind":"prompt","prompt":"…","configRef":"sha256:43b8c4c0…"}
 ```
 
-> **The `HOME` override is the demo, not a shortcut** — `/promote` sets it for you, but say what it
-> does. `promote` reads _user_ scope from `$HOME/.claude`; pointing `HOME` at the sandbox makes the
-> sandbox its own user scope, so the bundle holds this workflow and nothing else. It is also what
+> **The user-scope override is the demo, not a shortcut** — `/promote` passes it for you, but say
+> what it does. `promote` reads _user_ scope from `$HOME/.claude`; pointing that at the sandbox makes
+> the sandbox its own user scope, so the bundle holds this workflow and nothing else. It is also what
 > makes this project's **entry prompt** travel at all, since `promote` reads prompts from user scope
 > only. The command it runs is:
 >
 > ```bash
-> HOME="$PWD" REDIS_URL=redis://localhost:16379 \
->   pnpm --dir "$SH_HARNESS_DIR/harness" promote --entry ship-note --project "$PWD"
+> pnpm --dir /path/to/serverless-harness/harness promote --entry ship-note \
+>   --project /tmp/sh-demo --home /tmp/sh-demo --redis-url redis://localhost:16379
 > #   ...plus --exclude-prompt promote under Option B, which /promote adds for you
 > ```
 >
 > That trailing flag is not cosmetic: under Option B the command is in the sandbox, so without it the
 > bundle is 19456 bytes rather than the 12288 printed above.
 >
-> `--project "$PWD"` looks redundant and is not: without it the CLI promotes the directory the
-> process started in, which through `pnpm --dir` is the harness checkout. Measured — it reports
+> `--project` looks redundant next to `--home` and is not: without it the CLI promotes the directory
+> the process started in, which through `pnpm --dir` is the harness checkout. Measured — it reports
 > `project: …/serverless-harness/harness`.
+>
+> **Why every path is written out in full.** `--home /tmp/sh-demo` is doing what `HOME="$PWD"` did
+> here, and `--redis-url` what `REDIS_URL=` did — same bundle, byte for byte, digest for digest.
+> They are flags because the env form cannot be _permitted_. Claude Code statically parses each Bash
+> command and matches it against `allowed-tools` only if it can analyse it: a `$PWD` argument is
+> classified unanalyzable, and an inline `HOME=… pnpm …` prefix moves the first word away from the
+> granted one. Neither matches any grant, so the best case is a permission prompt on every run and
+> the common case is worse — with `defaultMode: dontAsk` the slash command is refused before you see
+> its Context, and in `auto` it is denied as `Contains expansion`. Written out literally, the whole
+> promotion needs no prompt in any permission mode. That is what makes "one slash command" true
+> rather than aspirational.
 >
 > Note `travels 1`, `preflight: no findings`, and `12288 bytes`. Those three numbers are the
 > argument for sandbox-first authoring, and the last line hands you the exact dispatch envelope.
@@ -357,6 +397,34 @@ done
 > well. That is not hypothetical — a bundle built from this same fixture before Prettier normalised
 > one emphasis marker in the memory file has a different content digest, sits alongside, and made
 > this control fail while a per-digest purge reported success.
+
+### Before you dispatch: two preconditions, or Run B lies to you
+
+Both runs below create **persistent** sessions, and `$DIGEST` alone decides whether Run B is promoted
+at all. Check one and clear the other:
+
+```bash
+[ -n "$DIGEST" ] || echo "DIGEST is EMPTY — re-run the jq line at the end of Act 2a before dispatching"
+
+# The two ids below are single-use. Clear them before any retry (or use fresh ids).
+kubectl exec -n $NS deploy/redis -- redis-cli DEL \
+  session:demo-bare-1 session:demo-bare-1:seq session:demo-promoted-1 session:demo-promoted-1:seq
+```
+
+> **Why an empty `$DIGEST` is worse than an error.** `jq --arg c "$DIGEST"` happily sends
+> `configRef: ""`, and the harness tests that field for truthiness — an empty string is _absent_, so
+> the run proceeds **bare** and answers exactly like Run A. Nothing fails, nothing warns, and Run B
+> appears to prove the opposite of what it proves. The usual way in is dispatching from a second
+> terminal where `DIGEST` was never exported.
+>
+> **Why the session ids are single-use.** Sessions are Redis streams; re-dispatching the same id
+> _appends a turn_ rather than starting over, and the earlier turns stay in context. Measured on a real
+> session: a bare turn at 19:49 answered "the workspace appears empty, could you provide…", and the
+> promoted turn at 20:41 — which demonstrably received the overlay and the injected `Skill files:` /
+> `Memory files:` paths — asked for the same information again instead of reading them, having been
+> taught by its own transcript that these files are unavailable. The same prompt and digest in a
+> **fresh** session produced the block below on the first try. So a Run B that asks you for the
+> incident id is a session to delete before it is a bug to report.
 
 ### 3b. Run A — bare
 
@@ -454,8 +522,9 @@ curl -s -H "$HOSTHDR" "$BASE/runs/status?sessionId=demo-promoted-1" | jq -c '{st
 You moved a workflow off your laptop without writing a manifest:
 
 1. **Authored small** — one skill, a `CLAUDE.md`, one memory file, one slash command, in a
-   throwaway sandbox. `HOME=$SH_DEMO_SANDBOX` made it its own user scope: **1 skill, 12 KB, zero preflight
-   findings**, against 56 skills and ~8.6 MB for a real `~/.claude` (Act 1, 2a).
+   throwaway sandbox. Promoting it as its own user scope — `--home $SH_DEMO_SANDBOX`, which
+   `/promote` passes for you — gave **1 skill, 12 KB, zero preflight findings**, against 56 skills
+   and ~8.6 MB for a real `~/.claude` (Act 1, 2a).
 2. **Promoted with one slash command, without leaving Claude Code** — `/promote ship-note`, in the
    same session you authored the workflow in. Content-addressed over a canonical tar, so the second
    promotion uploaded nothing and the digest was identical (Act 2a, 2c).
@@ -502,6 +571,15 @@ kubectl exec -n $NS deploy/redis -- redis-cli DEL "config:bundle:$DIGEST"
   the same locally" is weaker evidence than it looks. Option B closes that with
   `HOME=$SH_DEMO_SANDBOX` plus `--exclude-prompt`, at the cost of a re-auth. Say which one you ran
   if someone asks whether local matched remote.
+- **A denied `Skill(/promote)` in Act 2a is harmless — keep going.** Claude Code lists user-scope
+  slash commands as invocable skills, so some sessions try to "load" `/promote` through the `Skill`
+  tool before doing anything. Under `dontAsk` that call is refused, because `Skill` has no allow rule.
+  Nothing is lost: Claude Code has **already inlined the command body**, which is what the agent then
+  follows — a real run showed the denial, shrugged, and promoted correctly. Append `Skill` to the
+  launch line's `--allowedTools` to silence it (measured: `DENIED` without, `ALLOWED` with). Whether
+  you see it at all depends on the session — the same command replayed non-interactively made no
+  `Skill` call — and on your plugins; a `SessionStart` hook that tells the agent it must invoke a
+  matching skill first makes it much more likely.
 - **The `TOKEN:` line is the one model-dependent claim.** The format and the token both require the
   model to choose to `read` the skill body. `CLAUDE.md` says it MUST, and the deterministic channel
   carries that instruction, so it is reliable in practice — but it is not a mechanical guarantee the
