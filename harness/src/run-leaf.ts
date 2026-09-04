@@ -470,6 +470,10 @@ async function runPromptLeaf(
             overlayCreated = true;
             promotedConfig = {
               ...promotedConfig,
+              // The overlay landed, so the skills are now readable from the sandbox — tell the
+              // resolver, which rewrites the path pi ADVERTISES for each skill to this one
+              // (issue #222). Set here and nowhere else: it is only true once the link exists.
+              sandboxSkillsDir: paths.skillsDir,
               promptFragments: [
                 ...promotedConfig.promptFragments,
                 // Self-describing and multi-line on purpose: this is the ONLY place the absolute

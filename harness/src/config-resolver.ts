@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve, sep } from 'node:path';
+import type { LoadSkillsResult } from '@earendil-works/pi-coding-agent';
 import { assertValidDigest, digestDirName, untar, type TarEntry } from '@sh/config-bundle';
 import { getBundle, type BundleRedisLike } from './config-store.js';
 
@@ -11,6 +12,12 @@ export interface PromotedConfig {
   root: string;
   skillsDir: string;
   promptsDir: string;
+  /**
+   * Where the SAME skills are readable from the sandbox — the per-leaf link that `overlayConfig`
+   * returns. Set only once the overlay has actually landed, because it is only true then: absent,
+   * pi's tools run in this pod (run-turn.ts:456-460) and `skillsDir` is itself the reachable path.
+   */
+  sandboxSkillsDir?: string;
   /** Injected inline via agentsFilesOverride — never written to disk. */
   context: Array<{ path: string; content: string }>;
   promptFragments: string[];
@@ -28,6 +35,8 @@ export interface PromotedLoaderOptions {
     agentsFiles: Array<{ path: string; content: string }>;
   };
   appendSystemPrompt: string[];
+  /** Present only when a sandbox overlay landed — see rewriteToSandbox below. */
+  skillsOverride?: (base: LoadSkillsResult) => LoadSkillsResult;
 }
 
 /**
@@ -102,6 +111,41 @@ export function unpackBundle(
   };
 }
 
+/** Prefix swap. Anything outside `from` is returned untouched, so a skill that somehow came from
+ * elsewhere keeps a path that is true for wherever it came from. */
+function swapPrefix(p: string, from: string, to: string): string {
+  if (p === from) return to;
+  return p.startsWith(from + sep) ? to + p.slice(from.length) : p;
+}
+
+/**
+ * Rewrite each loaded skill's paths from this pod's copy to the sandbox's (issue #222).
+ *
+ * `additionalSkillPaths` MUST stay pod-side — pi reads every SKILL.md off this pod's disk to parse
+ * its frontmatter — but the path it then ADVERTISES to the model is that same string:
+ * `<location>{skill.filePath}</location>` in pi-fork `skills.ts:354`, under a heading that says to
+ * use the read tool on it. Every tool call runs in the SANDBOX, where `/tmp/sh-config/<digest>`
+ * does not exist, so the model is handed a dead path for the skill and must infer a different one
+ * for that skill's sibling files. Observed: it reached for the pod path first and got "File not
+ * readable in pod" — a concrete path in the prompt beats the prose in `notes.ts` that points at
+ * the injected "Skill files:" directory instead.
+ *
+ * Rewriting AFTER the load, rather than pointing pi at the sandbox path, is what keeps both true
+ * at once: loading still happens from the pod copy, and exactly one path — the reachable one —
+ * reaches the model. `baseDir` moves with it because pi's own skills preamble tells the model to
+ * resolve a skill's relative references against the skill directory.
+ */
+function rewriteToSandbox(podSkillsDir: string, sandboxSkillsDir: string) {
+  return (base: LoadSkillsResult): LoadSkillsResult => ({
+    diagnostics: base.diagnostics,
+    skills: base.skills.map((s) => ({
+      ...s,
+      filePath: swapPrefix(s.filePath, podSkillsDir, sandboxSkillsDir),
+      baseDir: swapPrefix(s.baseDir, podSkillsDir, sandboxSkillsDir),
+    })),
+  });
+}
+
 /**
  * Options that point pi at the bundle and suppress all discovery.
  *
@@ -122,6 +166,11 @@ export function buildLoaderOptions(promoted: PromotedConfig): PromotedLoaderOpti
     // Ignores `base` deliberately — see the leak regression test in test/config-resolver.test.ts.
     agentsFilesOverride: () => ({ agentsFiles: promoted.context }),
     appendSystemPrompt: promoted.promptFragments,
+    // Only when an overlay landed. With no sandbox, pi's tools run in this pod, where the pod-side
+    // path is the correct one — rewriting it there would break the one case it is true for.
+    ...(promoted.sandboxSkillsDir
+      ? { skillsOverride: rewriteToSandbox(promoted.skillsDir, promoted.sandboxSkillsDir) }
+      : {}),
   };
 }
 

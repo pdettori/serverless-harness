@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'node
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { canonicalTar, contentDigest } from '@sh/config-bundle';
-import { DefaultResourceLoader, getAgentDir } from '@earendil-works/pi-coding-agent';
+import {
+  DefaultResourceLoader,
+  formatSkillsForPrompt,
+  getAgentDir,
+} from '@earendil-works/pi-coding-agent';
 import { unpackBundle, buildLoaderOptions, promotedLoaderOptions } from '../src/config-resolver.js';
 
 let base: string;
@@ -135,6 +139,14 @@ describe('buildLoaderOptions', () => {
     });
     expect(out.agentsFiles.map((f) => f.path)).not.toContain('/leak/CLAUDE.md');
   });
+
+  it('installs no skillsOverride when no overlay landed — the pod path is then the reachable one', () => {
+    // With no sandbox, pi's tools run in the harness pod itself (run-turn.ts logs "tools run
+    // LOCAL"), where the unpacked pod-side copy IS readable. Rewriting the advertised path in
+    // that case would break the one deployment where the pod path is correct.
+    const o = buildLoaderOptions(unpackBundle(tar, digest, base));
+    expect('skillsOverride' in o).toBe(false);
+  });
 });
 
 describe('promotedLoaderOptions', () => {
@@ -186,5 +198,55 @@ describe('harness CLAUDE.md leak', () => {
     // Pins the semantics found at resource-loader.ts:405-407: noSkills still honours
     // additionalSkillPaths, so this yields the bundle's skills only.
     expect(loader.getSkills().skills.map((s) => s.name)).toEqual(['keeper']);
+  });
+});
+
+// REGRESSION TEST — do not delete. Issue #222 (2): a skill advertised at a path `read` cannot see.
+//
+// `additionalSkillPaths` has to stay pod-side: pi parses each SKILL.md off THIS pod's disk. But the
+// path it then hands the model — `<location>` in formatSkillsForPrompt (pi-fork skills.ts:354) — is
+// that same string, and every tool call runs in the SANDBOX, where /tmp/sh-config/<digest> does not
+// exist. Observed: the model reached for the pod path FIRST and got "File not readable in pod",
+// because a concrete path in the prompt beats the prose note in notes.ts that tells it to use the
+// per-leaf sandbox directory instead. Assert on the rendered prompt, not just on the field: the
+// prompt is what the model actually sees.
+describe('the advertised skill location', () => {
+  const sandboxSkills = '/workspace/leaves/run-1-i1/.sh-config/skills';
+
+  it('is the sandbox path, and the pod path appears nowhere in the prompt', async () => {
+    const { tar, digest } = bundle();
+    const promoted = { ...unpackBundle(tar, digest, base), sandboxSkillsDir: sandboxSkills };
+    const loader = new DefaultResourceLoader({
+      cwd: resolve(__dirname, '..', '..'),
+      agentDir: getAgentDir(),
+      ...buildLoaderOptions(promoted),
+    });
+    await loader.reload();
+
+    const skills = loader.getSkills().skills;
+    expect(skills.map((s) => s.name)).toEqual(['keeper']);
+    expect(skills[0]!.filePath).toBe(`${sandboxSkills}/keeper/SKILL.md`);
+    // baseDir too: pi's own prompt text tells the model to resolve a skill's relative references
+    // against the skill directory, so a pod-side baseDir reintroduces the same dead path.
+    expect(skills[0]!.baseDir).toBe(`${sandboxSkills}/keeper`);
+
+    const rendered = formatSkillsForPrompt(skills);
+    expect(rendered).toContain(`<location>${sandboxSkills}/keeper/SKILL.md</location>`);
+    expect(rendered).not.toContain(base);
+  });
+
+  it('still lets pi load the skill body from the pod copy it was unpacked into', async () => {
+    // The rewrite must not disturb loading: the frontmatter below was read off `base`, so a
+    // rewrite applied before the read (or to additionalSkillPaths) would yield zero skills.
+    const { tar, digest } = bundle();
+    const promoted = { ...unpackBundle(tar, digest, base), sandboxSkillsDir: sandboxSkills };
+    const loader = new DefaultResourceLoader({
+      cwd: resolve(__dirname, '..', '..'),
+      agentDir: getAgentDir(),
+      ...buildLoaderOptions(promoted),
+    });
+    await loader.reload();
+    expect(loader.getSkills().skills[0]!.description).toBe('d');
+    expect(loader.getSkills().diagnostics.filter((d) => d.type === 'error')).toEqual([]);
   });
 });

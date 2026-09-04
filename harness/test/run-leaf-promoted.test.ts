@@ -195,6 +195,12 @@ describe('configRef on a prompt leaf', () => {
     expect(overlayConfig).toHaveBeenCalledTimes(1);
     const fragments = executeTurn.mock.calls[0]![0].promotedConfig.promptFragments;
     expect(fragments.some((f: string) => f.includes('/.sh-config/skills'))).toBe(true);
+    // Issue #222 (2): the overlay's path is also what the skill registry must advertise, so the
+    // one path the model is handed for a skill is the one `read` can reach. Without this the
+    // prompt names the pod-side /tmp/sh-config/<digest> copy, which is dead in the sandbox.
+    expect(executeTurn.mock.calls[0]![0].promotedConfig.sandboxSkillsDir).toBe(
+      '/workspace/leaves/run-1-i1/.sh-config/skills',
+    );
     // Pin the fallback itself, not just that the overlay ran: with a transport-less (pod) lease,
     // the code must genuinely build a KubectlTransport for the overlay call, and — since it built
     // one rather than reusing a leased one — must close it afterward. A second KubectlTransport is
