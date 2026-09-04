@@ -183,10 +183,8 @@ troubleshooting — is in **[`deploy/knative/README-ocp.md`](deploy/knative/READ
 
 ### Promoting a local Claude Code workflow
 
-Iterate on a workflow locally in Claude Code — skills, `CLAUDE.md`, memory, a slash command —
-then promote it:
-
-From inside Claude Code, in the project you want to promote:
+Iterate on a workflow locally in Claude Code — skills, `CLAUDE.md`, memory, a slash command — then
+promote it from inside Claude Code, in the project you want to promote:
 
 ```bash
 mkdir -p ~/.claude/commands                                    # once
@@ -198,9 +196,13 @@ export SH_HARNESS_DIR=/path/to/serverless-harness              # once, per shell
 
 `/promote` sets the `HOME` override and `--project` for you, checks that the repo boundary and the
 Redis tunnel are right before uploading, and reads the digest back through the cluster's own client
-afterwards. Install it into your **real** `~/.claude/commands/`: with `HOME` pointed at the project,
-`promote` bundles every prompt in that project's `.claude/commands/`, so a `/promote` living there
-would ship itself into every bundle.
+afterwards.
+
+Installed in your **real** `~/.claude/commands/` as above, it is visible in every project and never
+travels. You can instead keep it **in the project**, which lets you run Claude Code with
+`HOME=<project>` so the local agent sees exactly what the promoted run will; `/promote` then detects
+that it lives there and self-excludes with `--exclude-prompt promote` (see below), because otherwise
+it would ship itself into every bundle.
 
 Or drive the CLI directly:
 

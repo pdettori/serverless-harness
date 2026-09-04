@@ -84,19 +84,49 @@ export SH_HARNESS_DIR=$(pwd)
 
 ### Install the `/promote` command
 
-Act 2 runs promotion from **inside** Claude Code. Install the command once:
+Act 2 runs promotion from **inside** Claude Code, and there are two places to install it. They differ
+in one thing that matters for this demo: whether the session you author in resembles the one that
+runs remotely.
+
+**Option A — real user scope. Simpler; use this if you are just following along.**
 
 ```bash
 mkdir -p ~/.claude/commands
 cp deploy/claude/commands/promote.md ~/.claude/commands/promote.md
 ```
 
-> **It belongs in your real `~/.claude/commands/`, not in the sandbox.** With `HOME` pointed at the
-> sandbox, `promote` reads the sandbox's `.claude/commands/` as its prompts directory and bundles
-> every markdown file there unconditionally — there is no exclusion flag, since the deny-list only
-> covers skills. A `/promote` living in the sandbox would therefore ship itself into every bundle as
-> a prompt template. In your real user scope, Claude Code sees it in every project and `promote`
-> never does.
+Claude Code sees `/promote` in every project, and `promote` — reading the sandbox as user scope —
+never sees it, so it cannot travel. The cost: your authoring session also loads your real
+`~/.claude`, so locally the agent has every skill you own while the promoted run gets the sandbox's
+one.
+
+**Option B — in the sandbox, for actual parity.** Put the command in the sandbox, so the local agent
+can be made to see _exactly_ what the promoted run will:
+
+```bash
+mkdir -p $SH_DEMO_SANDBOX/.claude/commands
+cp deploy/claude/commands/promote.md $SH_DEMO_SANDBOX/.claude/commands/promote.md
+```
+
+Installing is all that happens here. The matching launch (`HOME=$SH_DEMO_SANDBOX claude`) belongs in
+**Act 1b**, and only after Act 1a has populated the sandbox: run it now and Claude Code would start
+on an empty sandbox with no tunnels open, and your shell would be left in `$SH_DEMO_SANDBOX`, where
+Act 1a's repo-relative `cp` paths cannot resolve.
+
+> **This is what `--exclude-prompt` is for.** With `HOME` pointed at the sandbox, that
+> `.claude/commands/` _is_ promote's prompts directory, and every markdown file in it travels — so
+> without the flag the command would ship itself into every bundle as a prompt template. `/promote`
+> detects that it lives in the project and adds `--exclude-prompt promote` itself; you do not pass
+> it by hand. It adds the flag **only** in that case, because an exclusion matching nothing warns —
+> the flag's own typo guard.
+>
+> The trade: a fresh `HOME` means Claude Code re-authenticates, and you lose your own skills for the
+> duration. That is the standard dev/prod-parity cost, and parity is the whole claim this demo makes,
+> so Option B is the more honest way to perform it.
+>
+> **Either option produces the same bundle**, so every digest quoted below holds for both. Measured:
+> Option B without the exclusion is 19456 bytes (the command itself travelling); with it, 12288 bytes
+> and `sha256:43b8c4c0…` — byte-identical to Option A.
 
 ### Open the two tunnels
 
@@ -184,6 +214,13 @@ It records that the regression is tracked as **KAG-4471** and ships behind
 cd $SH_DEMO_SANDBOX && claude
 ```
 
+Under **Option B**, launch it this way instead — a sandbox `HOME` is what makes the local agent's
+configuration identical to the promoted run's:
+
+```bash
+cd $SH_DEMO_SANDBOX && HOME=$SH_DEMO_SANDBOX claude
+```
+
 Ask it: `Write the ship note for the auth timeout fix.` You get the house `SHIP NOTE` block with
 the ticket and the risk line. This is the "works on my laptop" baseline — the thing that normally
 does not survive the trip.
@@ -232,7 +269,11 @@ dispatch with:  {"sessionId":"<run>/<item>","kind":"prompt","prompt":"…","conf
 > ```bash
 > HOME="$PWD" REDIS_URL=redis://localhost:16379 \
 >   pnpm --dir "$SH_HARNESS_DIR/harness" promote --entry ship-note --project "$PWD"
+> #   ...plus --exclude-prompt promote under Option B, which /promote adds for you
 > ```
+>
+> That trailing flag is not cosmetic: under Option B the command is in the sandbox, so without it the
+> bundle is 19456 bytes rather than the 12288 printed above.
 >
 > `--project "$PWD"` looks redundant and is not: without it the CLI promotes the directory the
 > process started in, which through `pnpm --dir` is the harness checkout. Measured — it reports
@@ -456,6 +497,11 @@ kubectl exec -n $NS deploy/redis -- redis-cli DEL "config:bundle:$DIGEST"
 
 ## Notes and limits
 
+- **Option A's authoring session is not what runs remotely.** With your real `HOME`, Claude Code
+  loads your whole `~/.claude` while the promoted run gets the sandbox's one skill — so "it behaved
+  the same locally" is weaker evidence than it looks. Option B closes that with
+  `HOME=$SH_DEMO_SANDBOX` plus `--exclude-prompt`, at the cost of a re-auth. Say which one you ran
+  if someone asks whether local matched remote.
 - **The `TOKEN:` line is the one model-dependent claim.** The format and the token both require the
   model to choose to `read` the skill body. `CLAUDE.md` says it MUST, and the deterministic channel
   carries that instruction, so it is reliable in practice — but it is not a mechanical guarantee the
