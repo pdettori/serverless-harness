@@ -15,6 +15,10 @@ export interface PromoteArgs {
   excludePrompts: string[];
   dryRun: boolean;
   project?: string;
+  /** User scope to read skills, memory and prompts from; overrides `$HOME`. See `--home` below. */
+  home?: string;
+  /** Redis to upload the bundle to; overrides `$REDIS_URL`. See `--redis-url` below. */
+  redisUrl?: string;
 }
 
 export function parsePromoteArgs(argv: string[]): PromoteArgs {
@@ -49,12 +53,24 @@ export function parsePromoteArgs(argv: string[]): PromoteArgs {
       if (!value) throw new Error('--project requires a directory');
       args.project = value;
       i++;
+    } else if (flag === '--home') {
+      // Empty would resolve() to '/' and sweep the whole filesystem's skills into a shared bundle.
+      if (!value) throw new Error('--home requires a directory');
+      args.home = value;
+      i++;
+    } else if (flag === '--redis-url') {
+      // Empty must not fall through to $REDIS_URL: the caller who passed the flag is the caller
+      // being explicit about which Redis, and there are two that answer on this machine.
+      if (!value) throw new Error('--redis-url requires a url');
+      args.redisUrl = value;
+      i++;
     } else if (flag === '--dry-run') args.dryRun = true;
     else throw new Error(`unknown flag: ${flag}`);
   }
   if (!args.entry) {
     throw new Error(
-      'usage: promote --entry <prompt-name> [--mode attended] [--exclude-prompt <name>]',
+      'usage: promote --entry <prompt-name> [--project <dir>] [--home <dir>] ' +
+        '[--redis-url <url>] [--mode attended] [--exclude-prompt <name>]',
     );
   }
   return args;
@@ -71,6 +87,22 @@ export function parsePromoteArgs(argv: string[]): PromoteArgs {
  */
 export function resolveProjectDir(args: Pick<PromoteArgs, 'project'>, cwd: string): string {
   return args.project !== undefined ? resolve(args.project) : cwd;
+}
+
+/**
+ * The user scope to read skills, memory and prompts from: `--home` resolved to an absolute path,
+ * or `home` (the process's own `$HOME`) when the flag was not given.
+ *
+ * The flag exists because the env-var form of the same thing -- `HOME=<dir> pnpm ... promote` --
+ * cannot be granted inside Claude Code. Claude Code parses each Bash command and will only match a
+ * grant like `Bash(pnpm:*)` against a command it can analyse statically; an inline `VAR=value`
+ * prefix does not match, and a `$VAR` argument is classified unanalyzable outright. So the
+ * documented `/promote` invocation has to be one plain `pnpm ...` line with literal paths, and
+ * every input the env used to carry needs a flag. Outside Claude Code (the shell demo)
+ * `HOME=<dir>` still works: the flag only overrides it.
+ */
+export function resolveHomeDir(args: Pick<PromoteArgs, 'home'>, home: string): string {
+  return args.home !== undefined ? resolve(args.home) : home;
 }
 
 /**

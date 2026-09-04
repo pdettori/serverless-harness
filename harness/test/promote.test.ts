@@ -8,6 +8,7 @@ import {
   projectRoot,
   collectContextFiles,
   promoteInputs,
+  resolveHomeDir,
   resolveProjectDir,
   LOCKFILE_OUT,
   readInventory,
@@ -106,6 +107,63 @@ describe('parsePromoteArgs', () => {
 
   it('rejects an empty --project value', () => {
     expect(() => parsePromoteArgs(['--entry', 'go', '--project', ''])).toThrow(/--project/);
+  });
+});
+
+// `--home` and `--redis-url` exist so the whole invocation can be one word-for-word command with
+// no inline `VAR=value` prefix and no `$VAR`. That is not cosmetic: Claude Code parses every Bash
+// command and refuses to match an `allowed-tools` grant against one it cannot analyze statically,
+// so the env-var form of this invocation is unrunnable in the `dontAsk` and `auto` permission
+// modes. Measured on 2.1.260 with `Bash(pnpm:*)` granted under `dontAsk`:
+// `pnpm --dir /lit promote --entry x` is allowed, `HOME=/lit pnpm --dir /lit promote --entry x` is
+// denied, and any argument containing `$PWD` is denied as `Contains expansion`.
+describe('parsePromoteArgs --home / --redis-url', () => {
+  it('parses --home', () => {
+    const a = parsePromoteArgs(['--entry', 'go', '--home', '/some/dir']);
+    expect(a.home).toBe('/some/dir');
+  });
+
+  it('parses --redis-url', () => {
+    const a = parsePromoteArgs(['--entry', 'go', '--redis-url', 'redis://localhost:16379']);
+    expect(a.redisUrl).toBe('redis://localhost:16379');
+  });
+
+  it('leaves both undefined when neither flag is given, so the env still decides', () => {
+    const a = parsePromoteArgs(['--entry', 'go']);
+    expect(a.home).toBeUndefined();
+    expect(a.redisUrl).toBeUndefined();
+  });
+
+  it('rejects an empty --home value rather than promoting from the filesystem root', () => {
+    // An empty value would otherwise resolve to '/' and sweep every skill under it into a bundle
+    // bound for a shared store -- the same failure mode guard 1 exists to prevent.
+    expect(() => parsePromoteArgs(['--entry', 'go', '--home', ''])).toThrow(
+      /--home requires a directory/,
+    );
+  });
+
+  it('rejects an empty --redis-url value rather than silently falling back to the env', () => {
+    // Falling back would upload to whatever REDIS_URL happens to hold -- on this repo's own test
+    // container, that reports a successful upload the harness then cannot read back.
+    expect(() => parsePromoteArgs(['--entry', 'go', '--redis-url', ''])).toThrow(
+      /--redis-url requires a url/,
+    );
+  });
+});
+
+describe('resolveHomeDir', () => {
+  it('resolves a relative --home to an absolute path', () => {
+    expect(resolveHomeDir({ home: 'sandbox' }, '/fallback')).toBe(join(process.cwd(), 'sandbox'));
+  });
+
+  it('prefers --home over the process home, so the flag can redirect user scope', () => {
+    expect(resolveHomeDir({ home: '/tmp/sh-demo' }, '/Users/someone')).toBe('/tmp/sh-demo');
+  });
+
+  it('falls back to the process home when --home is absent, keeping HOME= working', () => {
+    // The shell demo (deploy/knative/demo-promoted-workflow.sh) still uses `HOME=$SANDBOX`, which
+    // is fine outside Claude Code; the flag must not break it.
+    expect(resolveHomeDir({}, '/Users/someone')).toBe('/Users/someone');
   });
 });
 

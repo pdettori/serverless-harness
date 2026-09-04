@@ -15,6 +15,7 @@ import {
   parsePromoteArgs,
   promoteInputs,
   readInventory,
+  resolveHomeDir,
   resolveInventoryPath,
   resolveProjectDir,
 } from './promote.js';
@@ -38,6 +39,10 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log(`project:    ${cwd}`);
+  // Which directory is being read as USER scope decides what travels, so print it rather than
+  // leaving the caller to infer it from an env var they cannot see in the transcript.
+  const home = resolveHomeDir(args, homedir());
+  console.log(`user scope: ${home}${args.home === undefined ? ' ($HOME)' : ' (--home)'}`);
 
   const inventoryPath = resolveInventoryPath(args.sandboxImage, cwd);
   const inventory = readInventory(args.sandboxImage, cwd);
@@ -52,7 +57,7 @@ async function main(): Promise<void> {
   const result = buildBundle(
     promoteInputs({
       cwd,
-      home: homedir(),
+      home,
       args,
       ...(inventory ? { inventory } : {}),
       versions: {
@@ -94,7 +99,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const client = createClient({ url: process.env.REDIS_URL });
+  const client = createClient({ url: args.redisUrl ?? process.env.REDIS_URL });
   await client.connect();
   try {
     const { uploaded } = await putBundle(
