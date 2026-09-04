@@ -111,8 +111,11 @@ check "probes whether the project carries this command" \
   "$(grep -c 'test -f .claude/commands/promote.md' "$CMD")" "1"
 check "tells the model to pass --exclude-prompt promote" \
   "$(grep -c -- '--exclude-prompt promote' "$CMD")" "1"
+# Folded to one line before matching: `grep` is line-based and this phrase wraps in promote.md, so
+# an `only.*in that case` pattern never matched and the check passed on the warning name alone --
+# leaving the conditionality it is named for unpinned against a reflow that dropped the "only".
 check "says to add it ONLY when the command is local" \
-  "$(grep -ciE 'only.*in that case|prompt_exclude_unmatched' "$CMD" | awk '$1>0{print 1; exit} {print 0}')" "1"
+  "$(tr '\n' ' ' < "$CMD" | grep -ciE 'add it [^.]*only[^.]*in that case' | awk '$1>0{print 1; exit} {print 0}')" "1"
 
 echo "== the redis tunnel is the private port, not 6379"
 check "port-forwards 16379:6379" "$(grep -c '16379:6379' "$CMD")" "1"

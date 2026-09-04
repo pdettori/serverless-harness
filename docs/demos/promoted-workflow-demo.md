@@ -100,14 +100,18 @@ never sees it, so it cannot travel. The cost: your authoring session also loads 
 `~/.claude`, so locally the agent has every skill you own while the promoted run gets the sandbox's
 one.
 
-**Option B — in the sandbox, for actual parity.** Put the command in the sandbox and launch Claude
-Code with `HOME` pointed there, so the local agent sees _exactly_ what the promoted run will:
+**Option B — in the sandbox, for actual parity.** Put the command in the sandbox, so the local agent
+can be made to see _exactly_ what the promoted run will:
 
 ```bash
 mkdir -p $SH_DEMO_SANDBOX/.claude/commands
 cp deploy/claude/commands/promote.md $SH_DEMO_SANDBOX/.claude/commands/promote.md
-cd $SH_DEMO_SANDBOX && HOME=$SH_DEMO_SANDBOX claude          # instead of Act 1b's plain `claude`
 ```
+
+Installing is all that happens here. The matching launch (`HOME=$SH_DEMO_SANDBOX claude`) belongs in
+**Act 1b**, and only after Act 1a has populated the sandbox: run it now and Claude Code would start
+on an empty sandbox with no tunnels open, and your shell would be left in `$SH_DEMO_SANDBOX`, where
+Act 1a's repo-relative `cp` paths cannot resolve.
 
 > **This is what `--exclude-prompt` is for.** With `HOME` pointed at the sandbox, that
 > `.claude/commands/` _is_ promote's prompts directory, and every markdown file in it travels — so
@@ -210,6 +214,13 @@ It records that the regression is tracked as **KAG-4471** and ships behind
 cd $SH_DEMO_SANDBOX && claude
 ```
 
+Under **Option B**, launch it this way instead — a sandbox `HOME` is what makes the local agent's
+configuration identical to the promoted run's:
+
+```bash
+cd $SH_DEMO_SANDBOX && HOME=$SH_DEMO_SANDBOX claude
+```
+
 Ask it: `Write the ship note for the auth timeout fix.` You get the house `SHIP NOTE` block with
 the ticket and the risk line. This is the "works on my laptop" baseline — the thing that normally
 does not survive the trip.
@@ -258,7 +269,11 @@ dispatch with:  {"sessionId":"<run>/<item>","kind":"prompt","prompt":"…","conf
 > ```bash
 > HOME="$PWD" REDIS_URL=redis://localhost:16379 \
 >   pnpm --dir "$SH_HARNESS_DIR/harness" promote --entry ship-note --project "$PWD"
+> #   ...plus --exclude-prompt promote under Option B, which /promote adds for you
 > ```
+>
+> That trailing flag is not cosmetic: under Option B the command is in the sandbox, so without it the
+> bundle is 19456 bytes rather than the 12288 printed above.
 >
 > `--project "$PWD"` looks redundant and is not: without it the CLI promotes the directory the
 > process started in, which through `pnpm --dir` is the harness checkout. Measured — it reports
