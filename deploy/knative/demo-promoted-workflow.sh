@@ -48,7 +48,7 @@ KEEP_SANDBOX=0
 TEARDOWN=0
 # The unguessable fact: it exists only in the promoted memory file, so a bare run cannot cite it.
 TICKET="KAG-4471"
-TOKEN="SHIPNOTE-7F3A-SANDBOX-OK"
+TOKEN="SHIPNOTE-7F3A-SANDBOX-OK" # notsecret
 PROMPT="Write the ship note for the auth timeout fix."
 
 for a in "$@"; do
