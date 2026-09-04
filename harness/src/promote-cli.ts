@@ -15,6 +15,7 @@ import {
   parsePromoteArgs,
   promoteInputs,
   readInventory,
+  resolveHomeDir,
   resolveInventoryPath,
   resolveProjectDir,
 } from './promote.js';
@@ -38,6 +39,20 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log(`project:    ${cwd}`);
+  // Which directory is being read as USER scope decides what travels, so print it rather than
+  // leaving the caller to infer it from an env var they cannot see in the transcript.
+  const home = resolveHomeDir(args, homedir());
+  const homeSource = args.home === undefined ? '($HOME)' : '(--home)';
+  // Guarded exactly like --project above, and for the same reason. A directory that does not exist
+  // resolves no skills and no prompts, so promote builds an empty bundle and then aborts as
+  // `unknown_entry: entry prompt '<x>' is not in the bundle (available: none)` -- measured. That
+  // names the symptom rather than the path the caller mistyped, which is the failure mode
+  // preflight.ts:225-226 already rejects for the same reason.
+  if (!existsSync(home) || !statSync(home).isDirectory()) {
+    console.error(`promote aborted: user scope directory does not exist: ${home} ${homeSource}`);
+    process.exit(1);
+  }
+  console.log(`user scope: ${home} ${homeSource}`);
 
   const inventoryPath = resolveInventoryPath(args.sandboxImage, cwd);
   const inventory = readInventory(args.sandboxImage, cwd);
@@ -52,7 +67,7 @@ async function main(): Promise<void> {
   const result = buildBundle(
     promoteInputs({
       cwd,
-      home: homedir(),
+      home,
       args,
       ...(inventory ? { inventory } : {}),
       versions: {
@@ -94,7 +109,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const client = createClient({ url: process.env.REDIS_URL });
+  const client = createClient({ url: args.redisUrl ?? process.env.REDIS_URL });
   await client.connect();
   try {
     const { uploaded } = await putBundle(

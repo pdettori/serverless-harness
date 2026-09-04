@@ -11,10 +11,17 @@
 #     "every command" and did not -- or the user approves a permission prompt on every run and the
 #     "one command" claim is false. Grants are matched whole, so tightening `kubectl:*` to per-verb
 #     grants strengthens the check instead of bypassing it.
-#   - the two flags whose absence silently promotes the WRONG THING (`--project`, `HOME=`) must be
+#   - the two flags whose absence silently promotes the WRONG THING (`--project`, `--home`) must be
 #     in the documented invocation. Both were verified by measurement: without --project the CLI
-#     promotes the harness checkout it was launched from, and without HOME it resolves 56
+#     promotes the harness checkout it was launched from, and without --home it resolves 56
 #     travelling skills and cannot find the entry prompt at all.
+#   - every command must be statically analyzable: no `$VAR`, no inline `VAR=value` prefix. This is
+#     the check this file was missing. Claude Code parses each Bash command and matches a grant only
+#     against one it can analyse, so `echo "${SH_HARNESS_DIR:-UNSET}"` and
+#     `HOME="$PWD" pnpm --dir "$SH_HARNESS_DIR/harness" ...` matched NO grant however broad -- under
+#     `defaultMode: dontAsk` the command aborted before the model saw the Context, and under `auto`
+#     it was denied as `Contains expansion`. Every grant above can be correct and the command still
+#     unrunnable, which is exactly what happened.
 #   - the redis tunnel must be 16379. On 6379 it reaches this repo's own test container, which
 #     reports a successful upload and then a `config bundle not found` from the harness.
 #
@@ -48,18 +55,27 @@ PERMITTED="$(grep -oE 'Bash\([^):]+' <<< "$FM" | sed 's/^Bash(//' | sort -u)"
 check "permits pnpm" "$(grep -cE '^pnpm' <<< "$PERMITTED")" "1"
 check "grants kubectl per verb, not kubectl:*" \
   "$(grep -cxF 'kubectl' <<< "$PERMITTED")" "0"
+# pnpm could not be narrowed while the invocation began with `HOME=... REDIS_URL=... pnpm`, because
+# a grant matches from the first word. With those moved to flags it can be, so hold it there.
+check "grants pnpm --dir, not pnpm:*" "$(grep -cxF 'pnpm' <<< "$PERMITTED")" "0"
 
-# Commands the body actually runs. Split on && || ; | and newlines FIRST: keeping only the first
-# word of each probe hid every `&& echo`/`|| echo`, which is how `echo` stayed ungranted while a
-# test claiming to cover "every command" passed. Env assignments are stripped so
-# `HOME=... pnpm ...` is seen as pnpm.
-USED="$( {
+# Every command the body actually runs, one per line: the ! probes plus the bash fences, split on
+# && || ; | and newlines FIRST. Keeping only the first word of each probe hid every `&& echo`/
+# `|| echo`, which is how `echo` stayed ungranted while a test claiming to cover "every command"
+# passed. Env assignments are still stripped, so a reintroduced `HOME=... pnpm ...` is seen as pnpm
+# by the coverage loop rather than vanishing from it -- the expansion section below is what rejects
+# the prefix itself.
+RUNS="$( {
   grep -oE '!`[^`]+`' "$CMD" | sed 's/^!`//; s/`$//'
   awk '/^```bash$/{f=1; next} /^```$/{f=0} f' "$CMD"
 } | sed -E 's/[[:space:]]*(&&|\|\||;|\|)[[:space:]]*/\n/g' |
-  sed -E 's/^[[:space:]]+//; s/^[0-9]*>[^[:space:]]*[[:space:]]*//' |
-  sed -E 's/^([A-Za-z_][A-Za-z0-9_]*=("[^"]*"|[^[:space:]]*)[[:space:]]+)+//' |
-  grep -oE '^[a-z][a-z0-9_-]*([[:space:]]+[a-z][a-z0-9_-]*)?' | sort -u)"
+  sed -E 's/^[[:space:]]+//; s/^[0-9]*>[^[:space:]]*[[:space:]]*//' | grep -v '^$')"
+
+# Second word kept when it is a flag (`-d`, `--dir`), not just a bare word: without that, the
+# invocation `pnpm --dir ...` collapsed to `pnpm`, which the loop below then waved through as "a
+# grant prefix, not an invocation" -- passing without ever checking the grant it was tightened to.
+USED="$(sed -E 's/^([A-Za-z_][A-Za-z0-9_]*=("[^"]*"|[^[:space:]]*)[[:space:]]+)+//' <<< "$RUNS" |
+  grep -oE '^[a-z][a-z0-9_-]*([[:space:]]+-{0,2}[a-z][a-z0-9_-]*)?' | sort -u)"
 
 # Each invocation must be covered by SOME grant, matched as a prefix so a two-word grant
 # ("kubectl port-forward") covers a longer invocation and a one-word grant ("ls") still covers "ls -d".
@@ -92,14 +108,47 @@ for needed in "kubectl port-forward" "kubectl exec"; do
     "$(grep -cxF "$needed" <<< "$PERMITTED")" "1"
 done
 
+echo "== every command is statically analyzable, or no grant can match it"
+# The regression this section exists for: the asset can name every right flag, grant every right
+# tool, and still be refused wholesale because the commands carry shell syntax the permission layer
+# will not reason about. Scope is the extracted commands only -- prose legitimately writes
+# `$SH_HARNESS_DIR` and `$ARGUMENTS` when talking ABOUT them.
+check "no probe or fenced command contains a \$ expansion" \
+  "$(grep -c '[$]' <<< "$RUNS")" "0"
+check "no command carries an inline VAR=value prefix" \
+  "$(grep -cE '^[A-Za-z_][A-Za-z0-9_]*=' <<< "$RUNS")" "0"
+# Pin the measured reason, not just the shape: a later edit that reintroduces "$PWD" for brevity
+# should have to delete an explanation that says what it costs.
+check "says why literal paths are required" \
+  "$(grep -ciE 'Contains expansion' "$CMD" | awk '$1>0{print 1; exit} {print 0}')" "1"
+check "tells the model to substitute the paths literally" \
+  "$(tr '\n' ' ' < "$CMD" | grep -ciE 'never .\$PWD., never .\$SH_HARNESS_DIR.' | awk '$1>0{print 1; exit} {print 0}')" "1"
+
+echo "== the grant's turn scope is stated, because it is what actually broke a run"
+# `allowed-tools` holds only for the turn the slash command creates. A run that ended its turn on
+# "I'll check the guards, then promote" lost the grant, and every later `pnpm` call was refused by
+# permission-rule -- indistinguishable, from the user's side, from the command being broken. The
+# instruction to finish in one turn, and to re-invoke rather than continue, is load-bearing.
+check "tells the model to finish in this turn" \
+  "$(tr '\n' ' ' < "$CMD" | grep -ciE 'this turn only' | awk '$1>0{print 1; exit} {print 0}')" "1"
+check "says to re-run rather than continue in a new turn" \
+  "$(tr '\n' ' ' < "$CMD" | grep -ciE 're-run .?/promote' | awk '$1>0{print 1; exit} {print 0}')" "1"
+check "names the session-level grant that survives a stopped turn" \
+  "$(grep -c -- '--allowedTools' "$CMD")" "1"
+
 echo "== the invocation cannot silently promote the wrong thing"
-# Counted as present-or-absent: both legitimately appear twice, once in the invocation and once
-# in the prose explaining why they are not redundant.
+# Counted as present-or-absent: each legitimately appears twice, once in the invocation and once
+# in the prose explaining why it is not redundant.
 present() { [ "$1" -ge 1 ] && echo 1 || echo 0; }
-check "passes --project explicitly" "$(present "$(grep -c -- '--project "\$PWD"' "$CMD")")" "1"
-check "sets HOME to the project" "$(present "$(grep -c 'HOME="\$PWD"' "$CMD")")" "1"
+check "passes --project explicitly" "$(present "$(grep -c -- '--project <this-project>' "$CMD")")" "1"
+check "points user scope at the project with --home" \
+  "$(present "$(grep -c -- '--home <this-project>' "$CMD")")" "1"
+# Present-or-absent, like the flags above: this now appears twice on purpose, once in the invocation
+# and once in the `--allowedTools` rule the model is told to suggest when a guard stops the turn.
 check "runs the CLI via --dir on the harness checkout" \
-  "$(grep -c -- '--dir "\$SH_HARNESS_DIR/harness"' "$CMD")" "1"
+  "$(present "$(grep -c -- '--dir <harness-checkout>/harness' "$CMD")")" "1"
+check "names the redis to upload to, rather than inheriting one" \
+  "$(present "$(grep -c -- '--redis-url redis://localhost:16379' "$CMD")")" "1"
 check "explains why --project is not redundant" \
   "$(grep -ciE 'do not "simplify"|not "simplify" them' "$CMD")" "1"
 
@@ -119,8 +168,8 @@ check "says to add it ONLY when the command is local" \
 
 echo "== the redis tunnel is the private port, not 6379"
 check "port-forwards 16379:6379" "$(grep -c '16379:6379' "$CMD")" "1"
-check "REDIS_URL uses 16379" "$(grep -c 'redis://localhost:16379' "$CMD")" "1"
-check "never points REDIS_URL at 6379" "$(grep -c 'redis://localhost:6379' "$CMD")" "0"
+check "the redis url uses 16379" "$(grep -c 'redis://localhost:16379' "$CMD")" "1"
+check "never points the redis url at 6379" "$(grep -c 'redis://localhost:6379' "$CMD")" "0"
 check "says why 6379 is wrong" "$(grep -ciE '0\.0\.0\.0:6379|test container publishes' "$CMD")" "1"
 
 echo "== the three measured guards are all present"
@@ -129,6 +178,13 @@ check "guard: SH_HARNESS_DIR / inventory resolution" \
   "$(grep -ciE 'inventory_unavailable' "$CMD" | awk '$1>0{print 1; exit} {print 0}')" "1"
 check "guard: cluster-side verification of the upload" \
   "$(grep -c 'redis-cli EXISTS' "$CMD")" "1"
+# The CLI-presence half of guard 2 is instructed in PROSE, because the probe form of it carried
+# `${SH_HARNESS_DIR:-/nonexistent}` -- the expansion the section above now rejects. Prose is invisible
+# to RUNS (probes and bash fences only) and to the coverage loop, so without this check the only
+# remaining verification that the harness CLI exists could be deleted from promote.md without failing
+# anything in a file whose stated purpose is that every command the body runs is present and granted.
+check "guard 2 verifies the CLI is really there, with a literal path" \
+  "$(present "$(grep -c -- 'test -f <harness-checkout>/harness/package.json' "$CMD")")" "1"
 
 echo "== exit codes are interpreted, not echoed"
 check "explains exit 2 (preflight)" "$(grep -c 'exit 2' "$CMD")" "1"
