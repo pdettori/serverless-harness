@@ -178,6 +178,13 @@ check "guard: SH_HARNESS_DIR / inventory resolution" \
   "$(grep -ciE 'inventory_unavailable' "$CMD" | awk '$1>0{print 1; exit} {print 0}')" "1"
 check "guard: cluster-side verification of the upload" \
   "$(grep -c 'redis-cli EXISTS' "$CMD")" "1"
+# The CLI-presence half of guard 2 is instructed in PROSE, because the probe form of it carried
+# `${SH_HARNESS_DIR:-/nonexistent}` -- the expansion the section above now rejects. Prose is invisible
+# to RUNS (probes and bash fences only) and to the coverage loop, so without this check the only
+# remaining verification that the harness CLI exists could be deleted from promote.md without failing
+# anything in a file whose stated purpose is that every command the body runs is present and granted.
+check "guard 2 verifies the CLI is really there, with a literal path" \
+  "$(present "$(grep -c -- 'test -f <harness-checkout>/harness/package.json' "$CMD")")" "1"
 
 echo "== exit codes are interpreted, not echoed"
 check "explains exit 2 (preflight)" "$(grep -c 'exit 2' "$CMD")" "1"
