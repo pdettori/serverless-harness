@@ -101,6 +101,30 @@ describe('the OCP overlay patches the relay token away from the base literal (#1
     ).toEqual([]);
   });
 
+  it('is created by the script that applies this overlay, not only by the worker demo', () => {
+    // The patch makes the Secret a HARD requirement of the overlay: without it the relay pod
+    // never starts (CreateContainerConfigError), and setup-ocp.sh does not `rollout status`
+    // the relay, so that failure is silent. The coupling checks below only pin the overlay
+    // against remote-worker/deploy-incluster.sh -- a separate demo script that also needs
+    // deploy/sandbox-relay to exist already -- so they cannot see this at all.
+    const setup = readFileSync(resolve(DEPLOY, 'setup-ocp.sh'), 'utf8');
+    const env: EnvVar[] = patch().spec.template.spec.containers[0].env;
+    const ref = (
+      env.find((e) => e.name === 'SH_RELAY_TOKEN') as {
+        valueFrom?: { secretKeyRef?: { name?: string; key?: string } };
+      }
+    ).valueFrom!.secretKeyRef!;
+
+    expect(
+      setup,
+      `setup-ocp.sh renders and applies overlays/ocp, so it must create Secret ${ref.name}`,
+    ).toContain(`create secret generic ${ref.name}`);
+    expect(
+      setup,
+      `the Secret must carry key ${ref.key}, which the overlay reads SH_RELAY_TOKEN from`,
+    ).toContain(`--from-literal=${ref.key}=`);
+  });
+
   it('replaces the literal with a secretKeyRef instead of leaving both fields set', () => {
     const env: EnvVar[] = patch().spec.template.spec.containers[0].env;
     const token = env.find((e) => e.name === 'SH_RELAY_TOKEN');
