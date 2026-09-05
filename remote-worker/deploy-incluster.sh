@@ -14,8 +14,23 @@ SANDBOX_ID="${SANDBOX_ID:-sbx-worker-1}"
 TOKEN="${SANDBOX_TOKEN:-dev-token}"
 IMAGE="${IMAGE:-image-registry.openshift-image-registry.svc:5000/$NS/remote-worker:latest}"
 
-echo "==> ensure relay token (fail-closed auth)"
-oc set env deploy/sandbox-relay "SH_RELAY_TOKEN=$TOKEN" -n "$NS" >/dev/null
+# One Secret, one key, read by both the relay (SH_RELAY_TOKEN) and the worker
+# (SANDBOX_TOKEN, see worker-deployment.yaml). Auth is fail-closed and the two values must be
+# equal, so sourcing both from one key makes that structural.
+SECRET_NAME="sh-relay-token"
+SECRET_KEY="SH_RELAY_TOKEN"
+
+echo "==> relay token Secret (fail-closed auth)"
+# `create --dry-run=client | apply` so re-running rotates the value instead of failing on a
+# Secret that already exists. The token is still on this process's argv -- visible to `ps` on
+# this machine for the life of the command -- but it no longer lands in either Deployment
+# spec, where it persisted for anyone with read access to the namespace (#173).
+oc create secret generic "$SECRET_NAME" -n "$NS" \
+  --from-literal="$SECRET_KEY=$TOKEN" --dry-run=client -o yaml | oc apply -f - >/dev/null
+
+echo "==> point the relay at the Secret"
+# Replaces any literal SH_RELAY_TOKEN a previous run of this script set with a secretKeyRef.
+oc set env deploy/sandbox-relay --from="secret/$SECRET_NAME" -n "$NS" >/dev/null
 
 echo "==> ServiceAccount + nonroot-v2 SCC (image declares USER 1001)"
 oc create serviceaccount remote-worker -n "$NS" --dry-run=client -o yaml | oc apply -f - >/dev/null
@@ -23,7 +38,7 @@ oc adm policy add-scc-to-user nonroot-v2 -z remote-worker -n "$NS" >/dev/null
 
 echo "==> apply Deployment (image=$IMAGE sandbox_id=$SANDBOX_ID)"
 sed -e "s#__IMAGE__#${IMAGE}#g" -e "s#__SANDBOX_ID__#${SANDBOX_ID}#g" \
-    -e "s#__TOKEN__#${TOKEN}#g" -e "s#__NS__#${NS}#g" \
+    -e "s#__NS__#${NS}#g" \
     worker-deployment.yaml | oc apply -f - >/dev/null
 
 oc rollout status deploy/remote-worker -n "$NS" --timeout=120s
