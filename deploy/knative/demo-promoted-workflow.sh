@@ -264,16 +264,18 @@ else
 fi
 
 # --- Claim 3: the A/B — same prompt, one field ------------------------------------------------
-# The bare run is the CONTROL, and on a warm cluster it is not automatically a valid one.
+# The bare run is the CONTROL, and it is only valid if no promoted bundle is sitting in the shared
+# pool sandbox for it to find.
 #
-# The overlay materialises the bundle into a digest-keyed cache in the SHARED pool sandbox
-# (/workspace/.sh-config/<digest>/) and leaves it there for reuse. It is world-readable, it holds
-# context/agents/0-CLAUDE.md and memory/, and it OUTLIVES the leaf. A later bare leaf that leases
-# the same sandbox can explore the filesystem, find another run's promoted workflow and answer from
-# it -- measured here: a second run of this demo had its bare arm emit "following the house rules"
-# with the ticket AND the token, having been told neither. Purge the digest before the control runs,
-# or the A/B silently proves nothing on every run after the first. Tracked as #216; this purge can go
-# once the cache no longer outlives the leaf that created it.
+# The overlay materialises each bundle into a digest-keyed cache in the SHARED pool sandbox
+# (/workspace/.sh-config/<digest>/), world-readable, holding context/agents/0-CLAUDE.md and memory/.
+# It used to stay there after its leaf ended, so a later bare leaf leasing the same sandbox could
+# explore the filesystem and answer from another run's workflow -- measured: a second run of this
+# demo had its bare arm emit "following the house rules" with the ticket AND the token, having been
+# told neither (#216). The cache is now refcounted and reclaimed when its last leaf releases, so this
+# step ASSERTS the cache is empty rather than forcing it to be. Do not turn this back into a purge:
+# an `rm -rf` here would hide a teardown regression by cleaning up after it, and the control's
+# honesty would go back to depending on the demo rather than on the harness.
 claim 3 "the same prompt behaves differently only because of configRef"
 POOL_SEL="${KAGENTI_SANDBOX_POOL_SELECTOR:-sh.kagenti.io/sandbox-pool=default}"
 mapfile -t POOL_PODS < <(kubectl get pods -n "$NS" -l "$POOL_SEL" -o name 2>/dev/null | sed 's|pod/||')
@@ -281,41 +283,88 @@ mapfile -t POOL_PODS < <(kubectl get pods -n "$NS" -l "$POOL_SEL" -o name 2>/dev
   ko "no pool sandbox pods match $POOL_SEL"
   exit 1
 }
-CACHE_DIR="/workspace/.sh-config/sha256-${DIGEST#sha256:}"
-# Purge EVERY cached bundle, not just this run's digest. Purging one digest is not enough: any other
-# bundle in the cache that happens to carry the same memory fact answers the bare arm just as well.
-# Measured -- a bundle built from this same fixture before Prettier normalised one emphasis marker
-# in the memory file has a different content digest, sat alongside, and made the control fail with
-# the per-digest purge passing.
-for p in "${POOL_PODS[@]}"; do
-  kubectl exec -n "$NS" "$p" -- sh -c 'rm -rf /workspace/.sh-config/sha256-*' 2>/dev/null || true
-done
 still=0
 unreadable=0
+leaked=""
 for p in "${POOL_PODS[@]}"; do
+  # Count EVERY cached bundle, not just this run's digest. Any bundle carrying the same memory fact
+  # answers the bare arm just as well -- measured: a bundle built from this same fixture before
+  # Prettier normalised one emphasis marker in the memory file has a different content digest, sat
+  # alongside, and would satisfy a per-digest check while breaking the control.
+  #
   # Distinguish "zero bundles" from "could not look". An empty $n means the exec failed -- pod not
   # ready, evicted, transient API error -- and `${n:-0}` would silently score that as a clean pod,
   # letting the run claim the cache is empty having verified nothing. That is the same shape of
-  # false green this whole purge exists to prevent, so it must not be counted as evidence.
+  # false green this check exists to prevent, so it must not be counted as evidence.
   n=$(kubectl exec -n "$NS" "$p" -- sh -c 'ls -1d /workspace/.sh-config/sha256-* 2>/dev/null | wc -l' 2>/dev/null | tr -d ' \r')
   if [ -z "$n" ]; then
     unreadable=$((unreadable + 1))
     continue
   fi
+  [ "$n" -gt 0 ] && leaked="$leaked $p"
   still=$((still + n))
 done
 [ "$unreadable" -eq 0 ] ||
   ko "could not inspect the cache on $unreadable pod(s); the control is unverified"
-[ "$still" -eq 0 ] &&
-  ok "config cache emptied on ${#POOL_PODS[@]} pool sandbox(es), so the control is honest" ||
-  ko "$still cached bundle(s) remain; the bare run could read one of them"
+if [ "$still" -eq 0 ]; then
+  ok "config cache is empty on ${#POOL_PODS[@]} pool sandbox(es), so the control is honest"
+else
+  # A regression in the refcounted teardown, not something for this script to paper over. Name the
+  # pods so the next step is a `kubectl exec ... ls`, not a guess.
+  ko "$still cached bundle(s) still on disk (pods:$leaked) — the teardown regressed (#216) and the bare run could read one"
+fi
 
+CACHE_DIR="/workspace/.sh-config/sha256-${DIGEST#sha256:}"
 SID_A="demo-bare-$$"
 SID_B="demo-promoted-$$"
 echo "  A (bare)     -> $SID_A"
 bare=$(dispatch "$SID_A" "$PROMPT")
+
+# B runs in the BACKGROUND so the sandbox half can be observed while it is true.
+#
+# The bundle's presence on the pool sandbox's filesystem is now only observable WHILE a leaf holds a
+# ref on it: the cache is reclaimed when the last one releases (#216). Looking after the run returned
+# -- which is what this demo used to do -- would now always find nothing, and the mechanical check
+# below would have to be downgraded to trusting the model's words. So watch for the bundle to appear
+# underneath the run instead. Same single dispatch either way: no extra model call.
+prom_file="$(mktemp)"
 echo "  B (promoted) -> $SID_B"
-prom=$(dispatch "$SID_B" "$PROMPT" "$DIGEST")
+dispatch "$SID_B" "$PROMPT" "$DIGEST" > "$prom_file" &
+prom_pid=$!
+
+# The sandbox half, mechanically: the overlay must materialise the bundle -- INCLUDING the skill's
+# references/ subdirectory -- into the pool sandbox it leased. Asserted on the filesystem rather than
+# in the model's words, so it holds even on a run where the model declines to read.
+landed=""
+for _ in $(seq 1 240); do
+  for p in "${POOL_PODS[@]}"; do
+    if kubectl exec -n "$NS" "$p" -- test -f "$CACHE_DIR/skills/ship-note/references/release-token.md" 2>/dev/null; then
+      landed="$p"
+      break 2
+    fi
+  done
+  # Stop waiting once the run is over: past that point the cache is legitimately gone, so continuing
+  # to poll would just burn the full timeout before reporting a failure that is already decided.
+  kill -0 "$prom_pid" 2>/dev/null || break
+  sleep 1
+done
+[ -n "$landed" ] &&
+  ok "the bundle materialised in $landed, references/ and all (sandbox overlay ran)" ||
+  ko "no pool sandbox held $CACHE_DIR/skills/ship-note/references/release-token.md while the leaf ran"
+
+wait "$prom_pid" || true
+prom=$(cat "$prom_file")
+
+# ...and the reclaim, which is the other half of the same invariant: once the leaf that created the
+# cache releases its ref, the bundle is gone, so a later bare leaf has nothing to read. This is the
+# assertion the demo's old `rm -rf` purge stood in for.
+gone=1
+for p in "${POOL_PODS[@]}"; do
+  kubectl exec -n "$NS" "$p" -- test -d "$CACHE_DIR" 2>/dev/null && gone=0
+done
+[ "$gone" -eq 1 ] &&
+  ok "the cache was reclaimed when the leaf released it, so it cannot outlive its leaf (#216)" ||
+  ko "the cache survived its leaf on at least one pod — a later bare run could read it (#216)"
 
 bare_text=$(jq -r '.text // ""' <<< "$bare")
 prom_text=$(jq -r '.text // ""' <<< "$prom")
@@ -339,20 +388,6 @@ grep -q "$TICKET" <<< "$prom_text" &&
 grep -q "$TICKET" <<< "$bare_text" &&
   ko "bare run cited $TICKET — the fact leaked from somewhere else, so the A/B proves nothing" ||
   ok "bare run cannot cite $TICKET"
-
-# The sandbox half, mechanically: the overlay must have materialised the bundle -- INCLUDING the
-# skill's references/ subdirectory -- into the pool sandbox it leased. Asserted on the filesystem
-# rather than in the model's words, so it holds even on a run where the model declines to read.
-landed=""
-for p in "${POOL_PODS[@]}"; do
-  if kubectl exec -n "$NS" "$p" -- test -f "$CACHE_DIR/skills/ship-note/references/release-token.md" 2>/dev/null; then
-    landed="$p"
-    break
-  fi
-done
-[ -n "$landed" ] &&
-  ok "the bundle materialised in $landed, references/ and all (sandbox overlay ran)" ||
-  ko "no pool sandbox holds $CACHE_DIR/skills/ship-note/references/release-token.md"
 
 # The sandbox half, as the model saw it: this token is only readable by a `read` executed in the
 # sandbox pod, resolving a relative sibling path against the injected absolute skills root.
