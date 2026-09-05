@@ -130,6 +130,24 @@ describe('configRef on a prompt leaf', () => {
     expect(resolvePromotedConfig).not.toHaveBeenCalled();
   });
 
+  it('treats a null configRef as absent — the one deliberate exception to presence-not-truthiness', async () => {
+    // `null` is present, so the guard above could have rejected it. It does not: JSON null reads as
+    // "no value" for producers that emit it, and `""` is the failure actually observed. This is the
+    // leaf half of the pin — `configRefValid` in knative-server has the boundary half — so that the
+    // exception cannot be quietly reversed in one layer only.
+    selectPoolSandboxMock.mockReset().mockResolvedValue(null); // no lease: keep this case hermetic
+    const executeTurn = okTurn();
+    const resolvePromotedConfig = vi.fn();
+    const r = await runLeaf(env({ configRef: null as unknown as string }), undefined, {
+      executeTurn,
+      resolvePromotedConfig,
+      overlayConfig: vi.fn(),
+    });
+    expect(r.status).toBe('responded');
+    expect(resolvePromotedConfig).not.toHaveBeenCalled();
+    expect(executeTurn.mock.calls[0]![0].promotedConfig).toBeUndefined();
+  });
+
   it('resolves the bundle and passes it to executeTurn when configRef is present', async () => {
     const executeTurn = okTurn();
     const resolvePromotedConfig = vi.fn(async () => fakePromoted);

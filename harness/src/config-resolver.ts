@@ -132,8 +132,23 @@ function swapPrefix(p: string, from: string, to: string): string {
  *
  * Rewriting AFTER the load, rather than pointing pi at the sandbox path, is what keeps both true
  * at once: loading still happens from the pod copy, and exactly one path — the reachable one —
- * reaches the model. `baseDir` moves with it because pi's own skills preamble tells the model to
- * resolve a skill's relative references against the skill directory.
+ * reaches the model.
+ *
+ * `baseDir` moves with `filePath` to keep the two in agreement, NOT because the skills preamble
+ * names it: that preamble (`skills.ts:346`) says to resolve a skill's relative references against
+ * "the skill directory (parent of SKILL.md / dirname of the path)", so the model derives the
+ * directory from `filePath` and never sees `baseDir` there. The one place `baseDir` does reach a
+ * model is the `/skill:<name>` expansion block (`agent-session.ts:1186`, "References are relative
+ * to …"), which no harness path triggers today — a prompt would have to literally start with
+ * `/skill:` — so it must be sandbox-side for the day one does.
+ *
+ * `sourceInfo` is deliberately NOT rewritten. It describes PROVENANCE, and the provenance genuinely
+ * is the pod copy; nothing model-facing reads it (`formatSkillsForPrompt` renders only `name`,
+ * `description` and `filePath`). Note that leaving it alone is what actually keeps it pod-side:
+ * `resource-loader.ts:616-622` recomputes it after this override as
+ * `findSourceInfoForPath(skill.filePath, …) ?? skill.sourceInfo ?? getDefaultSourceInfoForPath(…)`,
+ * and that first lookup is handed the REWRITTEN path against maps keyed by pod paths, so it misses
+ * and falls through to the parse-time pod-side value.
  */
 function rewriteToSandbox(podSkillsDir: string, sandboxSkillsDir: string) {
   return (base: LoadSkillsResult): LoadSkillsResult => ({

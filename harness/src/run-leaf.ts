@@ -434,6 +434,11 @@ async function runPromptLeaf(
     // status: responded — plausible-but-wrong work, which is precisely the failure the paragraph
     // above says this design exists to prevent. A field that is present is a REQUEST for promoted
     // config; if it names no bundle, that request cannot be honoured, so fail it out loud.
+    //
+    // `null` is the deliberate exception: it is present, yet treated as absent. JSON null reads as
+    // "no value" for producers that emit it, `""` is the failure actually observed, and the API
+    // boundary agrees (`configRefValid` in knative-server's server.ts). Pinned by a test in both
+    // layers so the exception stays a choice.
     if (env.configRef !== undefined && env.configRef !== null) {
       if (String(env.configRef).trim() === '') {
         return {
