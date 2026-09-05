@@ -94,6 +94,12 @@ export const OUTPUT_TRUNCATED_MARKER = '\n[output truncated]';
  * own `timeout`, and `timeout: 0` explicitly opts out (the ceiling applies only when the
  * option is absent).
  *
- * Pinned for every implementation by test/conformance.ts, so none can drift back.
+ * `GrpcRelayTransport` also sends this as the request's `timeout_s`, so the worker holds the
+ * same budget independently. It is the only transport whose process is remote: the other two
+ * time out a child in their own process, which cannot outlive the timer, whereas a harness
+ * that exits mid-exec would otherwise leave a remote process with nothing left to stop it.
+ *
+ * Pinned for every implementation by test/conformance.ts (and, for the wire value,
+ * test/grpc-relay-transport.test.ts), so none can drift back.
  */
 export const DEFAULT_EXEC_TIMEOUT_S = 30 * 60; // 30 minutes

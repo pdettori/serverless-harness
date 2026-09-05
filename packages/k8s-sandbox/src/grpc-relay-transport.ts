@@ -55,7 +55,16 @@ export function GrpcRelayTransport(
           reqId,
           command,
           stdin: execOpts.stdin ? new Uint8Array(execOpts.stdin) : new Uint8Array(),
-          timeoutS: execOpts.timeout ?? 0,
+          // The ceiling goes on the wire too, not just on our own timer. This is the one
+          // transport whose process is remote: on the two kubectl paths the timer and the
+          // child share a process, so the ceiling cannot be orphaned, but here a harness
+          // that exits -- or a dropped connection, or an `abort` that never lands -- would
+          // leave the remote process running with nothing left to stop it. `timeoutS: 0`
+          // means "no timeout" to the worker (runner.go arms its timer only when > 0), so
+          // sending 0 for the unspecified case handed away exactly the slot leak
+          // DEFAULT_EXEC_TIMEOUT_S exists to prevent. Both ends now hold the same budget
+          // independently, and an explicit `timeout: 0` still means unbounded on both.
+          timeoutS: execOpts.timeout ?? DEFAULT_EXEC_TIMEOUT_S,
           streaming: true,
         },
       });
