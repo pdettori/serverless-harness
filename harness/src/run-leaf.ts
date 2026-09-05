@@ -406,13 +406,18 @@ async function runPromptLeaf(
   }
 
   let heartbeat: ReturnType<typeof setInterval> | undefined;
-  // Set once the sandbox overlay actually lands, so the finally block below knows there is a
-  // per-leaf /workspace/leaves/<sid>/.sh-config link to tear down. runPromptLeaf never converges a
-  // workspace (it has no repoUrl/ref and never calls convergeWorkspace/cleanupWorkspace), so
-  // without this nothing else ever removes that link -- it leaks on every promoted prompt leaf on a
-  // long-lived pooled pod. Declared here (not inside the try below) so the finally block -- a
-  // sibling block, not nested inside try -- can actually see it.
-  let overlayCreated = false;
+  // The digest whose overlay was ATTEMPTED in the sandbox, so the finally block below knows there is
+  // a per-leaf /workspace/leaves/<sid>/.sh-config link to tear down AND a ref on that digest's
+  // shared cache to release. runPromptLeaf never converges a workspace (it has no repoUrl/ref and
+  // never calls convergeWorkspace/cleanupWorkspace), so without this nothing else ever removes
+  // either -- they leak on every promoted prompt leaf on a long-lived pooled pod.
+  //
+  // Attempted, not succeeded (#216): overlayConfig's first exec claims the ref before it can push
+  // any bytes, so an overlay that throws partway has already left one behind. Keying teardown on
+  // success would pin that digest's cache forever and restore the very bug the refcount fixes. The
+  // release script is idempotent, so running it after a failure is free. Declared here (not inside
+  // the try below) so the finally block -- a sibling block, not nested inside try -- can see it.
+  let overlayDigest: string | undefined;
   try {
     if (selected) {
       const hbMs = Number(process.env.KAGENTI_SANDBOX_HEARTBEAT_MS ?? '20000');
@@ -465,6 +470,9 @@ async function runPromptLeaf(
           // same fallback the converge path uses (run-leaf.ts:579-584): build a KubectlTransport
           // when none is leased, and close only what we created.
           const overlayTransport = selected.transport ?? KubectlTransport(selected.config);
+          // Set BEFORE the call, not after: see the declaration above. The first thing the overlay
+          // does in the sandbox is claim a ref on this digest.
+          overlayDigest = env.configRef;
           try {
             const paths = await overlayFn(
               overlayTransport,
@@ -472,7 +480,6 @@ async function runPromptLeaf(
               sid,
               gzipSync(canonicalTar(promotedConfig.entries)),
             );
-            overlayCreated = true;
             promotedConfig = {
               ...promotedConfig,
               // The overlay landed, so the skills are now readable from the sandbox — tell the
@@ -530,14 +537,14 @@ async function runPromptLeaf(
     };
   } finally {
     if (heartbeat) clearInterval(heartbeat);
-    if (overlayCreated && selected) {
+    if (overlayDigest && selected) {
       // Best-effort, matching cleanupWorkspace (converge.ts): swallow errors so a teardown hiccup
       // never masks the leaf's actual verdict. Follows the same transport fallback used above and
       // at run-leaf.ts:579-584 -- reuse a leased grpc transport if present, otherwise build a
       // KubectlTransport, and close only the transport we created ourselves.
       const cleanupTransport = selected.transport ?? KubectlTransport(selected.config);
       try {
-        await cleanupTransport.exec(buildConfigCleanupScript(sid), { timeout: 60 });
+        await cleanupTransport.exec(buildConfigCleanupScript(sid, overlayDigest), { timeout: 60 });
       } catch {
         /* ignore */
       } finally {

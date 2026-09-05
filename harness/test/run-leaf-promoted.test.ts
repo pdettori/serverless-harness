@@ -266,7 +266,15 @@ describe('configRef on a prompt leaf', () => {
     expect(kubectlTransportMock).not.toHaveBeenCalled();
   });
 
-  it('does not run cleanup when the overlay itself failed (nothing was created to clean up)', async () => {
+  it('releases the digest ref even when the overlay failed partway (#216)', async () => {
+    // This case used to assert the OPPOSITE -- "nothing was created to clean up" -- and that was
+    // true only while the cache was never reclaimed at all. It is now false: overlayConfig's FIRST
+    // exec registers this leaf's ref under the digest, before it can push any bytes. So an overlay
+    // that throws after that point (a truncated transfer, a populate failure) has already left a
+    // ref behind, and skipping cleanup would pin that digest's cache forever on this pod -- which
+    // is #216 restored for that digest, by the very code meant to fix it. Hence the teardown flag
+    // records the overlay having been ATTEMPTED, not having succeeded. Cleanup is idempotent, so
+    // running it after a failure costs nothing.
     kubectlTransportMock.mockClear();
     selectPoolSandboxMock.mockReset().mockResolvedValue(podLease());
     await runLeaf(env({ configRef: digest }), undefined, {
@@ -277,9 +285,51 @@ describe('configRef on a prompt leaf', () => {
       }),
       bundleRedis: {} as never,
     });
-    // Exactly the one transport built for the failed overlay attempt itself -- no second
-    // (cleanup) transport, since overlayCreated never flips to true on this path.
-    expect(kubectlTransportMock).toHaveBeenCalledTimes(1);
+    expect(kubectlTransportMock).toHaveBeenCalledTimes(2); // the overlay attempt, then the release
+    const cleanupTransport = kubectlTransportMock.mock.results[1]!.value;
+    expect(cleanupTransport.exec).toHaveBeenCalledWith(
+      expect.stringContaining(`.refs/sha256-${'c'.repeat(64)}`),
+      expect.objectContaining({ timeout: 60 }),
+    );
+  });
+
+  it('does not run cleanup when the resolve failed before the overlay was ever attempted', async () => {
+    // The contrast case that keeps the flag honest: a resolve failure happens before any sandbox
+    // exec, so no ref exists and there is genuinely nothing to release.
+    kubectlTransportMock.mockClear();
+    selectPoolSandboxMock.mockReset().mockResolvedValue(podLease());
+    const overlayConfig = vi.fn();
+    await runLeaf(env({ configRef: digest }), undefined, {
+      executeTurn: okTurn(),
+      resolvePromotedConfig: vi.fn(async () => {
+        throw new Error('config bundle not found: ' + digest);
+      }),
+      overlayConfig,
+      bundleRedis: {} as never,
+    });
+    expect(overlayConfig).not.toHaveBeenCalled();
+    expect(kubectlTransportMock).not.toHaveBeenCalled();
+  });
+
+  it('names the digest in the release script, so the right cache is reclaimed', async () => {
+    kubectlTransportMock.mockClear();
+    selectPoolSandboxMock.mockReset().mockResolvedValue(podLease());
+    await runLeaf(env({ configRef: digest }), undefined, {
+      executeTurn: okTurn(),
+      resolvePromotedConfig: vi.fn(async () => fakePromoted),
+      overlayConfig: vi.fn(async () => ({
+        skillsDir: '/workspace/leaves/run-1-i1/.sh-config/skills',
+        memoryDir: '/workspace/leaves/run-1-i1/.sh-config/memory',
+      })),
+      bundleRedis: {} as never,
+    });
+    const script = kubectlTransportMock.mock.results[1]!.value.exec.mock.calls[0]![0] as string;
+    // The digest comes from the ENVELOPE, not from the resolved bundle: passing the wrong one would
+    // drop a ref that no leaf holds and leave this leaf's own cache pinned.
+    expect(script).toContain(`DIR='/workspace/.sh-config/sha256-${'c'.repeat(64)}'`);
+    expect(script).toContain(`REFS='/workspace/.sh-config/.refs/sha256-${'c'.repeat(64)}'`);
+    // and the ref it drops is this leaf's, named by the leaf session id
+    expect(script).toContain('rm -f "$REFS/run-1-i1"');
   });
 
   it('fails the leaf when the sandbox overlay fails', async () => {
@@ -299,10 +349,11 @@ describe('configRef on a prompt leaf', () => {
     expect(r.status).toBe('failed');
     expect(r.reason).toBe('error');
     expect(executeTurn).not.toHaveBeenCalled();
-    // The fallback transport is built for a transport-less (pod) lease even on this failure path,
-    // and must still be closed -- it is created inside the try, so only its own local `finally`
-    // (not the leaf-level cleanup) is responsible for tearing it down.
-    expect(kubectlTransportMock).toHaveBeenCalledTimes(1);
-    expect(kubectlTransportMock.mock.results[0]!.value.close).toHaveBeenCalledTimes(1);
+    // Both fallback transports built on this path must be closed: the overlay's own (created inside
+    // the try, torn down by its local `finally`) and the release's (created in the leaf-level
+    // `finally`, which now runs because the overlay was attempted).
+    expect(kubectlTransportMock).toHaveBeenCalledTimes(2);
+    for (const r of kubectlTransportMock.mock.results)
+      expect(r.value.close).toHaveBeenCalledTimes(1);
   });
 });
