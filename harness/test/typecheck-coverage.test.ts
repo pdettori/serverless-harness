@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 // intended. Each one corresponds to a way a package can fall out of coverage:
 //   1. it declares no `typecheck` script  -> pnpm skips it
 //   2. it has no tsconfig.json at all     -> there is nothing for tsc to obey
+//   3. its tsconfig omits `test`          -> its tests go unchecked (#190)
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -75,7 +76,7 @@ const readJson = (...parts: string[]) =>
 describe('typecheck coverage (what `pnpm -r typecheck` actually checks)', () => {
   it('finds the workspace packages it is supposed to be guarding', () => {
     // Guards the guard: if the parser or the src/ probe silently returned nothing, the
-    // two checks below would pass while asserting about an empty set.
+    // checks below would pass while asserting about an empty set.
     expect(packagesWithTypeScript().length).toBeGreaterThan(1);
   });
 
@@ -98,6 +99,32 @@ describe('typecheck coverage (what `pnpm -r typecheck` actually checks)', () => 
       missing,
       '`pnpm -r typecheck` skips a package that declares no such script and still exits 0 -- ' +
         'these packages would drop out of CI coverage without failing anything',
+    ).toEqual([]);
+  });
+
+  it('includes `test` in every tsconfig, so tests are typechecked and not just src (#190)', () => {
+    // This was harness/tsconfig.json's `"include": ["src"]`: the package typechecked green
+    // while none of its 34 test files were looked at, so hand-built fakes had silently
+    // drifted from the interfaces they claim to implement. A required field is only "a
+    // compile error for a fourth implementation" if the fakes are compiled too.
+    const uncovered = packagesWithTypeScript()
+      .filter((dir) => existsSync(resolve(REPO_ROOT, dir, 'test')))
+      .filter((dir) => {
+        const include: unknown = readJson(dir, 'tsconfig.json').include;
+        if (!Array.isArray(include)) {
+          throw new Error(
+            `${dir}/tsconfig.json has no \`include\` array -- this check cannot tell what it ` +
+              'covers, and would otherwise pass it silently',
+          );
+        }
+        return !include.some(
+          (e) => e === 'test' || (typeof e === 'string' && e.startsWith('test/')),
+        );
+      });
+    expect(
+      uncovered,
+      'these packages have a test/ directory their tsconfig does not include, so `tsc` reads ' +
+        'only their src/',
     ).toEqual([]);
   });
 });
