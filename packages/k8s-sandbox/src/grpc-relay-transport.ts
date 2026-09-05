@@ -1,4 +1,9 @@
-import { DEFAULT_OUTPUT_CAP, OUTPUT_TRUNCATED_MARKER, type SandboxTransport } from './transport.js';
+import {
+  DEFAULT_EXEC_TIMEOUT_S,
+  DEFAULT_OUTPUT_CAP,
+  OUTPUT_TRUNCATED_MARKER,
+  type SandboxTransport,
+} from './transport.js';
 import { makeReqIdSource } from './req-id.js';
 import {
   Stream,
@@ -26,7 +31,10 @@ export interface ExecClientLike {
  */
 const defaultReqIdSource = makeReqIdSource();
 
-const DEFAULT_DEADLINE_MS = 120_000;
+// Was a local 120_000 -- two minutes, where both other transports applied no ceiling at all.
+// Now the shared one (#182), so a caller that names no timeout gets the same budget whichever
+// transport serves it. Still overridable per-instance via opts.deadlineMs.
+const DEFAULT_DEADLINE_MS = DEFAULT_EXEC_TIMEOUT_S * 1000;
 
 export function GrpcRelayTransport(
   sandboxId: string,
@@ -65,16 +73,22 @@ export function GrpcRelayTransport(
         fn();
       };
 
-      const timer = setTimeout(
-        () => {
-          call.cancel();
-          client.abort({ sandboxId, reqId }, () => {});
-          finish(() =>
-            reject(new Error(`timeout:${execOpts.timeout ?? Math.round(deadlineMs / 1000)}`)),
-          );
-        },
-        execOpts.timeout ? execOpts.timeout * 1000 : deadlineMs,
-      );
+      // Absent => the instance deadline (the shared ceiling unless opts.deadlineMs overrode
+      // it); an explicit 0 means "no timeout at all", as on the other two transports (#182).
+      //
+      // The timer stays in milliseconds. Deriving it from the seconds label instead would
+      // quantize deadlineMs -- a sub-second deadlineMs (the tests use 500) rounds to a whole
+      // second and the timer fires late or not at all.
+      const timeoutMs = execOpts.timeout !== undefined ? execOpts.timeout * 1000 : deadlineMs;
+      const timeoutLabelS = execOpts.timeout ?? Math.round(deadlineMs / 1000);
+      const timer =
+        timeoutMs > 0
+          ? setTimeout(() => {
+              call.cancel();
+              client.abort({ sandboxId, reqId }, () => {});
+              finish(() => reject(new Error(`timeout:${timeoutLabelS}`)));
+            }, timeoutMs)
+          : undefined;
 
       const onAbort = () => {
         call.cancel();
