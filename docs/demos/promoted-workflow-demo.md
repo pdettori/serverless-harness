@@ -411,11 +411,13 @@ kubectl exec -n $NS deploy/redis -- redis-cli DEL \
   session:demo-bare-1 session:demo-bare-1:seq session:demo-promoted-1 session:demo-promoted-1:seq
 ```
 
-> **Why an empty `$DIGEST` is worse than an error.** `jq --arg c "$DIGEST"` happily sends
-> `configRef: ""`, and the harness tests that field for truthiness — an empty string is _absent_, so
-> the run proceeds **bare** and answers exactly like Run A. Nothing fails, nothing warns, and Run B
-> appears to prove the opposite of what it proves. The usual way in is dispatching from a second
-> terminal where `DIGEST` was never exported.
+> **Why to check `$DIGEST` anyway.** `jq --arg c "$DIGEST"` happily sends `configRef: ""`. Since
+> issue #222 that is an **error**, not a silent bare run: `/runs` answers `400` with error
+> `configRef_invalid`, and a leaf reached by any other route fails outright, naming the field.
+> Before the fix it ran bare and answered exactly like Run A — nothing failed, nothing
+> warned, and Run B appeared to prove the opposite of what it proves. The check above just saves you
+> the round trip; the usual way in is dispatching from a second terminal where `DIGEST` was never
+> exported.
 >
 > **Why the session ids are single-use.** Sessions are Redis streams; re-dispatching the same id
 > _appends a turn_ rather than starting over, and the earlier turns stay in context. Measured on a real

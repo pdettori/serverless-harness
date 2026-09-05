@@ -87,6 +87,67 @@ describe('configRef on a prompt leaf', () => {
     expect(executeTurn.mock.calls[0]![0].promotedConfig).toBeUndefined();
   });
 
+  // REGRESSION TEST — do not delete. Issue #222 (1): a present-but-empty configRef ran BARE.
+  //
+  // `if (env.configRef)` made `""` indistinguishable from "no config requested": the leaf answered
+  // HTTP 200 / status responded, with no bundle, no house rules and an empty workspace — exactly
+  // like an unpromoted run. Observed in a demo where the dispatching shell had $DIGEST unset, so
+  // `jq --arg c "$DIGEST"` sent `""`. That is the plausible-but-wrong remote failure the comment
+  // above this guard says the design exists to prevent, arriving one line before the check that
+  // would have caught it.
+  it('fails the leaf when configRef is present but empty, instead of silently running bare', async () => {
+    selectPoolSandboxMock.mockReset().mockResolvedValue(podLease());
+    const executeTurn = okTurn();
+    const resolvePromotedConfig = vi.fn();
+    const r = await runLeaf(env({ configRef: '' }), undefined, {
+      executeTurn,
+      resolvePromotedConfig,
+      overlayConfig: vi.fn(),
+      bundleRedis: {} as never,
+    });
+    expect(r.status).toBe('failed');
+    expect(r.reason).toBe('error');
+    expect(r.message).toContain('configRef');
+    // Never run the turn unconfigured, and never spend a resolve on an empty digest.
+    expect(executeTurn).not.toHaveBeenCalled();
+    expect(resolvePromotedConfig).not.toHaveBeenCalled();
+  });
+
+  it('fails the same way on a whitespace-only configRef', async () => {
+    selectPoolSandboxMock.mockReset().mockResolvedValue(podLease());
+    const executeTurn = okTurn();
+    const resolvePromotedConfig = vi.fn();
+    const r = await runLeaf(env({ configRef: '  ' }), undefined, {
+      executeTurn,
+      resolvePromotedConfig,
+      overlayConfig: vi.fn(),
+      bundleRedis: {} as never,
+    });
+    expect(r.status).toBe('failed');
+    expect(executeTurn).not.toHaveBeenCalled();
+    // Rejected by the guard, not incidentally by assertValidDigest deep inside the resolver: the
+    // operator-facing message differs, and only the guard covers it before any Redis round-trip.
+    expect(resolvePromotedConfig).not.toHaveBeenCalled();
+  });
+
+  it('treats a null configRef as absent — the one deliberate exception to presence-not-truthiness', async () => {
+    // `null` is present, so the guard above could have rejected it. It does not: JSON null reads as
+    // "no value" for producers that emit it, and `""` is the failure actually observed. This is the
+    // leaf half of the pin — `configRefValid` in knative-server has the boundary half — so that the
+    // exception cannot be quietly reversed in one layer only.
+    selectPoolSandboxMock.mockReset().mockResolvedValue(null); // no lease: keep this case hermetic
+    const executeTurn = okTurn();
+    const resolvePromotedConfig = vi.fn();
+    const r = await runLeaf(env({ configRef: null as unknown as string }), undefined, {
+      executeTurn,
+      resolvePromotedConfig,
+      overlayConfig: vi.fn(),
+    });
+    expect(r.status).toBe('responded');
+    expect(resolvePromotedConfig).not.toHaveBeenCalled();
+    expect(executeTurn.mock.calls[0]![0].promotedConfig).toBeUndefined();
+  });
+
   it('resolves the bundle and passes it to executeTurn when configRef is present', async () => {
     const executeTurn = okTurn();
     const resolvePromotedConfig = vi.fn(async () => fakePromoted);
@@ -152,6 +213,12 @@ describe('configRef on a prompt leaf', () => {
     expect(overlayConfig).toHaveBeenCalledTimes(1);
     const fragments = executeTurn.mock.calls[0]![0].promotedConfig.promptFragments;
     expect(fragments.some((f: string) => f.includes('/.sh-config/skills'))).toBe(true);
+    // Issue #222 (2): the overlay's path is also what the skill registry must advertise, so the
+    // one path the model is handed for a skill is the one `read` can reach. Without this the
+    // prompt names the pod-side /tmp/sh-config/<digest> copy, which is dead in the sandbox.
+    expect(executeTurn.mock.calls[0]![0].promotedConfig.sandboxSkillsDir).toBe(
+      '/workspace/leaves/run-1-i1/.sh-config/skills',
+    );
     // Pin the fallback itself, not just that the overlay ran: with a transport-less (pod) lease,
     // the code must genuinely build a KubectlTransport for the overlay call, and — since it built
     // one rather than reusing a leased one — must close it afterward. A second KubectlTransport is

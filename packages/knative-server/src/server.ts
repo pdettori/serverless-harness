@@ -238,6 +238,26 @@ export function isRunEnvelope(o: any): boolean {
   return isLeafEnvelope(o) || isSolveEnvelope(o) || isPromptEnvelope(o);
 }
 
+/**
+ * `configRef`, if present, must name a bundle digest (issue #222).
+ *
+ * Deliberately NOT folded into isRunEnvelope: an empty configRef is a well-formed envelope making
+ * an unsatisfiable request, and `envelope_invalid` would send an operator hunting for a malformed
+ * body. The usual cause is a dispatch built from an unset shell variable — `jq --arg c "$DIGEST"`
+ * happily sends `""` — so the error has to name the field.
+ */
+export function configRefValid(o: any): boolean {
+  if (o?.configRef === undefined || o.configRef === null) return true;
+  return typeof o.configRef === 'string' && o.configRef.trim() !== '';
+}
+
+/** Writes the 400 and returns true when the request must not proceed. */
+function rejectInvalidConfigRef(body: any, res: ServerResponse): boolean {
+  if (configRefValid(body)) return false;
+  res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: 'configRef_invalid' }));
+  return true;
+}
+
 let queue: RedisWorkQueue | undefined;
 function getQueue(): RedisWorkQueue {
   if (!queue) queue = new RedisWorkQueue(process.env.REDIS_URL);
@@ -361,6 +381,7 @@ async function handleEnqueueLeafParsed(body: any, res: ServerResponse): Promise<
     res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: 'envelope_invalid' }));
     return;
   }
+  if (rejectInvalidConfigRef(body, res)) return;
   body = await resolveRunWorkload(body, res);
   if (!body) return;
   const q = getQueue();
@@ -376,6 +397,7 @@ async function handleRunLeafParsed(body: any, _raw: string, res: ServerResponse)
     res.writeHead(400, JSON_HEADERS).end(JSON.stringify({ error: 'envelope_invalid' }));
     return;
   }
+  if (rejectInvalidConfigRef(body, res)) return;
   body = await resolveRunWorkload(body, res);
   if (!body) return;
 

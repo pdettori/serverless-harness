@@ -429,7 +429,26 @@ async function runPromptLeaf(
     // multi-MB bundle from Redis and pushes it into the pod over up to three kubectl execs, and with
     // no heartbeat running during that window a slow cluster could have the lease reclaimed mid-overlay.
     let promotedConfig: PromotedConfig | undefined;
-    if (env.configRef) {
+    // Presence, not truthiness (issue #222). `if (env.configRef)` made `""` indistinguishable from
+    // "no config requested", so a dispatch built from an unset shell variable ran BARE and returned
+    // status: responded — plausible-but-wrong work, which is precisely the failure the paragraph
+    // above says this design exists to prevent. A field that is present is a REQUEST for promoted
+    // config; if it names no bundle, that request cannot be honoured, so fail it out loud.
+    //
+    // `null` is the deliberate exception: it is present, yet treated as absent. JSON null reads as
+    // "no value" for producers that emit it, `""` is the failure actually observed, and the API
+    // boundary agrees (`configRefValid` in knative-server's server.ts). Pinned by a test in both
+    // layers so the exception stays a choice.
+    if (env.configRef !== undefined && env.configRef !== null) {
+      if (String(env.configRef).trim() === '') {
+        return {
+          status: 'failed',
+          reason: 'error',
+          message:
+            'configRef is present but empty: it must name a bundle digest (sha256:…). ' +
+            'Omit the field entirely to run without promoted configuration.',
+        };
+      }
       const resolveFn = deps?.resolvePromotedConfig ?? resolvePromotedConfig;
       const overlayFn = deps?.overlayConfig ?? overlayConfig;
       try {
@@ -456,6 +475,10 @@ async function runPromptLeaf(
             overlayCreated = true;
             promotedConfig = {
               ...promotedConfig,
+              // The overlay landed, so the skills are now readable from the sandbox — tell the
+              // resolver, which rewrites the path pi ADVERTISES for each skill to this one
+              // (issue #222). Set here and nowhere else: it is only true once the link exists.
+              sandboxSkillsDir: paths.skillsDir,
               promptFragments: [
                 ...promotedConfig.promptFragments,
                 // Self-describing and multi-line on purpose: this is the ONLY place the absolute
