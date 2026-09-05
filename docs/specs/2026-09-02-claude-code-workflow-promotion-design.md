@@ -271,7 +271,17 @@ not reliably preserve the bit.
 at `/workspace/.sh-config/<digest>/`, populated once under the same flock discipline, and are
 bound into each leaf's workspace. A 200-leaf fan-out pushes the bundle once, not 200 times.
 Per-leaf content stays under `/workspace/leaves/<runId>/` so `cleanupWorkspace` remains the
-only teardown path.
+only teardown path for it.
+
+The shared half is **refcounted, not permanent** (#216). Each leaf registers a file under
+`/workspace/.sh-config/.refs/<digest>/` before it reads the cache, and its teardown drops that
+ref and removes the cache once none remain — all under the same per-pod flock, so a leaf cannot
+read `hit` and then have the directory deleted beneath its symlink. The fan-out win above is
+unaffected, since those leaves hold refs concurrently; what is given up is reuse across
+_separate_ dispatches, so one arriving after the pool went idle re-transfers the bundle. That is
+the price of goal 6 in §2 being observably true and not merely true in-process: a cache that
+outlived its leaf left a world-readable `CLAUDE.md` and `memory/` on the shared volume for a
+later `configRef`-less leaf to explore, and tools run in the sandbox.
 
 **Path translation.** A skill's `SKILL.md` is read in the harness pod, but its internal paths
 are written relative to where the skill lives _locally_ — `superpowers:brainstorming` instructs

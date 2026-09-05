@@ -87,8 +87,17 @@ check "does not default the redis forward to 6379" \
   "$(grep -qE '^REDIS_PORT=.*:-6379\}' "$SCRIPT" && echo bad || echo ok)" "ok"
 check "gates on the deployed image implementing configRef" \
   "$(grep -q 'unknown digest' "$SCRIPT" && echo yes || echo no)" "yes"
-check "purges the shared sandbox cache before the control run" \
+check "checks the shared sandbox cache is empty before the control run" \
   "$(grep -q 'sh-config' "$SCRIPT" && echo yes || echo no)" "yes"
+# The demo used to `rm -rf /workspace/.sh-config/sha256-*` here, because the cache outlived its leaf
+# and a warm pool made the bare control silently invalid (#216). The cache is refcounted now, so the
+# demo asserts emptiness instead. Reintroducing the purge would clean up after a teardown regression
+# and hide it -- the control's honesty would go back to depending on this script rather than on the
+# harness -- so the absence of an rm is pinned, not just the presence of a check.
+check "never purges the cache (that would mask a teardown regression)" \
+  "$(grep -qE "rm -rf +/workspace/\.sh-config" "$SCRIPT" && echo bad || echo ok)" "ok"
+check "asserts the cache is reclaimed after the promoted leaf releases it" \
+  "$(grep -q 'reclaimed' "$SCRIPT" && echo yes || echo no)" "yes"
 check "verifies the upload landed in the cluster's redis" \
   "$(grep -q 'config:bundle:' "$SCRIPT" && echo yes || echo no)" "yes"
 

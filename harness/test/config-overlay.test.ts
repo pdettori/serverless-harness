@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { gzipSync } from 'node:zlib';
 import {
   configCacheDir,
+  configRefsDir,
   leafConfigDir,
-  buildCacheProbeScript,
+  buildCacheAcquireScript,
   buildCachePopulateScript,
   buildLeafBindScript,
   buildConfigCleanupScript,
@@ -11,13 +12,84 @@ import {
 } from '../src/config-overlay.js';
 
 const DIGEST = 'sha256:' + 'a'.repeat(64);
+const CACHE = `/workspace/.sh-config/sha256-${'a'.repeat(64)}`;
+const REFS = `/workspace/.sh-config/.refs/sha256-${'a'.repeat(64)}`;
 
 describe('paths', () => {
   it('caches by digest, shared across leaves', () => {
-    expect(configCacheDir(DIGEST)).toBe(`/workspace/.sh-config/sha256-${'a'.repeat(64)}`);
+    expect(configCacheDir(DIGEST)).toBe(CACHE);
   });
   it('binds per leaf under the leaf workspace, torn down by run-leaf.ts on the prompt-leaf path (buildConfigCleanupScript) or by cleanupWorkspace when the leaf converges', () => {
     expect(leafConfigDir('leaf-1')).toBe('/workspace/leaves/leaf-1/.sh-config');
+  });
+  it('keeps the refcount tree beside the digest dirs, dot-prefixed so a `sha256-*` glob skips it', () => {
+    // The demo (deploy/knative/demo-promoted-workflow.sh) and the docs both enumerate cached
+    // bundles through a `/workspace/.sh-config/sha256-*` glob. A refs tree matching that glob
+    // would be counted as a cached bundle and make the demo's emptiness assertion fail with the
+    // cache genuinely empty, so the dot prefix is load-bearing, not cosmetic. It does NOT hide
+    // refs from an unscoped `find /workspace/.sh-config`, which is why the walkthrough scopes its
+    // listing too.
+    expect(configRefsDir(DIGEST)).toBe(`/workspace/.sh-config/.refs/sha256-${'a'.repeat(64)}`);
+    expect(configRefsDir(DIGEST).startsWith('/workspace/.sh-config/.')).toBe(true);
+  });
+  it('rejects an invalid digest rather than composing a path from it', () => {
+    expect(() => configRefsDir("x'; rm -rf /; '")).toThrow(/invalid digest/i);
+  });
+});
+
+// Acquire, not probe: issue #216. The old probe was a pure read, and a cache that nothing ever
+// released outlived the leaf that created it -- so a later leaf dispatched with NO configRef could
+// lease the same pooled sandbox, find a sibling's promoted CLAUDE.md and memory/ on disk, and answer
+// from them. That breaks spec §2 goal 6 ("absent a promoted bundle, harness behavior is unchanged")
+// observably, because tools run in the sandbox. Registering a ref here is what lets cleanup know
+// when the last leaf using a digest is gone.
+describe('buildCacheAcquireScript', () => {
+  const s = buildCacheAcquireScript(DIGEST, 'leaf-1');
+
+  it('prints hit or miss so overlayConfig can skip the transfer on a warm cache', () => {
+    expect(s).toContain(`printf 'hit'`);
+    expect(s).toContain(`printf 'miss'`);
+  });
+
+  it('registers this leaf under the digest so the cache is refcounted', () => {
+    expect(s).toContain(`REFS='${REFS}'`);
+    expect(s).toContain(': > "$REFS/leaf-1"');
+  });
+
+  it('rejects a runId that could escape the refs dir or aim the teardown’s rm', () => {
+    for (const bad of ['../../etc', 'a/b', '.', '..', '', 'a b', 'a;rm -rf /'])
+      expect(() => buildCacheAcquireScript(DIGEST, bad)).toThrow(/invalid runId/i);
+  });
+
+  it('registers the ref and reads the cache under ONE flock, matching converge.ts discipline', () => {
+    expect(s).toMatch(/flock 9[\s\S]*REFS[\s\S]*-d "\$DIR"[\s\S]*9>"\$LOCK"/);
+    expect(s).toContain('LOCK=/workspace/.sh-config.lock');
+  });
+
+  it('registers the ref BEFORE checking whether the cache exists', () => {
+    // The ordering is the whole race fix, so it is asserted rather than trusted. If the presence
+    // check came first, a leaf could read `hit`, then a concurrent leaf's cleanup could observe an
+    // empty refs dir and delete the cache -- leaving this leaf's symlink dangling and its turn
+    // running with silently-absent configuration. That is precisely the plausible-but-wrong-work
+    // failure the promotion design exists to prevent (spec §4.4).
+    expect(s.indexOf('"$REFS/')).toBeLessThan(s.indexOf('-d "$DIR"'));
+  });
+
+  it('creates the refs dir inside the lock, not before it', () => {
+    // A concurrent cleanup rmdir's the empty refs dir under the same lock. Doing `mkdir -p` outside
+    // the lock leaves a window where that rmdir lands between our mkdir and our flock, so the ref
+    // write then fails and the leaf dies on a teardown race.
+    expect(s.indexOf('flock 9')).toBeLessThan(s.indexOf('mkdir -p "$REFS"'));
+  });
+
+  it('sweeps refs left behind by a harness pod that died mid-leaf', () => {
+    // Without this, one crashed harness pod pins a digest's cache forever and #216 is back for that
+    // digest. The window is far longer than any turn, so it cannot evict a live leaf's ref.
+    expect(s).toMatch(/find "\$REFS" -maxdepth 1 -type f -mmin \+\d+ -delete/);
+  });
+
+  it('rejects an invalid digest rather than composing a path from it', () => {
+    expect(() => buildCacheAcquireScript("x'; rm -rf /; '", 'leaf-1')).toThrow(/invalid digest/i);
   });
 });
 
@@ -105,14 +177,58 @@ describe('buildLeafBindScript', () => {
   });
 });
 
-// Invoked from run-leaf.ts's runPromptLeaf teardown (in the `finally`, guarded on `overlayCreated`)
+// Invoked from run-leaf.ts's runPromptLeaf teardown (in the `finally`, guarded on `overlayDigest`)
 // for a promoted prompt leaf, which never converges a workspace and so has no other path that would
 // ever remove this per-leaf link -- see run-leaf-promoted.test.ts for the wiring-level coverage.
 describe('buildConfigCleanupScript', () => {
-  it('removes only the per-leaf link, never the shared cache', () => {
-    const s = buildConfigCleanupScript('leaf-1');
+  const s = buildConfigCleanupScript('leaf-1', DIGEST);
+
+  it('removes the per-leaf link', () => {
     expect(s).toContain('/workspace/leaves/leaf-1/.sh-config');
-    expect(s).not.toContain('/workspace/.sh-config/sha256');
+  });
+
+  it('drops this leaf’s ref on the digest', () => {
+    expect(s).toContain(`rm -f "$REFS/leaf-1"`);
+  });
+
+  it('tears the shared cache down when the last ref goes, so it cannot outlive its leaves (#216)', () => {
+    expect(s).toContain(`DIR='${CACHE}'`);
+    expect(s).toContain('rm -rf "$DIR"');
+  });
+
+  it('deletes the cache only when no refs remain', () => {
+    // A concurrent fan-out is the reason the cache exists at all (spec §4.5: 200 leaves push the
+    // bundle once). An unconditional rm here would delete it under every sibling still running.
+    const guard = s.match(/\[ -z "\$\(ls -A "\$REFS" 2>\/dev\/null\)" \]/);
+    expect(guard).not.toBeNull();
+    expect(s.indexOf('-z "$(ls -A "$REFS"')).toBeLessThan(s.indexOf('rm -rf "$DIR"'));
+  });
+
+  it('restores write permission before rm -rf, since the cache is chmod a-w', () => {
+    // ADR-0031 makes the cache read-only via `chmod -R a-w`, which clears the write bit on its
+    // directories too -- and a directory needs write permission on itself to unlink its entries.
+    // Without this the teardown silently fails and the cache survives, which is the bug.
+    expect(s.indexOf('chmod -R u+w "$DIR"')).toBeLessThan(s.indexOf('rm -rf "$DIR"'));
+  });
+
+  it('does the whole release under the same flock the acquire and populate use', () => {
+    expect(s).toContain('LOCK=/workspace/.sh-config.lock');
+    expect(s).toMatch(/flock 9[\s\S]*rm -rf "\$DIR"[\s\S]*9>"\$LOCK"/);
+  });
+
+  it('sweeps stale refs before counting, so a crashed harness pod cannot pin a cache forever', () => {
+    expect(s).toMatch(/find "\$REFS" -maxdepth 1 -type f -mmin \+\d+ -delete/);
+  });
+
+  it('never fails the leaf: teardown is best-effort and must not mask a verdict', () => {
+    // Mirrors cleanupWorkspace (converge.ts:76). `set -e` here would turn a teardown hiccup into a
+    // non-zero exit that run-leaf logs over the turn's real outcome.
+    expect(s).toContain('set -u');
+    expect(s).not.toContain('set -eu');
+  });
+
+  it('rejects an invalid digest rather than composing a path from it', () => {
+    expect(() => buildConfigCleanupScript('leaf-1', "x'; rm -rf /; '")).toThrow(/invalid digest/i);
   });
 });
 
@@ -123,9 +239,9 @@ function transportSpy(cacheHit: boolean) {
     transport: {
       exec: async (command: string, opts?: { stdin?: Buffer }) => {
         calls.push({ command, stdinBytes: opts?.stdin?.length ?? 0 });
-        const probing = command.includes('CACHE_PROBE');
+        const acquiring = command.includes('CACHE_ACQUIRE');
         return {
-          stdout: Buffer.from(probing && cacheHit ? 'hit' : 'miss'),
+          stdout: Buffer.from(acquiring && cacheHit ? 'hit' : 'miss'),
           exitCode: 0,
           truncated: false,
         };
@@ -150,14 +266,21 @@ describe('overlayConfig', () => {
     const { transport, calls } = transportSpy(true);
     await overlayConfig(transport, DIGEST, 'leaf-1', tarGz);
     expect(calls.every((c) => c.stdinBytes === 0)).toBe(true);
-    expect(calls).toHaveLength(2); // probe + bind
+    expect(calls).toHaveLength(2); // acquire + bind
   });
 
   it('pushes the bundle exactly once when the cache is cold', async () => {
     const { transport, calls } = transportSpy(false);
     await overlayConfig(transport, DIGEST, 'leaf-1', tarGz);
     expect(calls.filter((c) => c.stdinBytes > 0)).toHaveLength(1);
-    expect(calls).toHaveLength(3); // probe + populate + bind
+    expect(calls).toHaveLength(3); // acquire + populate + bind
+  });
+
+  it('registers the ref before it can ever push bytes, so a cold miss is still race-safe', async () => {
+    const { transport, calls } = transportSpy(false);
+    await overlayConfig(transport, DIGEST, 'leaf-1', tarGz);
+    expect(calls[0]?.command).toContain('CACHE_ACQUIRE');
+    expect(calls[0]?.stdinBytes).toBe(0);
   });
 
   it('throws on a non-zero exit rather than continuing unconfigured', async () => {

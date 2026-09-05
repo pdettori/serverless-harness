@@ -362,41 +362,43 @@ Run it again, unchanged:
 
 Both dispatches are byte-identical but for `configRef`. Same cluster, same model, same prompt.
 
-### 3a. Purge the shared cache first, or your control is not a control
+### 3a. Check the shared cache is empty, or your control is not a control
 
-**Do not skip this on a warm cluster.** The overlay materialises the bundle into a digest-keyed
-cache inside the **shared pool sandbox** and leaves it there for reuse. It is world-readable, it
-contains `context/agents/0-CLAUDE.md` and `memory/`, and it **outlives the leaf**:
+The overlay materialises the bundle into a digest-keyed cache inside the **shared pool sandbox**. It
+is world-readable and contains `context/agents/0-CLAUDE.md` and `memory/`, so a bare leaf that found
+one on disk could read another run's workflow and answer from it. The cache is refcounted, and
+reclaimed when the last leaf using it releases — so between runs there should be nothing there:
 
 ```bash
 # The leaf may have leased ANY pool sandbox, so ask the pool rather than guessing a pod.
 export POOL=$(kubectl get pods -n $NS -l 'sh.kagenti.io/sandbox-pool=default' -o name | sed 's|pod/||')
-for p in $POOL; do kubectl exec -n $NS "$p" -- find /workspace/.sh-config -type f 2>/dev/null; done \
-  | sed 's|.*/sha256-[0-9a-f]*/||'
-# context/MEMORY.md
-# context/agents/0-CLAUDE.md
-# memory/auth-timeout-incident.md
-# skills/ship-note/SKILL.md
-# skills/ship-note/references/release-token.md
-```
-
-> **This bit the author, so it will bite you.** On the second run of this demo the _bare_ arm
-> answered `TICKET: KAG-4471 / TOKEN: SHIPNOTE-7F3A-SANDBOX-OK` and opened with "following the house
-> rules" — having been told none of it. A bare leaf that leases a sandbox where a previous promoted
-> leaf ran can simply _explore the filesystem_ and answer from someone else's promoted workflow.
-> The A/B still looked plausible; it had just stopped proving anything.
-
-```bash
+# `sh -c` so the glob expands in the POD. Without it kubectl sends `sha256-*` literally, which
+# matches nothing remotely and prints nothing whether or not a bundle is cached.
 for p in $POOL; do
-  kubectl exec -n $NS "$p" -- sh -c 'rm -rf /workspace/.sh-config/sha256-*'
-done
+  kubectl exec -n $NS "$p" -- sh -c 'find /workspace/.sh-config/sha256-* -type f 2>/dev/null'
+done | sed 's|.*/sha256-[0-9a-f]*/||'
+# (no output — the cache is empty)
 ```
 
-> **Empty the whole cache, not just this digest.** Purging only the digest you are about to dispatch
-> is not enough: any _other_ cached bundle carrying the same memory fact answers the bare arm just as
-> well. That is not hypothetical — a bundle built from this same fixture before Prettier normalised
-> one emphasis marker in the memory file has a different content digest, sits alongside, and made
-> this control fail while a per-digest purge reported success.
+> **Scoped to `sha256-*` on purpose.** A bare `find /workspace/.sh-config -type f` also prints the
+> refcount files under `.refs/`, and one of those can legitimately exist here — a concurrent leaf, or
+> a stale ref from a harness pod that died mid-leaf. The callout below says a filename means a bug to
+> report, so an unscoped listing would point you at the wrong one.
+
+> **Verify, do not purge.** Earlier versions of this walkthrough had you `rm -rf` the cache here,
+> because it used to outlive its leaf ([#216](https://github.com/rossoctl/serverless-harness/issues/216)).
+> Don't reintroduce that: an `rm` cleans up after a teardown regression and hides it, and the
+> control's honesty goes back to depending on you running the right command rather than on the
+> harness. If the command above prints file names, that is a **bug to report**, not a step to repeat.
+
+> **This bit the author, which is why the check is still here.** Before the cache was refcounted,
+> the second run of this demo had its _bare_ arm cite both the ticket and the sandbox token, and
+> open with "following the house rules" — having been told none of it.
+> The A/B still looked plausible; it had just stopped proving anything. Note also that _any_ cached
+> bundle carrying the same memory fact does that, not only the digest you are about to dispatch — a
+> bundle built from this same fixture before Prettier normalised one emphasis marker in the memory
+> file has a different content digest and would sit alongside. So the check counts every `sha256-*`
+> directory, not just yours.
 
 ### Before you dispatch: two preconditions, or Run B lies to you
 
@@ -486,12 +488,30 @@ TOKEN:  SHIPNOTE-7F3A-SANDBOX-OK
 ### 3d. Prove the sandbox half on the filesystem, not in the model's prose
 
 The `TOKEN:` line is the model _telling_ you it read the file. Now check the claim directly — this
-holds even on a run where the model declines to read:
+holds even on a run where the model declines to read.
+
+**Catch it while the leaf is running.** The cache lives exactly as long as a leaf holds a ref on it,
+so a `kubectl exec` _after_ Run B returned will correctly find nothing. Dispatch in the background
+and watch for the file to appear underneath it:
 
 ```bash
 TOKEN_PATH="/workspace/.sh-config/sha256-${DIGEST#sha256:}/skills/ship-note/references/release-token.md"
-for p in $POOL; do
-  kubectl exec -n $NS "$p" -- cat "$TOKEN_PATH" 2>/dev/null && echo "  ^ in $p" && break
+
+# A fresh session id: 3c's is single-use (see "Why the session ids are single-use" above).
+curl -s -H "$HOSTHDR" -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg m "$SH_MODEL" --arg c "$DIGEST" '{sessionId:"demo-overlay-1", kind:"prompt", model:$m,
+        prompt:"Write the ship note for the auth timeout fix.", configRef:$c}')" \
+  $BASE/runs > /tmp/overlay-run.json &
+
+# Bounded in both directions, like the scripted demo: give up after 240s, and stop early once the
+# run has written its result — past that point the cache is legitimately gone. An unbounded `until`
+# here spins forever when the dispatch writes nothing at all (wrong Host header, $BASE unset).
+for _ in $(seq 1 240); do
+  for p in $POOL; do
+    kubectl exec -n $NS "$p" -- cat "$TOKEN_PATH" 2>/dev/null && echo "  ^ in $p" && break 2
+  done
+  [ -s /tmp/overlay-run.json ] && break
+  sleep 1
 done
 # => SHIPNOTE-7F3A-SANDBOX-OK
 #      ^ in sandbox-0
@@ -501,10 +521,19 @@ done
 > this loops instead of naming `sandbox-0`. A hardcoded pod here fails as "broken feature" when it
 > was only a wrong guess.
 
-> You purged this path in 3a and dispatched nothing but a digest. It is back, `references/` and all,
-> because the overlay put it there under `flock` and made it read-only with `chmod -R a-w` — which
-> is how [ADR-0031](../adrs/0031-promoted-memory-read-only.md)'s read-only guarantee is enforced by
-> the filesystem rather than by convention.
+> You verified this path was empty in 3a and dispatched nothing but a digest. It is there,
+> `references/` and all, because the overlay put it there under `flock` and made it read-only with
+> `chmod -R a-w` — which is how [ADR-0031](../adrs/0031-promoted-memory-read-only.md)'s read-only
+> guarantee is enforced by the filesystem rather than by convention.
+
+Now wait for that run to finish and look again. The same path is gone — which is the other half of the
+same invariant, and the reason 3a needs no `rm`:
+
+```bash
+wait
+for p in $POOL; do kubectl exec -n $NS "$p" -- test -e "$TOKEN_PATH" && echo "STILL THERE in $p"; done
+# (no output — reclaimed when the leaf released its ref)
+```
 
 ### 3e. Status is durable, not just a response body
 
@@ -534,7 +563,7 @@ You moved a workflow off your laptop without writing a manifest:
    redeploy, no image rebuild (Act 3c).
 4. **Proved all three channels arrived** — the skill's format, the `CLAUDE.md` rule, and an
    incident id that exists only in your memory directory, with a bare run standing next to it as a
-   control you made honest by purging the shared cache first (Act 3a, 3b, 3c).
+   control the harness keeps honest by reclaiming the shared cache with its leaf (Act 3a, 3b, 3c).
 5. **Proved the sandbox half twice** — once in the model's words (a token readable only by a `read`
    executed in the separate sandbox pod, through a path the leaf translated) and once on the
    filesystem, which does not depend on the model cooperating (Act 3c, 3d).
@@ -587,17 +616,19 @@ kubectl exec -n $NS deploy/redis -- redis-cli DEL "config:bundle:$DIGEST"
   carries that instruction, so it is reliable in practice — but it is not a mechanical guarantee the
   way `TICKET:` is. If it ever comes back `unavailable`, that is the skill being honest, not the
   overlay silently failing.
-- **The shared config cache is visible to other leaves, and that is worth saying out loud.** The
-  digest-keyed directory in the pool sandbox is what makes reuse cheap, and the overlay makes it
-  read-only — but read-only is not invisible. Any leaf leasing that sandbox can read another
-  workflow's promoted `CLAUDE.md` and `memory/`, with or without a `configRef` of its own. Act 3a
-  works around it for the demo's sake. Tracked as
-  [#216](https://github.com/rossoctl/serverless-harness/issues/216): the narrow point is that the
-  cache outlives the leaf that made it, so a `configRef`-less leaf can answer from it — which makes
-  spec §2 goal 6 ("absent a promoted bundle, harness behavior is unchanged") true in the harness
-  process but not observably true. Cross-leaf reading itself is an accepted non-goal (P2 §9, one
-  trust domain; Kata isolation is P3/#48), and ADR-0031 speaks to write-protection rather than to
-  visibility or lifetime. Once the cache no longer outlives its leaf, Act 3a's purge can go.
+- **The shared config cache is visible to other leaves _running at the same time_, and that is worth
+  saying out loud.** The digest-keyed directory in the pool sandbox is what makes reuse cheap, and the
+  overlay makes it read-only — but read-only is not invisible. A leaf leasing that sandbox while
+  another holds a ref can read that workflow's promoted `CLAUDE.md` and `memory/`, with or without a
+  `configRef` of its own. That much is an accepted non-goal (P2 §9, one trust domain; Kata isolation
+  is P3/[#48](https://github.com/rossoctl/serverless-harness/issues/48)).
+  [#216](https://github.com/rossoctl/serverless-harness/issues/216) was the narrower part and is
+  fixed: the cache used to outlive the leaf that made it, so a `configRef`-less leaf dispatched
+  _later_ could answer from it, making spec §2 goal 6 ("absent a promoted bundle, harness behavior is
+  unchanged") true in the harness process but not observably true. It is now refcounted and reclaimed
+  when its last leaf releases, which is what 3a verifies and 3d shows both halves of. The accepted
+  cost: a dispatch that arrives after the pool has gone idle re-transfers the bundle instead of
+  finding it cached.
 - **This demo does not show MCP servers or subagents.** Both are explicitly out of scope for
   promotion (spec §2, §9). Do not let a room infer that a promoted workflow carries its MCP config.
 - **Memory is read-only in the promoted run.** The remote agent cannot write back what it learns;
