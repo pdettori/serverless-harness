@@ -372,10 +372,18 @@ reclaimed when the last leaf using it releases — so between runs there should 
 ```bash
 # The leaf may have leased ANY pool sandbox, so ask the pool rather than guessing a pod.
 export POOL=$(kubectl get pods -n $NS -l 'sh.kagenti.io/sandbox-pool=default' -o name | sed 's|pod/||')
-for p in $POOL; do kubectl exec -n $NS "$p" -- find /workspace/.sh-config -type f 2>/dev/null; done \
-  | sed 's|.*/sha256-[0-9a-f]*/||'
+# `sh -c` so the glob expands in the POD. Without it kubectl sends `sha256-*` literally, which
+# matches nothing remotely and prints nothing whether or not a bundle is cached.
+for p in $POOL; do
+  kubectl exec -n $NS "$p" -- sh -c 'find /workspace/.sh-config/sha256-* -type f 2>/dev/null'
+done | sed 's|.*/sha256-[0-9a-f]*/||'
 # (no output — the cache is empty)
 ```
+
+> **Scoped to `sha256-*` on purpose.** A bare `find /workspace/.sh-config -type f` also prints the
+> refcount files under `.refs/`, and one of those can legitimately exist here — a concurrent leaf, or
+> a stale ref from a harness pod that died mid-leaf. The callout below says a filename means a bug to
+> report, so an unscoped listing would point you at the wrong one.
 
 > **Verify, do not purge.** Earlier versions of this walkthrough had you `rm -rf` the cache here,
 > because it used to outlive its leaf ([#216](https://github.com/rossoctl/serverless-harness/issues/216)).
@@ -495,10 +503,14 @@ curl -s -H "$HOSTHDR" -H 'Content-Type: application/json' \
         prompt:"Write the ship note for the auth timeout fix.", configRef:$c}')" \
   $BASE/runs > /tmp/overlay-run.json &
 
-until [ -s /tmp/overlay-run.json ]; do
+# Bounded in both directions, like the scripted demo: give up after 240s, and stop early once the
+# run has written its result — past that point the cache is legitimately gone. An unbounded `until`
+# here spins forever when the dispatch writes nothing at all (wrong Host header, $BASE unset).
+for _ in $(seq 1 240); do
   for p in $POOL; do
     kubectl exec -n $NS "$p" -- cat "$TOKEN_PATH" 2>/dev/null && echo "  ^ in $p" && break 2
   done
+  [ -s /tmp/overlay-run.json ] && break
   sleep 1
 done
 # => SHIPNOTE-7F3A-SANDBOX-OK

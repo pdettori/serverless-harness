@@ -24,9 +24,11 @@ describe('paths', () => {
   });
   it('keeps the refcount tree beside the digest dirs, dot-prefixed so a `sha256-*` glob skips it', () => {
     // The demo (deploy/knative/demo-promoted-workflow.sh) and the docs both enumerate cached
-    // bundles with `ls -1d /workspace/.sh-config/sha256-*`. A refs tree matching that glob would
-    // be counted as a cached bundle and make the demo's emptiness assertion fail with the cache
-    // genuinely empty, so the dot prefix is load-bearing, not cosmetic.
+    // bundles through a `/workspace/.sh-config/sha256-*` glob. A refs tree matching that glob
+    // would be counted as a cached bundle and make the demo's emptiness assertion fail with the
+    // cache genuinely empty, so the dot prefix is load-bearing, not cosmetic. It does NOT hide
+    // refs from an unscoped `find /workspace/.sh-config`, which is why the walkthrough scopes its
+    // listing too.
     expect(configRefsDir(DIGEST)).toBe(`/workspace/.sh-config/.refs/sha256-${'a'.repeat(64)}`);
     expect(configRefsDir(DIGEST).startsWith('/workspace/.sh-config/.')).toBe(true);
   });

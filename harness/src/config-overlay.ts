@@ -14,9 +14,11 @@ export function configCacheDir(digest: string): string {
 /**
  * One empty file per live leaf, so the cache can be torn down when the last of them goes (#216).
  *
- * Dot-prefixed deliberately. The demo and the docs both enumerate cached bundles with
- * `ls -1d /workspace/.sh-config/sha256-*`; a refs tree matching that glob would be counted as a
- * cached bundle and make an emptiness check fail on a genuinely empty cache.
+ * Dot-prefixed deliberately. The demo and the docs both enumerate cached bundles through a
+ * `/workspace/.sh-config/sha256-*` glob; a refs tree matching that glob would be counted as a
+ * cached bundle and make an emptiness check fail on a genuinely empty cache. Note that this holds
+ * only for glob-scoped enumeration: an unscoped `find /workspace/.sh-config` does list ref files,
+ * which is why the walkthrough's listing is scoped rather than left bare.
  *
  * A sibling of the digest dirs rather than a child of one, because ADR-0031's `chmod -R a-w` makes
  * the cache tree read-only — there is nowhere inside it to write a ref.

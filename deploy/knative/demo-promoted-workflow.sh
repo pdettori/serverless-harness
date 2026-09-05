@@ -71,9 +71,10 @@ PFS=() # port-forward pids we started; only ours are killed on exit
 # name if a claim failed before these were assigned.
 promote_log=""
 repromote_log=""
+prom_file=""
 cleanup() {
   for pid in ${PFS[@]+"${PFS[@]}"}; do kill "$pid" 2>/dev/null || true; done
-  rm -f "$promote_log" "$repromote_log" 2>/dev/null || true
+  rm -f "$promote_log" "$repromote_log" "$prom_file" 2>/dev/null || true
   if [ "$KEEP_SANDBOX" -eq 0 ] && [ -f "$SANDBOX/$MARKER" ]; then rm -rf "$SANDBOX"; fi
 }
 trap cleanup EXIT
