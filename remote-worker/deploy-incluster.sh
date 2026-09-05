@@ -31,6 +31,14 @@ oc create secret generic "$SECRET_NAME" -n "$NS" \
 echo "==> point the relay at the Secret"
 # Replaces any literal SH_RELAY_TOKEN a previous run of this script set with a secretKeyRef.
 oc set env deploy/sandbox-relay --from="secret/$SECRET_NAME" -n "$NS" >/dev/null
+# Then force a new pod. Env from a secretKeyRef is resolved once, at container start, so
+# rewriting the Secret above does NOT reach a running relay -- and on a re-run the `set env`
+# is a no-op (the spec already names the Secret), so nothing else would trigger a rollout.
+# Left out, a rotated token leaves the relay serving the previous one: both sides stay stale
+# and keep matching, until either pod restarts on its own and they disagree, at which point
+# fail-closed auth rejects every Attach for a reason nothing in the specs explains.
+oc rollout restart deploy/sandbox-relay -n "$NS" >/dev/null
+oc rollout status deploy/sandbox-relay -n "$NS" --timeout=120s
 
 echo "==> ServiceAccount + nonroot-v2 SCC (image declares USER 1001)"
 oc create serviceaccount remote-worker -n "$NS" --dry-run=client -o yaml | oc apply -f - >/dev/null
@@ -41,6 +49,9 @@ sed -e "s#__IMAGE__#${IMAGE}#g" -e "s#__SANDBOX_ID__#${SANDBOX_ID}#g" \
     -e "s#__NS__#${NS}#g" \
     worker-deployment.yaml | oc apply -f - >/dev/null
 
+# Same reason as the relay restart above: the rendered Deployment is byte-identical between
+# runs, so a rotated token would not otherwise reach the worker's running pod either.
+oc rollout restart deploy/remote-worker -n "$NS" >/dev/null
 oc rollout status deploy/remote-worker -n "$NS" --timeout=120s
 
 echo "==> presence in Redis (worker registered via its live Attach stream)"
