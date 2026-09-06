@@ -126,6 +126,45 @@ than silently skipped, because quietly omitting a case for one implementation is
 #185 asymmetry survived. Its pod-side pipeline is proved against a real `bash`
 (`framing.test.ts`), not by the hermetic fake that simulates it.
 
+### 2026-09-06 — one default exec timeout across all three transports (issue #182)
+
+§8 recorded "no default deadline on the kubectl path" as an accepted divergence: the two
+kubectl transports armed no timer when the caller named no `timeout`, while
+`GrpcRelayTransport` applied `DEFAULT_DEADLINE_MS` (120 s). The same model-issued `bash`
+therefore ran unbounded on a pod and died after two minutes through the relay, decided by
+which backend `select-sandbox` happened to lease — invisible to callers above the seam, and
+invisible to the conformance battery, whose timeout case only ever passed an explicit
+`timeout`.
+
+**Decided:** `DEFAULT_EXEC_TIMEOUT_S` (30 minutes) in `transport.ts`, applied by all three
+implementations when no `timeout` is given, and sent as the gRPC request's `timeout_s` so
+the worker holds the same budget independently. An explicit `timeout: 0` means unbounded on
+both ends. The value is deliberately generous — it exists so an exec cannot leak a sandbox
+slot forever, not to bound legitimate work.
+
+**Rejected:** giving `KubectlTransport` the relay's 120 s. It reads as the obvious fix but
+inverts the evidence: Pi's bash tool declares `timeout` optional and documents "no default
+timeout", and Pi's own local executor arms a timer only when one is set — so the kubectl
+transports matched Pi and the relay was the outlier. Adopting 120 s everywhere would make
+all three contradict the description the model reads, and start failing a cold `npm ci` or a
+full test suite on every path.
+
+**Rejected:** removing the relay's default. It restores parity with Pi, but an unbounded
+remote exec can hold one of the worker's `MaxConcurrent` slots with no client-side recovery,
+which is the hang §8's dual-ended timeout exists to prevent.
+
+**Rejected:** keeping the divergence and merely documenting it. It leaves an exec's fate
+depending on which transport served it, for no benefit once a single generous ceiling
+satisfies both sides.
+
+**Consequence:** the dual-ended timeout is now genuinely dual-ended for the unspecified
+case. Previously the request carried `timeout_s: 0`, and the worker arms its timeout only
+when `TimeoutS > 0` (`runner.go`), so the harness held the ceiling alone — a harness that
+exited, a dropped connection, or an `Abort` that never landed would leave the remote process
+running with nothing left to stop it. Both defaults are pinned by the shared battery, and
+the wire value by `grpc-relay-transport.test.ts`, since a transport-blind battery cannot
+distinguish a ceiling both ends enforce from one only the harness does.
+
 ---
 
 _Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

@@ -339,6 +339,25 @@ The frame _semantics_ are carried from the superseded design verbatim — only t
 - **Dual-ended timeout.** The worker kills its local child at `timeout_s`; the harness has
   its own deadline and synthesizes a timeout `error` if no `End` arrives — it never hangs
   on a silent or malicious worker.
+
+  A caller that names no `timeout` gets `DEFAULT_EXEC_TIMEOUT_S` (`transport.ts`, 30
+  minutes), applied by **all three** implementations and sent as this request's `timeout_s`,
+  so both ends hold the same budget independently. An explicit `timeout: 0` means unbounded,
+  on both ends, everywhere. The ceiling is deliberately generous: it exists so an exec
+  cannot leak a sandbox slot forever, not to bound how long legitimate work may take — a
+  cold `npm ci`, a full test suite or a container build routinely outruns a short budget.
+
+  This was an accepted divergence until #182: the two kubectl transports armed no timer at
+  all while `GrpcRelayTransport` applied 120 s, so _the same_ model-issued `bash` with no
+  timeout ran unbounded on the pod path and died after two minutes on the remote path. Pi's
+  bash tool declares `timeout` optional and documents "no default timeout", so the
+  unspecified case is the ordinary one — which made the two kubectl paths the ones matching
+  Pi, and the relay the outlier. Both defaults are now pinned for every implementation by
+  the conformance battery, which previously could not see either: its timeout case only ever
+  passed an explicit `timeout`. The wire value is pinned separately
+  (`grpc-relay-transport.test.ts`), since a transport-blind battery cannot distinguish a
+  ceiling both ends enforce from one only the harness does.
+
 - **Poisoned-output defense.** **All three** `SandboxTransport` implementations enforce a
   total-returned-output cap per exec, so Pi cannot tell which backend served a flood. Each
   truncates, appends `[output truncated]`, sets `truncated: true`, and returns a null exit
@@ -365,19 +384,6 @@ The frame _semantics_ are carried from the superseded design verbatim — only t
 
 - **Abort/end races.** A late `End` for an aborted `req_id` is dropped; an `Abort` for an
   already-ended `req_id` is a no-op.
-
-### Accepted divergences (known, not fixed here)
-
-This one is deliberate: recording it beats leaving it implicit, and changing it is a
-production-behaviour decision outside this epic.
-
-- **No default deadline on the kubectl path.** `KubectlTransport` arms a timer only when
-  `opts.timeout > 0`; `GrpcRelayTransport` always applies `DEFAULT_DEADLINE_MS` (120 s).
-  Pi's bash tool documents no default timeout, so _the same_ model-issued `bash` with no
-  timeout runs unbounded on the pod path and dies at 120 s on the remote path — an
-  unbounded pod-side exec on one backend, a surprise 120 s failure on the other. The
-  conformance battery cannot see this: its timeout case always passes an explicit
-  `timeout`.
 
 ## 9. Security & reachability
 
