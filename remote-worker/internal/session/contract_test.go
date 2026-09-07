@@ -72,8 +72,27 @@ func (h *harness) attachCancellable(t *testing.T) (*relaytest.Conn, context.Canc
 		t.Fatalf("attach: %v", err)
 	}
 	served := make(chan error, 1)
-	go func() { served <- h.sess.Serve(ctx, stream) }()
-	t.Cleanup(func() { cancel(); _ = cc.Close() })
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		served <- h.sess.Serve(ctx, stream)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		_ = cc.Close()
+		// JOIN Serve, do not just cancel it (#173 item 5). Cancelling the stream's
+		// context is what unblocks recvLoop, but nothing here proved Serve then
+		// reached its return: a teardown deadlock left a goroutine wedged forever
+		// while the test still reported PASS. served is buffered, so a test that
+		// already read from it does not make this wait forever — done is closed
+		// unconditionally by the goroutine itself.
+		select {
+		case <-done:
+		case <-time.After(serveJoinGrace):
+			t.Errorf("Serve did not return within %v of the attach context being cancelled: "+
+				"teardown is wedged and its goroutine has leaked", serveJoinGrace)
+		}
+	})
 	return h.relay.WaitAttach(t), cancel, served
 }
 
