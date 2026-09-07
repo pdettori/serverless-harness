@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"sync"
-	"syscall"
 	"time"
 
 	pb "github.com/kagenti/serverless-harness/gen/go/sandbox/v1"
@@ -108,6 +107,13 @@ type Runner interface {
 type BashRunner struct{}
 
 func (BashRunner) Run(ctx context.Context, s Spec, sink Sink) (int32, error) {
+	// Refuse before spawning anything on a platform that cannot isolate the child
+	// in its own process group: abort and timeout would then leave grandchildren
+	// running, which is not a degraded mode worth offering (#173 item 8). Always
+	// nil on unix.
+	if err := platformSupported(); err != nil {
+		return -1, err
+	}
 	// One lock serializes every call to the caller's Sink: the two pump
 	// goroutines below (and the non-streaming emission at exit) must not race
 	// on it.
@@ -124,8 +130,9 @@ func (BashRunner) Run(ctx context.Context, s Spec, sink Sink) (int32, error) {
 	// Setpgid + killing -pid takes out the whole group. CommandContext's default
 	// signals only the direct bash, but real commands are pipelines with
 	// grandchildren (`cd 'x' && rg --files … | head -n 200`), which would
-	// otherwise survive an abort or timeout.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// otherwise survive an abort or timeout. Both halves live in
+	// runner_unix.go, behind a build constraint (#173 item 8).
+	isolateProcessGroup(cmd)
 	// Best-effort: send the kill, but always report os.ErrProcessDone. Per
 	// exec.Cmd.Cancel's doc, if the child happens to have already exited with a
 	// success status by the time Cancel runs — exactly the race this fixes,
@@ -136,7 +143,7 @@ func (BashRunner) Run(ctx context.Context, s Spec, sink Sink) (int32, error) {
 	// status when the kill lands, and that path is untouched by Cancel's return
 	// value, so reporting ErrProcessDone unconditionally is safe either way.
 	cmd.Cancel = func() error {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = killProcessGroup(cmd.Process.Pid)
 		return os.ErrProcessDone
 	}
 	// WaitDelay bounds only Wait's own internal I/O cleanup after the process
