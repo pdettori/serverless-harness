@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pb "github.com/kagenti/serverless-harness/gen/go/sandbox/v1"
@@ -39,13 +40,28 @@ const ChunkSize = 32 * 1024
 // either side and change the other.
 const BufferCap = 8 * 1024 * 1024
 
-// drainGrace is how long the drain watchdog waits, after runCtx ends, before
-// force-closing the pipe readers itself. Wait only closes those readers from
-// inside itself once every *Pipe() read has finished, so a grandchild that
-// escapes the process group (setsid) or outlives it (TimeoutS == 0) would
-// otherwise wedge the pumps — and Run — forever (go.dev/issue/23019: the
-// os/exec Cancel/WaitDelay mitigation explicitly excludes *Pipe() users).
+// drainGrace is how long the drain watchdog waits for the pumps to go QUIET,
+// after runCtx ends, before force-closing the pipe readers itself. Wait only
+// closes those readers from inside itself once every *Pipe() read has finished,
+// so a grandchild that escapes the process group (setsid) or outlives it
+// (TimeoutS == 0) would otherwise wedge the pumps — and Run — forever
+// (go.dev/issue/23019: the os/exec Cancel/WaitDelay mitigation explicitly
+// excludes *Pipe() users).
+//
+// It is a QUIET period, not a wall clock: every read that returns bytes restarts
+// it. A wall-clock grace cannot tell a wedged drain from a slow one, so it
+// force-closed a pump that was still delivering legitimate trailing output
+// (#173 item 6).
 const drainGrace = 2 * time.Second
+
+// drainCeiling caps the total force-close delay however much progress the pumps
+// keep making. Without it, a holder trickling one byte every second past
+// drainGrace resets the grace forever and pins both a pool slot (1 of
+// session.MaxConcurrent) and up to BufferCap of buffer — a slower version of
+// exactly the wedge the watchdog exists to prevent. 15× the grace is far longer
+// than any legitimate trailing flush and negligible beside the harness's own
+// 30-minute exec ceiling, by which point the run is long out of budget anyway.
+const drainCeiling = 30 * time.Second
 
 // ErrTimeout means the child outlived Spec.TimeoutS and its process group was
 // SIGKILLed. The session maps it to ExecError{"timeout:<n>"} — byte-identical to
@@ -186,10 +202,13 @@ func (BashRunner) Run(ctx context.Context, s Spec, sink Sink) (int32, error) {
 		outBuf  bytes.Buffer
 		errBuf  bytes.Buffer
 		wg      sync.WaitGroup
+		// reads counts reads that returned bytes, across both pumps. It is the
+		// watchdog's only evidence that a drain is progressing rather than wedged.
+		reads atomic.Uint64
 	)
 	pump := func(r io.Reader, which pb.Stream, buf *bytes.Buffer) {
 		defer wg.Done()
-		if err := drain(r, which, s, sink, buf); err != nil {
+		if err := drain(r, which, s, sink, buf, &reads); err != nil {
 			mu.Lock()
 			if sinkErr == nil {
 				sinkErr = err
@@ -202,29 +221,15 @@ func (BashRunner) Run(ctx context.Context, s Spec, sink Sink) (int32, error) {
 	go pump(stdoutPipe, pb.Stream_STREAM_STDOUT, &outBuf)
 	go pump(stderrPipe, pb.Stream_STREAM_STDERR, &errBuf)
 
-	// Drain watchdog: once runCtx ends (Abort or timeout), give the pumps
-	// drainGrace to finish on their own — the SIGKILL above is normally enough
-	// — then force-close the pipe readers ourselves so a pump wedged on a Read
-	// from a pipe holder that escaped or outlived the process group returns
-	// instead of blocking forever. A forced close surfaces as a read error,
-	// which drain already swallows, so it is indistinguishable from EOF here.
-	// watchdogDone is closed on every return path so a healthy exec never
-	// waits out drainGrace for nothing.
+	// Drain watchdog: once runCtx ends (Abort or timeout), force-close the pipe
+	// readers ourselves if the pumps go quiet, so a pump wedged on a Read from a
+	// pipe holder that escaped or outlived the process group returns instead of
+	// blocking forever. A forced close surfaces as a read error, which drain
+	// already swallows, so it is indistinguishable from EOF here. watchdogDone is
+	// closed on every return path so a healthy exec never waits for nothing.
 	watchdogDone := make(chan struct{})
 	defer close(watchdogDone)
-	go func() {
-		select {
-		case <-runCtx.Done():
-		case <-watchdogDone:
-			return
-		}
-		select {
-		case <-time.After(drainGrace):
-			_ = stdoutPipe.Close()
-			_ = stderrPipe.Close()
-		case <-watchdogDone:
-		}
-	}()
+	go watchDrain(runCtx, watchdogDone, &reads, drainGrace, drainCeiling, stdoutPipe, stderrPipe)
 
 	// StdoutPipe's contract: Wait closes the pipes, so all reads must finish first.
 	wg.Wait()
@@ -286,14 +291,72 @@ func emitBuffered(sink Sink, which pb.Stream, buf *bytes.Buffer) error {
 	return nil
 }
 
+// watchDrain force-closes closers once runCtx has ended AND the pumps have been
+// quiet for grace — or unconditionally once ceiling has passed, whichever comes
+// first. It returns as soon as done is closed, so a healthy exec pays nothing.
+//
+// reads is the liveness signal: any change means a pump got bytes since the last
+// check, so the drain is slow rather than wedged and force-closing it now would
+// throw away output the command really produced (#173 item 6). The ceiling is
+// what stops that reasoning from running forever — see drainCeiling.
+//
+// It is a package-level function rather than a closure inside Run so the two
+// behaviours can be tested directly, at millisecond timings, without a child
+// process: the end-to-end case needs a pipe holder outside the process group,
+// which is awkward on some platforms and slow on all of them.
+func watchDrain(
+	runCtx context.Context,
+	done <-chan struct{},
+	reads *atomic.Uint64,
+	grace, ceiling time.Duration,
+	closers ...io.Closer,
+) {
+	select {
+	case <-runCtx.Done():
+	case <-done:
+		return // the exec finished on its own; nothing to bound
+	}
+
+	hard := time.NewTimer(ceiling)
+	defer hard.Stop()
+	quiet := time.NewTimer(grace)
+	defer quiet.Stop()
+	// Snapshot AFTER runCtx ended: only reads from here on count as progress.
+	last := reads.Load()
+	for {
+		select {
+		case <-done:
+			return
+		case <-hard.C:
+			// Progress or not, this has held a pool slot long enough.
+		case <-quiet.C:
+			if cur := reads.Load(); cur != last {
+				last = cur
+				quiet.Reset(grace)
+				continue
+			}
+		}
+		for _, c := range closers {
+			_ = c.Close()
+		}
+		return
+	}
+}
+
 // drain reads one pipe to exhaustion. Only SINK errors are returned: once the
 // process group is killed the pipes close, and surfacing that read error would
 // mask ErrTimeout and suppress the terminal frame the session owes the harness.
-func drain(r io.Reader, which pb.Stream, s Spec, sink Sink, buf *bytes.Buffer) error {
+//
+// reads is bumped on every read that yields bytes, which is what lets watchDrain
+// tell a slow drain from a wedged one. It is bumped BEFORE delivery, so the
+// record is of when the pipe produced the bytes rather than when the sink
+// finished accepting them.
+func drain(r io.Reader, which pb.Stream, s Spec, sink Sink, buf *bytes.Buffer, reads *atomic.Uint64) error {
 	b := make([]byte, ChunkSize)
 	for {
 		n, err := r.Read(b)
 		if n > 0 {
+			reads.Add(1)
 			if s.Streaming {
 				// Copy: the payload becomes a proto field the sink may retain.
 				if err := sink.Chunk(which, append([]byte(nil), b[:n]...)); err != nil {

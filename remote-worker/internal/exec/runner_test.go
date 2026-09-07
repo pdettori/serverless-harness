@@ -141,6 +141,55 @@ func TestRunReturnsWhenPipeHolderEscapesGroup(t *testing.T) {
 	}
 }
 
+// The drain watchdog must distinguish WEDGED from merely SLOW (#173 item 6).
+// TestRunReturnsWhenPipeHolderEscapesGroup above covers wedged: a holder that
+// never writes again, which only a force-close can unblock. This covers the other
+// case — a holder still producing output, steadily, just spread out. Forcing that
+// one closed drops trailing output the command legitimately produced.
+//
+// The writer has to escape the process group, or the SIGKILL at timeout ends it
+// and there is no "still arriving" to speak of. python3's os.setsid() does that
+// portably, where the setsid(1) binary the sibling test needs is absent on macOS.
+//
+// Timing, with drainGrace at 2s: the deadline fires at 1s, so a wall-clock grace
+// force-closes at 3s while ticks keep coming until 3.6s — the last two are lost.
+// Reads arrive every 400ms, five times more often than the grace, so an
+// activity-based grace never expires and all ten arrive. The margin is the point:
+// nothing here is tuned to the boundary.
+func TestSlowDrainKeepsTrailingOutput(t *testing.T) {
+	py, err := osexec.LookPath("python3")
+	if err != nil {
+		t.Skip("no python3: cannot detach a trickling pipe holder from the process group")
+	}
+	const ticks = 10
+	script := `
+import os, sys, time
+os.setsid()
+for i in range(10):
+    sys.stdout.write("tick%d\n" % i)
+    sys.stdout.flush()
+    time.sleep(0.4)
+`
+	var r recorder
+	start := time.Now()
+	_, _ = wexec.BashRunner{}.Run(context.Background(), wexec.Spec{
+		ReqID:     40,
+		Command:   py + " -c '" + script + "' & exit 0",
+		TimeoutS:  1,
+		Streaming: true,
+	}, &r)
+	if got := strings.Count(string(r.stdout), "tick"); got != ticks {
+		t.Errorf("got %d of %d ticks (%q): the drain was force-closed between reads while it was "+
+			"still making progress, dropping trailing output", got, ticks, r.stdout)
+	}
+	// The bound still has to exist. A drain that keeps resetting forever would hold
+	// a pool slot and its buffer indefinitely, which is the hazard the watchdog was
+	// added for in the first place.
+	if elapsed := time.Since(start); elapsed > 20*time.Second {
+		t.Errorf("Run took %v: the activity-based grace has no ceiling", elapsed)
+	}
+}
+
 // streaming:false means no incremental delivery, not "exactly one frame":
 // buffered output at exit still has to respect the wire's ChunkSize cap.
 func TestNonStreamingChunksAtExit(t *testing.T) {
