@@ -15,8 +15,23 @@ import (
 
 const (
 	// QueueCap bounds queued execs. Overflow is refused rather than blocking the
-	// recv loop — see Serve.
+	// recv loop — see Serve. It also bounds how many chunk-class frames may sit in
+	// outbound at once, which is what leaves the reserve below reachable.
 	QueueCap = 64
+	// TerminalReserve is outbound capacity that ONLY the recv goroutine may use, for
+	// the terminal frames it must not drop (#173 item 1). Chunk producers are held
+	// to QueueCap residency, so these slots are always free for a refusal.
+	//
+	// It cannot be a proof, and is not sized as if it were: accept emits one
+	// terminal frame per refused exec and nothing bounds how many arrive between two
+	// drains, so a large enough burst still exhausts it. What the reserve buys is
+	// that a transient chunk backlog — the common case, and the one that produced
+	// the bug — can no longer squeeze a refusal out. Exhaustion is then a genuinely
+	// different condition (nothing is draining at all) and is handled as one, by
+	// failing the connection rather than losing the frame. Deliberately modest for
+	// that reason: a big reserve would only buffer more frames behind a wedged
+	// sender before anyone noticed.
+	TerminalReserve = QueueCap / 4
 	// DefaultConcurrency is the pool size, advertised as Hello.capacity_max.
 	DefaultConcurrency = 4
 	// DefaultHeartbeat is liveness plus NAT/proxy keepalive (spec §7 item 4).
@@ -31,6 +46,26 @@ type Config struct {
 	Capabilities  []string
 	MaxConcurrent int
 	Heartbeat     time.Duration
+}
+
+// ErrEgressWedged ends a session whose terminal-frame reserve could not be
+// queued. It is not "busy": chunk producers are held to QueueCap residency, so
+// TerminalReserve slots are reachable only from the recv goroutine — failing to
+// place one means nothing is draining at all. Serve returns it so main.go
+// re-dials; the dedup cache then answers redeliveries of anything that completed
+// (spec §5, §6.2). The alternative was to log the loss and keep serving a
+// connection whose callers each wait out DEFAULT_EXEC_TIMEOUT_S, 30 minutes since
+// #182 (#173 item 1).
+var ErrEgressWedged = errors.New("egress wedged: the terminal-frame reserve could not be queued")
+
+// outFrame is a frame plus the accounting it was admitted under. reserved frames
+// came through the terminal reserve and hold no chunkSlot, so the sender must not
+// release one when it forwards them — hence carrying the fact explicitly rather
+// than re-deriving it from the frame's type. Deriving it would silently break the
+// accounting the day a frame kind is sent from both paths.
+type outFrame struct {
+	frame    *pb.WorkerFrame
+	reserved bool
 }
 
 // Stream is one Attach connection. pb.SandboxWorker_AttachClient satisfies it
@@ -83,6 +118,13 @@ type slot struct {
 // goroutine and a bounded-blocking enqueue (correct backpressure) for everyone
 // else.
 //
+// A non-blocking enqueue can only fail by DROPPING, though, and everything the
+// recv goroutine sends is terminal — which is how a refusal used to vanish and
+// leave its caller waiting out a 30-minute deadline (#173 item 1). So the single
+// channel carries TerminalReserve slots that chunk producers cannot reach: see
+// chunkSlots and trySend below. One channel, not two, because ordering is a wire
+// contract (spec §8) and a priority lane would break it.
+//
 // PRECONDITION on ctx: it MUST be the context the Attach stream was created from
 // (in production, the same attachCtx handed to client.Attach). recvLoop blocks in
 // st.Recv() and has NO select on ctx, so cancelling ctx does not by itself stop
@@ -116,20 +158,40 @@ func (s *Session) Serve(ctx context.Context, st Stream) error {
 		return fmt.Errorf("send hello: %w", err)
 	}
 
-	outbound := make(chan *pb.WorkerFrame, QueueCap)
+	// ONE channel carries every frame, and that is load-bearing rather than
+	// incidental: spec §8 requires Chunk* then End per req_id, so a second
+	// "priority" channel for terminal frames would let a cache-hit replay overtake
+	// the original's still-queued chunks, or a colliding refusal overtake an earlier
+	// exec's frames under the same id. The harness would settle the exec on the
+	// frame that arrived first and discard the real output behind it. Ordering is
+	// therefore kept by construction, and the starvation problem (#173 item 1) is
+	// solved with RESERVED CAPACITY instead of with priority.
+	outbound := make(chan outFrame, QueueCap+TerminalReserve)
+	// chunkSlots caps how many chunk-class frames may be RESIDENT in outbound at
+	// once. Whatever the chunk stream does, TerminalReserve slots stay free for the
+	// terminal frames accept must not drop.
+	chunkSlots := make(chan struct{}, QueueCap)
 	var wgSender sync.WaitGroup
 	wgSender.Add(1)
 	go func() {
 		defer wgSender.Done()
 		failed := false
-		for f := range outbound {
+		for of := range outbound {
+			if !of.reserved {
+				// Release the instant the frame LEAVES the channel, before Send rather
+				// than after. The semaphore counts residency in the channel, so a frame
+				// held in this goroutine's hand must not keep a slot — otherwise a
+				// blocked Send would shrink the effective chunk budget by one and, worse,
+				// make the reserve arithmetic depend on Send's latency.
+				<-chunkSlots
+			}
 			if failed {
 				// Keep draining rather than returning: if this goroutine exited early,
 				// every later blocking enqueue below would block forever once the
 				// buffer filled, and wg.Wait() in Serve would never reach zero.
 				continue
 			}
-			if err := st.Send(f); err != nil {
+			if err := st.Send(of.frame); err != nil {
 				failed = true
 				cancelConn()
 			}
@@ -138,31 +200,72 @@ func (s *Session) Serve(ctx context.Context, st Stream) error {
 
 	// enqueue is the blocking sender used by producers (heartbeat, the pool).
 	// Backpressure here is correct: neither is the recv goroutine, so blocking
-	// them cannot stall a read of an Abort frame. The sender above always keeps
-	// draining outbound (forwarding or discarding), so this never blocks forever
-	// even after a send failure.
-	enqueue := func(f *pb.WorkerFrame) { outbound <- f }
+	// them cannot stall a read of an Abort frame.
+	//
+	// Both waits give up if connCtx is done, and that is not defensive garnish. A
+	// Send that BLOCKS forever (rather than failing) parks the sender, outbound
+	// fills, and a producer waiting here would never return — so wg.Wait() in
+	// Serve's teardown would never reach zero and Serve could never return, which
+	// is the only thing that makes main.go re-dial. That hazard predates the
+	// reserve; the semaphore just adds a second place to hit it. Frames abandoned
+	// this way are not silently lost work: the connection is already dying, the
+	// harness re-dials, and the dedup cache answers the redelivery (spec §5, §6.2).
+	enqueue := func(f *pb.WorkerFrame) {
+		// Non-blocking attempts first, so behaviour is unchanged whenever there is
+		// room. select picks at random among ready cases, so without these a done
+		// connCtx could abandon a frame that would have fit.
+		select {
+		case chunkSlots <- struct{}{}:
+		default:
+			select {
+			case chunkSlots <- struct{}{}:
+			case <-connCtx.Done():
+				return
+			}
+		}
+		// A held slot does NOT guarantee room here, so this wait is real rather than
+		// belt-and-braces: reserved frames are bounded only by the channel's own
+		// capacity, so a burst of refusals can fill outbound while chunk-class
+		// residency is low, and a producer holding a slot then finds the channel
+		// full. That starves chunk producers in favour of terminal frames, which is
+		// the intended priority — producers are exactly the ones allowed to block.
+		select {
+		case outbound <- outFrame{frame: f}:
+			return
+		default:
+		}
+		select {
+		case outbound <- outFrame{frame: f}:
+		case <-connCtx.Done():
+			<-chunkSlots // hand the slot back; nothing will ever drain this frame
+		}
+	}
 	// trySend is the non-blocking sender used by the recv goroutine (via accept).
 	// It must never block: the recv goroutine has to stay free to read the next
-	// Abort, so a frame is dropped rather than stalling the stream.
+	// Abort, so it cannot wait for room.
 	//
-	// Be honest about the cost — the dropped frame is not advisory. Every frame
-	// accept routes through trySend is TERMINAL: a cache-hit replay, or a refusal
-	// ("busy: queue full", or a req_id collision). Dropping a replay loses a
-	// duplicate of a frame already delivered once. Dropping a refusal loses it
-	// outright, since refusals are never cached — and the drop correlates with the
-	// exact overload that produced the refusal, so under load the caller gets
-	// nothing and waits out its own deadline. That is survivable only because the
-	// harness timeout is dual-ended. Giving terminal frames a priority path is the
-	// real fix and is deliberately out of scope here; the warning below is what
-	// makes the loss diagnosable in the field instead of invisible.
+	// Every frame accept routes through here is TERMINAL: a cache-hit replay, or a
+	// refusal ("busy: queue full", or a req_id collision). Dropping a replay would
+	// only lose a duplicate of a frame already delivered once, but dropping a
+	// refusal loses it outright, since refusals are never cached — and the drop
+	// correlated with the exact overload that produced it, so the caller got
+	// nothing and waited out its own deadline. #182 made that deadline
+	// DEFAULT_EXEC_TIMEOUT_S = 30 minutes, which is what retired the old comment's
+	// "survivable because the harness timeout is dual-ended".
+	//
+	// It no longer competes with the chunk stream for room: chunkSlots holds
+	// chunk-class residency to QueueCap, so the last TerminalReserve slots are
+	// reachable only from here. Failure here therefore no longer means "busy" — it
+	// means the reserve ITSELF has not drained, i.e. egress is wedged rather than
+	// merely behind, which the caller handles by giving up on the connection.
 	trySend := func(f *pb.WorkerFrame) bool {
 		select {
-		case outbound <- f:
+		case outbound <- outFrame{frame: f, reserved: true}:
 			return true
 		default:
-			log.Printf("session: WARNING outbound full, DROPPED the terminal frame for req_id %d; "+
-				"that exec is now unanswered and its caller will wait out its own timeout", reqIDOf(f))
+			log.Printf("session: WARNING the terminal-frame reserve (%d slots) is undrained, so the "+
+				"terminal frame for req_id %d cannot be queued; treating egress as wedged and "+
+				"dropping the connection so the harness re-dials", TerminalReserve, reqIDOf(f))
 			return false
 		}
 	}
@@ -261,7 +364,13 @@ func (s *Session) recvLoop(
 		}
 		switch m := sf.Msg.(type) {
 		case *pb.ServerFrame_Exec:
-			s.accept(ctx, trySend, queue, inflight, mu, m.Exec)
+			// accept's only error is ErrEgressWedged, and it is fatal to the
+			// CONNECTION rather than to the exec: returning it here ends this session
+			// so the caller re-dials, instead of continuing to accept work that can
+			// never be answered (#173 item 1).
+			if err := s.accept(ctx, trySend, queue, inflight, mu, m.Exec); err != nil {
+				return err
+			}
 		case *pb.ServerFrame_Abort:
 			// Cancel only — do NOT remove the slot. runOne owns the terminal frame in
 			// both cases: a running exec's Run returns ErrAborted, and a queued exec
@@ -275,6 +384,13 @@ func (s *Session) recvLoop(
 // accept decides an exec's fate without blocking: cached, queued, coalesced
 // into an already-running duplicate, or refused. Every send here uses trySend,
 // since this runs on the recv goroutine.
+//
+// It returns ErrEgressWedged, and only that, when a terminal frame could not be
+// queued even in the reserve. Note the error describes the CONNECTION, not this
+// exec — every trySend failure is treated the same way, including a dropped
+// cache-hit replay. A replay looks harmless ("a duplicate of a frame already
+// delivered once") but usually is not: the harness redelivers precisely because it
+// never got the first answer, so dropping the replay strands that caller too.
 func (s *Session) accept(
 	ctx context.Context,
 	trySend func(*pb.WorkerFrame) bool,
@@ -282,7 +398,7 @@ func (s *Session) accept(
 	inflight map[uint64]*slot,
 	mu *sync.Mutex,
 	e *pb.Exec,
-) {
+) error {
 	reqID := e.GetReqId()
 	fp := Fingerprint(e.GetCommand(), e.GetStdin(), e.GetTimeoutS(), e.GetStreaming())
 
@@ -311,7 +427,7 @@ func (s *Session) accept(
 			// nowhere to put it. Silently coalesce instead — the exec already owes
 			// exactly one terminal frame, and it is coming.
 			log.Printf("session: req_id %d already in flight; coalescing duplicate delivery", reqID)
-			return
+			return nil
 		}
 		// NOT a redelivery: different command+stdin under an id already in flight,
 		// which a req_id salt collision across harness replicas still makes reachable
@@ -322,8 +438,10 @@ func (s *Session) accept(
 		// frame for the same logical exec, precisely because it is a different one.
 		log.Printf("session: req_id %d reused for a different command while the original is still "+
 			"in flight; refusing it (req_id is only probabilistically unique across replicas — see spec §3.1)", reqID)
-		trySend(errFrame(reqID, "req_id collision: a different command is already in flight for this id"))
-		return
+		if !trySend(errFrame(reqID, "req_id collision: a different command is already in flight for this id")) {
+			return ErrEgressWedged
+		}
+		return nil
 	}
 	// Consulted before enqueue: a redelivery of a COMPLETED exec must not consume
 	// a queue slot or a pool goroutine. Held under mu so accept's decision is
@@ -333,8 +451,10 @@ func (s *Session) accept(
 	if hit {
 		mu.Unlock()
 		cancel()
-		trySend(frame)
-		return
+		if !trySend(frame) {
+			return ErrEgressWedged
+		}
+		return nil
 	}
 	inflight[reqID] = &slot{ctx: slotCtx, cancel: cancel, fp: fp}
 	mu.Unlock()
@@ -350,8 +470,14 @@ func (s *Session) accept(
 		delete(inflight, reqID)
 		mu.Unlock()
 		cancel()
-		trySend(errFrame(reqID, "busy: queue full"))
+		// The frame this item was filed about. The exec never ran and never will, so
+		// losing this refusal loses the caller's only answer — hence the reserve, and
+		// hence ending the connection if even the reserve cannot take it.
+		if !trySend(errFrame(reqID, "busy: queue full")) {
+			return ErrEgressWedged
+		}
 	}
+	return nil
 }
 
 // frameSink turns runner output into Chunk frames. It only ever enqueues: with
