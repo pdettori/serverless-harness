@@ -57,7 +57,23 @@ func TestLiveRelayInterop(t *testing.T) {
 		Capabilities:  []string{"bash"},
 		MaxConcurrent: 2,
 	}, wexec.BashRunner{})
-	go func() { _ = sess.Serve(ctx, stream) }()
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		_ = sess.Serve(ctx, stream)
+	}()
+	// Join it, so a teardown deadlock fails this gate instead of leaking a goroutine
+	// while it reports PASS (#173 item 5). It cancels first rather than relying on
+	// the t.Cleanup(cancel) above: cleanups run LIFO, so that one runs AFTER this
+	// and the wait below would deadlock waiting for a stream nothing had torn down.
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-served:
+		case <-time.After(serveJoinGrace):
+			t.Errorf("Serve did not return within %v of the attach context being cancelled", serveJoinGrace)
+		}
+	})
 	time.Sleep(500 * time.Millisecond) // let the relay park the stream
 
 	// 2. Drive execs from the harness-facing side.

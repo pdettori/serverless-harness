@@ -20,6 +20,10 @@ type fakeStream struct {
 	out []*pb.WorkerFrame
 	// closed once Recv should report the stream is gone.
 	done chan struct{}
+	// closeOnce makes close() idempotent. serve's cleanup always closes the
+	// stream, so a test that also closes it mid-run (to observe a reconnect, or
+	// Serve's return value) must not panic on the second close.
+	closeOnce sync.Once
 	// failAfter, when > 0, makes Send fail once sendCalls exceeds it.
 	failAfter int
 	sendCalls int
@@ -50,11 +54,74 @@ func (f *fakeStream) Recv() (*pb.ServerFrame, error) {
 }
 
 func (f *fakeStream) exec(e *pb.Exec) { f.in <- &pb.ServerFrame{Msg: &pb.ServerFrame_Exec{Exec: e}} }
-func (f *fakeStream) close()          { close(f.done) }
+func (f *fakeStream) close()          { f.closeOnce.Do(func() { close(f.done) }) }
 func (f *fakeStream) sent() []*pb.WorkerFrame {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]*pb.WorkerFrame(nil), f.out...)
+}
+
+// serveResult is a running Serve. err is valid only once done is closed — the
+// close is what publishes it, so reading it after a receive on done is race-free.
+type serveResult struct {
+	done chan struct{}
+	err  error
+}
+
+// serveJoinGrace bounds how long a test waits for Serve to return once its stream
+// has closed. Teardown is a cancel, a channel close and two WaitGroups; whole
+// seconds are already an enormous margin, and the point of the bound is to fail
+// with a clear message instead of hanging the binary until go test's global
+// timeout.
+const serveJoinGrace = 5 * time.Second
+
+// serve starts Serve on its own goroutine and — the part that matters — registers
+// the cleanup that JOINS it.
+//
+// EVERY test in this package that starts Serve must go through this, and the
+// reason is not tidiness (#173 item 5). Before it, tests launched Serve and
+// simply ended: a teardown deadlock, or a WaitGroup that never reached zero, left
+// a goroutine wedged forever while `go test` still printed PASS. That is not
+// hypothetical — deleting the cancelConn() call that precedes close(queue) in
+// Serve (so the heartbeat producer never returns) leaves 14 of this file's 15
+// tests passing. Joining here converts every one of them into a witness.
+//
+// It also subsumes the trailing st.close() those tests used to end with, so a test
+// body now closes the stream only when the CLOSE ITSELF is the thing under test.
+func serve(t *testing.T, s *session.Session, st *fakeStream) *serveResult {
+	t.Helper()
+	sv := &serveResult{done: make(chan struct{})}
+	go func() {
+		defer close(sv.done)
+		sv.err = s.Serve(context.Background(), st)
+	}()
+	t.Cleanup(func() {
+		st.close()
+		select {
+		case <-sv.done:
+		case <-time.After(serveJoinGrace):
+			// Errorf, not Fatalf: FailNow from a cleanup function would skip the
+			// remaining cleanups, and the leaked goroutine is worth reporting
+			// alongside whatever else the test found, not instead of it.
+			t.Errorf("Serve did not return within %v of the stream closing: teardown is wedged "+
+				"(a producer still enqueuing, or a WaitGroup that never reaches zero) and its "+
+				"goroutine has leaked", serveJoinGrace)
+		}
+	})
+	return sv
+}
+
+// wait blocks until Serve returns and yields its error. why names what the test
+// expected to end the session, so a timeout message says which teardown wedged.
+func (sv *serveResult) wait(t *testing.T, why string) error {
+	t.Helper()
+	select {
+	case <-sv.done:
+		return sv.err
+	case <-time.After(serveJoinGrace):
+		t.Fatalf("Serve did not return within %v %s", serveJoinGrace, why)
+		return nil
+	}
 }
 
 // waitFor polls until cond holds or the deadline passes — no sleep-and-hope.
@@ -146,7 +213,7 @@ func terminalFor(frames []*pb.WorkerFrame, reqID uint64) *pb.WorkerFrame {
 func TestHelloIsFirstFrameAndHonest(t *testing.T) {
 	st := newFakeStream()
 	s := session.New(testConfig(), &scriptedRunner{})
-	go func() { _ = s.Serve(context.Background(), st) }()
+	serve(t, s, st)
 
 	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
 	first := st.sent()[0]
@@ -163,13 +230,12 @@ func TestHelloIsFirstFrameAndHonest(t *testing.T) {
 	if len(h.GetCapabilities()) != 1 || h.GetCapabilities()[0] != "bash" {
 		t.Errorf("capabilities = %v, want [bash]", h.GetCapabilities())
 	}
-	st.close()
 }
 
 func TestHeartbeatsAreSent(t *testing.T) {
 	st := newFakeStream()
 	s := session.New(testConfig(), &scriptedRunner{})
-	go func() { _ = s.Serve(context.Background(), st) }()
+	serve(t, s, st)
 
 	waitFor(t, "a heartbeat", func() bool {
 		for _, f := range st.sent() {
@@ -179,13 +245,12 @@ func TestHeartbeatsAreSent(t *testing.T) {
 		}
 		return false
 	})
-	st.close()
 }
 
 func TestExecEmitsEndWithExitCode(t *testing.T) {
 	st := newFakeStream()
 	s := session.New(testConfig(), &scriptedRunner{code: 7})
-	go func() { _ = s.Serve(context.Background(), st) }()
+	serve(t, s, st)
 	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
 
 	st.exec(&pb.Exec{ReqId: 1, Command: "exit 7", Streaming: true})
@@ -195,13 +260,12 @@ func TestExecEmitsEndWithExitCode(t *testing.T) {
 	if got.GetEnd() == nil || got.GetEnd().GetExitCode() != 7 {
 		t.Errorf("terminal = %+v, want End{exit_code:7}", got)
 	}
-	st.close()
 }
 
 func TestTimeoutBecomesExecError(t *testing.T) {
 	st := newFakeStream()
 	s := session.New(testConfig(), &scriptedRunner{err: wexec.ErrTimeout})
-	go func() { _ = s.Serve(context.Background(), st) }()
+	serve(t, s, st)
 	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
 
 	st.exec(&pb.Exec{ReqId: 2, Command: "sleep 30", TimeoutS: 30, Streaming: true})
@@ -215,13 +279,12 @@ func TestTimeoutBecomesExecError(t *testing.T) {
 	if got.GetMessage() != "timeout:30" {
 		t.Errorf("message = %q, want %q", got.GetMessage(), "timeout:30")
 	}
-	st.close()
 }
 
 func TestErrAbortedMapsToSignalledEnd(t *testing.T) {
 	st := newFakeStream()
 	s := session.New(testConfig(), &scriptedRunner{err: wexec.ErrAborted})
-	go func() { _ = s.Serve(context.Background(), st) }()
+	serve(t, s, st)
 	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
 
 	st.exec(&pb.Exec{ReqId: 3, Command: "sleep 30", Streaming: true})
@@ -230,13 +293,12 @@ func TestErrAbortedMapsToSignalledEnd(t *testing.T) {
 	if got := terminalFor(st.sent(), 3).GetEnd(); got == nil || got.GetExitCode() != -1 {
 		t.Errorf("terminal = %+v, want End{exit_code:-1}", terminalFor(st.sent(), 3))
 	}
-	st.close()
 }
 
 func TestRunnerErrorBecomesExecError(t *testing.T) {
 	st := newFakeStream()
 	s := session.New(testConfig(), &scriptedRunner{err: errors.New("start bash: no such file")})
-	go func() { _ = s.Serve(context.Background(), st) }()
+	serve(t, s, st)
 	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
 
 	st.exec(&pb.Exec{ReqId: 4, Command: "whatever", Streaming: true})
@@ -246,7 +308,6 @@ func TestRunnerErrorBecomesExecError(t *testing.T) {
 	if got == nil || got.GetMessage() != "start bash: no such file" {
 		t.Errorf("terminal = %+v, want ExecError carrying the runner error", terminalFor(st.sent(), 4))
 	}
-	st.close()
 }
 
 // A redelivered req_id with the same command re-emits the cached frame and the
@@ -255,7 +316,7 @@ func TestRedeliveredReqIDReEmitsWithoutRerunning(t *testing.T) {
 	st := newFakeStream()
 	r := &scriptedRunner{code: 0}
 	s := session.New(testConfig(), r)
-	go func() { _ = s.Serve(context.Background(), st) }()
+	serve(t, s, st)
 	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
 
 	e := &pb.Exec{ReqId: 9, Command: "echo x >> log", Streaming: true}
@@ -279,7 +340,6 @@ func TestRedeliveredReqIDReEmitsWithoutRerunning(t *testing.T) {
 	if r.count() != 1 {
 		t.Errorf("runner calls = %d, want 1: the redelivery re-ran the command", r.count())
 	}
-	st.close()
 }
 
 // A reused req_id carrying a DIFFERENT command must run, not return the cached
@@ -288,7 +348,7 @@ func TestCollidingReqIDRunsFresh(t *testing.T) {
 	st := newFakeStream()
 	r := &scriptedRunner{code: 0}
 	s := session.New(testConfig(), r)
-	go func() { _ = s.Serve(context.Background(), st) }()
+	serve(t, s, st)
 	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
 
 	st.exec(&pb.Exec{ReqId: 5, Command: "rm -rf /b", Streaming: true})
@@ -304,7 +364,6 @@ func TestCollidingReqIDRunsFresh(t *testing.T) {
 	if second != "cat /a" {
 		t.Errorf("second run command = %q, want %q", second, "cat /a")
 	}
-	st.close()
 }
 
 // sendAttempts reports how many times Send has been called, including calls that
@@ -343,7 +402,7 @@ func TestAbortCancelsRunningExec(t *testing.T) {
 	st := newFakeStream()
 	r := &scriptedRunner{block: make(chan struct{})} // blocks until ctx is cancelled
 	s := session.New(testConfig(), r)
-	go func() { _ = s.Serve(context.Background(), st) }()
+	serve(t, s, st)
 	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
 
 	st.exec(&pb.Exec{ReqId: 1, Command: "sleep 30", Streaming: true})
@@ -354,7 +413,6 @@ func TestAbortCancelsRunningExec(t *testing.T) {
 	if got := terminalFor(st.sent(), 1).GetEnd(); got == nil || got.GetExitCode() != -1 {
 		t.Errorf("terminal = %+v, want End{exit_code:-1}", terminalFor(st.sent(), 1))
 	}
-	st.close()
 }
 
 // Abort while an exec is still QUEUED must still produce a terminal frame, and
@@ -366,7 +424,7 @@ func TestAbortWhileQueuedStillEmitsTerminal(t *testing.T) {
 	cfg := testConfig()
 	cfg.MaxConcurrent = 1 // one slot, so the second exec is forced to queue
 	s := session.New(cfg, r)
-	go func() { _ = s.Serve(context.Background(), st) }()
+	serve(t, s, st)
 	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
 
 	st.exec(&pb.Exec{ReqId: 1, Command: "sleep 30", Streaming: true})
@@ -401,14 +459,13 @@ func TestAbortWhileQueuedStillEmitsTerminal(t *testing.T) {
 	if ran != 1 {
 		t.Errorf("runner saw %d execs, want 1: the aborted-while-queued exec was spawned", ran)
 	}
-	st.close()
 }
 
 // Abort for a req_id the worker never saw is a no-op — no frame at all (spec §8).
 func TestAbortUnknownReqIDIsNoOp(t *testing.T) {
 	st := newFakeStream()
 	s := session.New(testConfig(), &scriptedRunner{})
-	go func() { _ = s.Serve(context.Background(), st) }()
+	serve(t, s, st)
 	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
 
 	st.abort(999)
@@ -417,7 +474,6 @@ func TestAbortUnknownReqIDIsNoOp(t *testing.T) {
 	if got := terminalFor(st.sent(), 999); got != nil {
 		t.Errorf("sent %+v for an unknown req_id, want nothing", got)
 	}
-	st.close()
 }
 
 // Overflow must be refused immediately rather than blocking the recv loop: a
@@ -429,7 +485,7 @@ func TestQueueOverflowIsRefusedNotBlocking(t *testing.T) {
 	cfg := testConfig()
 	cfg.MaxConcurrent = 1
 	s := session.New(cfg, r)
-	go func() { _ = s.Serve(context.Background(), st) }()
+	serve(t, s, st)
 	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
 
 	// 1 running + QueueCap queued + 1 too many.
@@ -453,7 +509,6 @@ func TestQueueOverflowIsRefusedNotBlocking(t *testing.T) {
 		return terminalFor(st.sent(), 1) != nil
 	})
 	close(r.block)
-	st.close()
 }
 
 // When the stream dies, Serve returns the recv error and stops cleanly rather
@@ -462,21 +517,15 @@ func TestServeReturnsOnStreamError(t *testing.T) {
 	st := newFakeStream()
 	r := &scriptedRunner{block: make(chan struct{})}
 	s := session.New(testConfig(), r)
-	errCh := make(chan error, 1)
-	go func() { errCh <- s.Serve(context.Background(), st) }()
+	sv := serve(t, s, st)
 	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
 
 	st.exec(&pb.Exec{ReqId: 1, Command: "sleep 30", Streaming: true})
 	waitFor(t, "the runner to start", func() bool { return r.count() == 1 })
 
 	st.close() // the stream is gone
-	select {
-	case err := <-errCh:
-		if err == nil {
-			t.Error("Serve returned nil, want the recv error")
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("Serve did not return: an in-flight exec was not cancelled on disconnect")
+	if err := sv.wait(t, "of the stream dying: an in-flight exec was not cancelled on disconnect"); err == nil {
+		t.Error("Serve returned nil, want the recv error")
 	}
 }
 
@@ -487,15 +536,19 @@ func TestCacheSurvivesReconnect(t *testing.T) {
 	s := session.New(testConfig(), r)
 
 	first := newFakeStream()
-	go func() { _ = s.Serve(context.Background(), first) }()
+	firstServe := serve(t, s, first)
 	waitFor(t, "hello", func() bool { return len(first.sent()) >= 1 })
 	st1exec := &pb.Exec{ReqId: 4, Command: "echo x >> log", Streaming: true}
 	first.exec(st1exec)
 	waitFor(t, "first terminal", func() bool { return terminalFor(first.sent(), 4) != nil })
+	// Join the first connection before opening the second: the point of the test is
+	// that the CACHE outlives a connection, which only means anything if the first
+	// Serve has actually finished rather than still running alongside the second.
 	first.close()
+	firstServe.wait(t, "of the first connection closing, before the reconnect")
 
 	second := newFakeStream()
-	go func() { _ = s.Serve(context.Background(), second) }()
+	serve(t, s, second)
 	waitFor(t, "second hello", func() bool { return len(second.sent()) >= 1 })
 	second.exec(&pb.Exec{ReqId: 4, Command: "echo x >> log", Streaming: true})
 	waitFor(t, "re-emitted terminal", func() bool { return terminalFor(second.sent(), 4) != nil })
@@ -503,7 +556,6 @@ func TestCacheSurvivesReconnect(t *testing.T) {
 	if r.count() != 1 {
 		t.Errorf("runner calls = %d across both connections, want 1", r.count())
 	}
-	second.close()
 }
 
 // The sender goroutine's failure path. Two things make this test real rather than
@@ -517,6 +569,13 @@ func TestCacheSurvivesReconnect(t *testing.T) {
 //     returned on its first error instead of continuing to drain would block the
 //     producer forever, so Serve would never return and this test would time out
 //     rather than quietly pass.
+//
+// What it does NOT witness, despite the name: teardown in general. A failing Send
+// makes the sender call cancelConn() itself, which ends the heartbeat producer as
+// a side effect — so this test passes even with Serve's own cancelConn() before
+// close(queue) deleted, the very deadlock it looks like it would catch. Its
+// coverage is the sender's drain-after-failure behaviour specifically, and the
+// join that serve() now registers is what covers the rest (#173 item 5).
 func TestSendFailureDoesNotWedgeTeardown(t *testing.T) {
 	st := newFakeStream()
 	st.failSendAfter(1) // Hello succeeds; every later frame fails inside the sender
@@ -524,8 +583,7 @@ func TestSendFailureDoesNotWedgeTeardown(t *testing.T) {
 	cfg := testConfig()
 	cfg.Heartbeat = time.Hour // the chunks drive the failure, not a heartbeat race
 	s := session.New(cfg, r)
-	errCh := make(chan error, 1)
-	go func() { errCh <- s.Serve(context.Background(), st) }()
+	sv := serve(t, s, st)
 	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
 
 	st.exec(&pb.Exec{ReqId: 1, Command: "echo hi", Streaming: true})
@@ -534,11 +592,7 @@ func TestSendFailureDoesNotWedgeTeardown(t *testing.T) {
 	})
 
 	st.close() // the stream dies; teardown must finish despite a failing sender
-	select {
-	case <-errCh:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Serve did not return within 5s: the sender stopped draining and a producer wedged")
-	}
+	sv.wait(t, "of the stream dying: the sender stopped draining and a producer wedged")
 }
 
 // A duplicate delivery of a req_id whose original is still RUNNING must be
@@ -550,7 +604,7 @@ func TestDuplicateInFlightIsCoalesced(t *testing.T) {
 	st := newFakeStream()
 	r := &scriptedRunner{block: make(chan struct{}), code: 3}
 	s := session.New(testConfig(), r)
-	go func() { _ = s.Serve(context.Background(), st) }()
+	serve(t, s, st)
 	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
 
 	st.exec(&pb.Exec{ReqId: 5, Command: "sleep 1", Streaming: true})
@@ -579,7 +633,6 @@ func TestDuplicateInFlightIsCoalesced(t *testing.T) {
 	if r.count() != 1 {
 		t.Errorf("runner calls = %d, want 1: the duplicate re-ran the command", r.count())
 	}
-	st.close()
 }
 
 // A req_id already IN FLIGHT, redelivered with a DIFFERENT command, is a collision
@@ -594,7 +647,7 @@ func TestCollidingDuplicateWhileInFlightIsRefused(t *testing.T) {
 	st := newFakeStream()
 	r := &scriptedRunner{block: make(chan struct{}), code: 0}
 	s := session.New(testConfig(), r)
-	go func() { _ = s.Serve(context.Background(), st) }()
+	serve(t, s, st)
 	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
 
 	st.exec(&pb.Exec{ReqId: 5, Command: "cat /a", Streaming: true})
@@ -622,7 +675,6 @@ func TestCollidingDuplicateWhileInFlightIsRefused(t *testing.T) {
 	}
 
 	close(r.block)
-	st.close()
 }
 
 // A signalled exit — End{-1} with NO error, which is what the runner reports when
@@ -634,7 +686,7 @@ func TestSignalledExitIsNotCached(t *testing.T) {
 	st := newFakeStream()
 	r := &scriptedRunner{code: -1} // signalled: code < 0, err == nil
 	s := session.New(testConfig(), r)
-	go func() { _ = s.Serve(context.Background(), st) }()
+	serve(t, s, st)
 	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
 
 	oomed := func() *pb.Exec { return &pb.Exec{ReqId: 11, Command: "big-alloc", Streaming: true} }
@@ -650,5 +702,4 @@ func TestSignalledExitIsNotCached(t *testing.T) {
 	if n := r.count(); n != 2 {
 		t.Errorf("runner calls = %d, want 2: the signalled exit was cached", n)
 	}
-	st.close()
 }

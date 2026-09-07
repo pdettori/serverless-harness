@@ -141,6 +141,57 @@ func TestRunReturnsWhenPipeHolderEscapesGroup(t *testing.T) {
 	}
 }
 
+// The drain watchdog must distinguish WEDGED from merely SLOW (#173 item 6).
+// TestRunReturnsWhenPipeHolderEscapesGroup above covers wedged: a holder that
+// never writes again, which only a force-close can unblock. This covers the other
+// case — a holder still producing output, steadily, just spread out. Forcing that
+// one closed drops trailing output the command legitimately produced.
+//
+// The writer has to escape the process group, or the SIGKILL at timeout ends it
+// and there is no "still arriving" to speak of. python3's os.setsid() does that
+// portably, where the setsid(1) binary the sibling test needs is absent on macOS.
+//
+// Timing, with drainGrace at 2s: the deadline fires at 1s, so a wall-clock grace
+// force-closes at ~3s while ticks keep coming past 4s. A measured run before the
+// fix delivered 7 of 10, truncated at 3.01s. Reads arrive every 400ms, five times
+// more often than the grace, so a quiet period never elapses and all ten arrive.
+// The margin is the point: nothing here is tuned to the boundary.
+//
+// The COMPANION bound — that unbroken progress cannot defer the force-close
+// forever — is deliberately not asserted here, because it cannot be. This writer
+// exits on its own at ~4s and closes the pipe, so both pumps reach EOF and Run
+// returns naturally; the watchdog never force-closes on this path whether
+// drainCeiling exists or not. An elapsed-time check here would pass identically
+// with the ceiling deleted (verified), which is worse than no check: it would
+// advertise coverage it does not have. The ceiling's real guard is
+// TestWatchDrainClosesAtCeilingDespiteProgress, where the writer never stops.
+func TestSlowDrainKeepsTrailingOutput(t *testing.T) {
+	py, err := osexec.LookPath("python3")
+	if err != nil {
+		t.Skip("no python3: cannot detach a trickling pipe holder from the process group")
+	}
+	const ticks = 10
+	script := `
+import os, sys, time
+os.setsid()
+for i in range(10):
+    sys.stdout.write("tick%d\n" % i)
+    sys.stdout.flush()
+    time.sleep(0.4)
+`
+	var r recorder
+	_, _ = wexec.BashRunner{}.Run(context.Background(), wexec.Spec{
+		ReqID:     40,
+		Command:   py + " -c '" + script + "' & exit 0",
+		TimeoutS:  1,
+		Streaming: true,
+	}, &r)
+	if got := strings.Count(string(r.stdout), "tick"); got != ticks {
+		t.Errorf("got %d of %d ticks (%q): the drain was force-closed between reads while it was "+
+			"still making progress, dropping trailing output", got, ticks, r.stdout)
+	}
+}
+
 // streaming:false means no incremental delivery, not "exactly one frame":
 // buffered output at exit still has to respect the wire's ChunkSize cap.
 func TestNonStreamingChunksAtExit(t *testing.T) {
