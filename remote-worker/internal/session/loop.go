@@ -31,12 +31,24 @@ const (
 	// failing the connection rather than losing the frame. Deliberately modest for
 	// that reason: a big reserve would only buffer more frames behind a wedged
 	// sender before anyone noticed.
+	// Derived from QueueCap, so it degrades badly if QueueCap is ever lowered: at
+	// QueueCap < 4 this is 0, the reserve vanishes, and trySend then fails on any
+	// full buffer — turning a transient chunk backlog into a dropped connection,
+	// which is a WORSE failure than the dropped frame this all exists to prevent.
+	// The assertion below the const block makes that a compile error instead.
 	TerminalReserve = QueueCap / 4
 	// DefaultConcurrency is the pool size, advertised as Hello.capacity_max.
 	DefaultConcurrency = 4
 	// DefaultHeartbeat is liveness plus NAT/proxy keepalive (spec §7 item 4).
 	DefaultHeartbeat = 15 * time.Second
 )
+
+// TerminalReserve must be at least 1, or the reserve silently disappears and every
+// full buffer becomes a dropped connection. A negative array length is a compile
+// error, so this fails at build time rather than in production. Same intent as
+// outFrame carrying its own accounting: make the next maintainer's plausible
+// mistake impossible rather than merely documented.
+var _ [TerminalReserve - 1]struct{}
 
 // Config is everything the session needs that does not come off the wire.
 type Config struct {

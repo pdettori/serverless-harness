@@ -24,6 +24,8 @@ type fakeStream struct {
 	// stream, so a test that also closes it mid-run (to observe a reconnect, or
 	// Serve's return value) must not panic on the second close.
 	closeOnce sync.Once
+	// recvCalls counts entries into Recv — see recvEntries.
+	recvCalls int
 	// failAfter, when > 0, makes Send fail once sendCalls exceeds it.
 	failAfter int
 	sendCalls int
@@ -89,12 +91,27 @@ func (f *fakeStream) releaseGate() {
 }
 
 func (f *fakeStream) Recv() (*pb.ServerFrame, error) {
+	f.mu.Lock()
+	f.recvCalls++
+	f.mu.Unlock()
 	select {
 	case fr := <-f.in:
 		return fr, nil
 	case <-f.done:
 		return nil, errors.New("stream closed")
 	}
+}
+
+// recvEntries reports how many times recvLoop has ENTERED Recv. That count is a
+// synchronisation primitive, not a statistic: recvLoop is a single goroutine
+// running Recv -> dispatch -> Recv, so entering Recv for the (N+1)th time proves
+// dispatch of the Nth frame RETURNED. It turns "has accept finished with the frame
+// I just pushed?" — otherwise only answerable with a sleep — into an observable
+// condition, with no test-only hook in the session itself.
+func (f *fakeStream) recvEntries() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.recvCalls
 }
 
 func (f *fakeStream) exec(e *pb.Exec) { f.in <- &pb.ServerFrame{Msg: &pb.ServerFrame_Exec{Exec: e}} }
@@ -643,18 +660,31 @@ func TestBusyRefusalSurvivesAChunkBacklog(t *testing.T) {
 	})
 
 	// 1 running + QueueCap queued + 2 too many, so at least one exec is refused.
+	pushed := 1 // the chunk-flooding exec above
 	for i := uint64(2); i <= uint64(session.QueueCap+3); i++ {
 		st.exec(&pb.Exec{ReqId: i, Command: "sleep 30", Streaming: true})
+		pushed++
 	}
 
-	// The refusal must be ATTEMPTED while outbound is still full — that is the whole
-	// scenario. st.exec only buffers into the fake's Recv channel (cap 16), so
-	// returning from the loop above proves nothing about what recvLoop has seen;
-	// releasing the gate here let the sender drain first and the refusal then sailed
-	// into a buffer with room, which is how this test passed against the unfixed
-	// code. Same sequencing discipline as TestAbortWhileQueuedStillEmitsTerminal.
-	waitFor(t, "recvLoop to consume the whole flood", func() bool { return st.pending() == 0 })
-	time.Sleep(50 * time.Millisecond) // and for the last accept to finish its trySend
+	// The refusal must be ATTEMPTED while outbound is still full — that IS the
+	// scenario, and this is the only thing standing between this test and vacuity.
+	// st.exec merely buffers into the fake's Recv channel, so returning from the loop
+	// above proves nothing about what accept has done; release the gate too early and
+	// the sender drains first, the refusal sails into a buffer with room, and the test
+	// passes against the unfixed code. The FIFO assertion below does not backstop that
+	// — in the racy ordering the sender has already drained >= QueueCap chunks, so it
+	// passes too.
+	//
+	// So this is an observed condition rather than a sleep: entering Recv for the
+	// (pushed+1)th time proves dispatch of the last pushed frame returned, because
+	// recvLoop is one goroutine alternating Recv and dispatch.
+	// A timeout here has one other cause worth naming, since the message is what a
+	// future maintainer will read: if TerminalReserve is ever lowered below the
+	// couple of refusals this test provokes, accept escalates instead, recvLoop
+	// returns, and Recv is never entered again.
+	waitFor(t, "accept to finish with every pushed exec (the last one refused) — or, if this "+
+		"timed out, the reserve was too small to absorb them and the session escalated instead",
+		func() bool { return st.recvEntries() >= pushed+1 })
 
 	// Only now let the wire drain. The refusal must be ON it, not dropped.
 	st.releaseGate()
