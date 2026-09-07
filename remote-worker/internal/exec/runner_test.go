@@ -152,10 +152,19 @@ func TestRunReturnsWhenPipeHolderEscapesGroup(t *testing.T) {
 // portably, where the setsid(1) binary the sibling test needs is absent on macOS.
 //
 // Timing, with drainGrace at 2s: the deadline fires at 1s, so a wall-clock grace
-// force-closes at 3s while ticks keep coming until 3.6s — the last two are lost.
-// Reads arrive every 400ms, five times more often than the grace, so an
-// activity-based grace never expires and all ten arrive. The margin is the point:
-// nothing here is tuned to the boundary.
+// force-closes at ~3s while ticks keep coming past 4s. A measured run before the
+// fix delivered 7 of 10, truncated at 3.01s. Reads arrive every 400ms, five times
+// more often than the grace, so a quiet period never elapses and all ten arrive.
+// The margin is the point: nothing here is tuned to the boundary.
+//
+// The COMPANION bound — that unbroken progress cannot defer the force-close
+// forever — is deliberately not asserted here, because it cannot be. This writer
+// exits on its own at ~4s and closes the pipe, so both pumps reach EOF and Run
+// returns naturally; the watchdog never force-closes on this path whether
+// drainCeiling exists or not. An elapsed-time check here would pass identically
+// with the ceiling deleted (verified), which is worse than no check: it would
+// advertise coverage it does not have. The ceiling's real guard is
+// TestWatchDrainClosesAtCeilingDespiteProgress, where the writer never stops.
 func TestSlowDrainKeepsTrailingOutput(t *testing.T) {
 	py, err := osexec.LookPath("python3")
 	if err != nil {
@@ -171,7 +180,6 @@ for i in range(10):
     time.sleep(0.4)
 `
 	var r recorder
-	start := time.Now()
 	_, _ = wexec.BashRunner{}.Run(context.Background(), wexec.Spec{
 		ReqID:     40,
 		Command:   py + " -c '" + script + "' & exit 0",
@@ -181,12 +189,6 @@ for i in range(10):
 	if got := strings.Count(string(r.stdout), "tick"); got != ticks {
 		t.Errorf("got %d of %d ticks (%q): the drain was force-closed between reads while it was "+
 			"still making progress, dropping trailing output", got, ticks, r.stdout)
-	}
-	// The bound still has to exist. A drain that keeps resetting forever would hold
-	// a pool slot and its buffer indefinitely, which is the hazard the watchdog was
-	// added for in the first place.
-	if elapsed := time.Since(start); elapsed > 20*time.Second {
-		t.Errorf("Run took %v: the activity-based grace has no ceiling", elapsed)
 	}
 }
 

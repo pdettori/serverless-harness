@@ -18,6 +18,12 @@ import (
 // unsupported platform at run time, from the one place that says so in words.
 // A comment claiming the tag is present cannot go stale in a way this misses.
 func TestModuleCrossCompilesForNonUnix(t *testing.T) {
+	// Checked BEFORE the build: on a windows host, GOOS=windows is a native build,
+	// so the cross-compile this test is named for silently becomes a no-op. Refuse
+	// up front rather than spending a full build to arrive at the same answer.
+	if runtime.GOOS == "windows" {
+		t.Fatal("this test cross-compiles FOR windows; running it ON windows proves nothing")
+	}
 	goBin, err := osexec.LookPath("go")
 	if err != nil {
 		t.Skip("no go toolchain in PATH: cannot cross-compile")
@@ -27,8 +33,5 @@ func TestModuleCrossCompilesForNonUnix(t *testing.T) {
 	cmd.Env = append(cmd.Environ(), "GOOS=windows", "GOARCH=amd64")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("GOOS=windows build failed (%v); the unix-only syscalls are not behind a build constraint:\n%s", err, out)
-	}
-	if runtime.GOOS == "windows" {
-		t.Fatal("this test cross-compiles FOR windows; running it ON windows proves nothing")
 	}
 }

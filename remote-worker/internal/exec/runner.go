@@ -48,10 +48,17 @@ const BufferCap = 8 * 1024 * 1024
 // (go.dev/issue/23019: the os/exec Cancel/WaitDelay mitigation explicitly
 // excludes *Pipe() users).
 //
-// It is a QUIET period, not a wall clock: every read that returns bytes restarts
-// it. A wall-clock grace cannot tell a wedged drain from a slow one, so it
+// It is a QUIET period, not a wall clock: a drain still producing bytes is left
+// alone. A wall-clock grace cannot tell a wedged drain from a slow one, so it
 // force-closed a pump that was still delivering legitimate trailing output
 // (#173 item 6).
+//
+// TEARDOWN LATENCY, precisely: progress is SAMPLED when this timer expires, not
+// observed as each read happens, so the timer is re-armed at expiry if any bytes
+// arrived during the window that just ended. The force-close therefore lands
+// between 1x and 2x drainGrace after the last byte — up to ~4s, not 2s. Sampling
+// is deliberate (it costs one atomic load per window rather than a wakeup per
+// read) and only the bound matters, but read the bound as 2x.
 const drainGrace = 2 * time.Second
 
 // drainCeiling caps the total force-close delay however much progress the pumps

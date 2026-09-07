@@ -114,6 +114,39 @@ func TestWatchDrainHoldsOffWhileReadsProgress(t *testing.T) {
 	}
 }
 
+// Pins the teardown-latency bound drainGrace's doc states, so the number cannot
+// drift from the comment. Progress is SAMPLED at expiry rather than observed per
+// read, so a single read inside the first window re-arms the timer for a second
+// full grace: the close lands at 2x grace, not 1x.
+//
+// What would fail this: a watchdog that reacted to each read as it happened
+// (waking on a channel, say) would close one grace after the lone read — at ~60ms
+// here — tripping the lower bound. That is the design this documents NOT being.
+// The lower bound cannot flake, because Go timers never fire early; the upper
+// bound is deliberately loose, since being late is only a scheduling artifact.
+func TestWatchDrainClosesAtTwiceGraceAfterTheLastRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var reads atomic.Uint64
+	pipe := &spyCloser{}
+	done := make(chan struct{})
+	defer close(done)
+
+	go watchDrain(ctx, done, &reads, testGrace, time.Hour, pipe)
+	cancel()
+	// One read, early in the first window — the last byte this drain ever produces.
+	time.Sleep(testGrace / 5)
+	reads.Add(1)
+
+	// Halfway through the second window: the earliest legal close is 2x grace.
+	time.Sleep(testGrace + testGrace/2)
+	if pipe.isClosed() {
+		t.Error("closed before 2x grace: progress inside a window must re-arm the timer for a full further grace")
+	}
+	if !waitClosed(pipe, 2*time.Second) {
+		t.Error("never closed after a single read followed by silence: the quiet period does not end")
+	}
+}
+
 // ...but the hold-off is not unconditional. A holder trickling forever would
 // otherwise pin a pool slot and its buffer indefinitely — a slower version of the
 // wedge the watchdog exists to prevent — so progress buys time only up to the
