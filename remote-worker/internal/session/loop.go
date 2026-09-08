@@ -117,6 +117,125 @@ type slot struct {
 	fp [32]byte
 }
 
+// execRegistry owns the in-flight slot map and the ONE mutex that guards it, so
+// this file's central safety property — every access to the slot map happens under
+// the mutex — is checkable by reading one type instead of six scattered call sites
+// (#173 item 4). Previously the raw *sync.Mutex was threaded through recvLoop and
+// accept as a positional parameter alongside the map, which made "did this caller
+// take the lock?" a question you answered by reading, every time, in five places.
+//
+// BE PRECISE ABOUT WHAT THIS GUARANTEES. execRegistry lives in the same package as
+// its callers, so unexported fields are no barrier: nothing stops future code here
+// from writing r.inflight[id] directly, and the compiler will not object. What the
+// type buys is that every access is now co-located in the ~60 lines below and there
+// is no longer a map-and-mutex pair being passed around inviting ad-hoc use. That
+// is an auditability win, not an enforcement one. Making it enforced would mean a
+// separate package, which would in turn require exporting slot and its fields —
+// more surface than a single file's invariant is worth.
+//
+// Every method below corresponds to exactly one critical section that used to be
+// written out longhand, and each preserves its original lock SCOPE — notably which
+// side of the unlock the cancel happens on, which differs between finish and remove
+// and is not incidental.
+type execRegistry struct {
+	mu       sync.Mutex
+	inflight map[uint64]*slot
+}
+
+func newExecRegistry() *execRegistry {
+	return &execRegistry{inflight: map[uint64]*slot{}}
+}
+
+// abort cancels an exec but deliberately LEAVES it in the map. A queued exec must
+// still be dequeued so runOne can emit its terminal frame; deleting here would make
+// the pool skip it (sl == nil) and the harness would wait for a frame that never
+// arrives.
+func (r *execRegistry) abort(reqID uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if sl, ok := r.inflight[reqID]; ok {
+		sl.cancel()
+	}
+}
+
+// finish releases the slot once its terminal frame has been sent. The cancel happens
+// under the lock here, unlike remove: this is the terminal release, so there is no
+// caller left holding the CancelFunc to call it afterwards.
+func (r *execRegistry) finish(reqID uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if sl, ok := r.inflight[reqID]; ok {
+		sl.cancel()
+		delete(r.inflight, reqID)
+	}
+}
+
+// remove deletes a slot WITHOUT cancelling it, for accept's queue-full branch: that
+// caller still holds the CancelFunc and cancels outside the lock, which is the scope
+// the code had before this refactor. Keeping the two apart is deliberate — widening
+// finish's behaviour to cover this case would move a cancel inside the lock.
+func (r *execRegistry) remove(reqID uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.inflight, reqID)
+}
+
+// slotFor returns the slot occupying reqID, or nil. The result is safe to use after
+// the lock is dropped: a slot's fields are never mutated after insertion, and cancel
+// is safe to call concurrently.
+func (r *execRegistry) slotFor(reqID uint64) *slot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.inflight[reqID]
+}
+
+// claim performs accept's whole admission decision under ONE hold of the lock, and
+// exists because that decision is compound: it reads the slot map, then may consult
+// the dedup cache, then may insert — and those three must not interleave with
+// another accept or a finish. decide receives the slot currently in flight for reqID
+// (nil if none) and returns the slot to insert, or nil to insert nothing.
+//
+// decide must DECIDE ONLY. Side effects — cancel, trySend, logging — belong after
+// claim returns, because the pre-refactor code released the mutex before every one
+// of them and holding it across a channel send or a log write would widen the
+// critical section rather than merely relocate it.
+func (r *execRegistry) claim(reqID uint64, decide func(running *slot) *slot) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if sl := decide(r.inflight[reqID]); sl != nil {
+		r.inflight[reqID] = sl
+	}
+}
+
+// claimOutcome is what accept's admission decision resolved to. It exists so the
+// decision can be taken under the registry lock and ACTED ON after it is dropped:
+// three of the four outcomes send a frame or write a log line, neither of which
+// belongs inside the critical section.
+type claimOutcome int
+
+const (
+	// claimAdmitted: a fresh exec; a slot was inserted and the caller enqueues it.
+	claimAdmitted claimOutcome = iota
+	// claimCoalesced: a genuine redelivery of a still-running exec — say nothing on
+	// the wire, its terminal frame is already owed.
+	claimCoalesced
+	// claimCollision: a DIFFERENT command under a req_id already in flight; refuse it.
+	claimCollision
+	// claimCacheHit: a redelivery of a completed exec; replay the cached frame.
+	claimCacheHit
+)
+
+// conn bundles the per-connection plumbing recvLoop and accept need. It replaces
+// seven and six positional parameters respectively, of which one was the raw mutex
+// execRegistry now hides. Nothing here is owned by Session: a Session outlives many
+// conns (the cache is what survives a re-dial), so this state is per-Serve.
+type conn struct {
+	st      Stream
+	trySend func(*pb.WorkerFrame) bool
+	queue   chan *pb.Exec
+	reg     *execRegistry
+}
+
 // Serve runs one connection to exhaustion and returns why it ended. The caller
 // re-dials and calls Serve again; the cache survives because it lives on Session.
 //
@@ -298,58 +417,37 @@ func (s *Session) Serve(ctx context.Context, st Stream) error {
 		}
 	}()
 
-	var (
-		mu       sync.Mutex
-		inflight = map[uint64]*slot{}
-	)
-	// abortReq cancels an exec but deliberately LEAVES it in the map. A queued
-	// exec must still be dequeued so runOne can emit its terminal frame; deleting
-	// here would make the pool skip it (sl == nil) and the harness would wait for
-	// a frame that never arrives.
-	abortReq := func(reqID uint64) {
-		mu.Lock()
-		defer mu.Unlock()
-		if sl, ok := inflight[reqID]; ok {
-			sl.cancel()
-		}
-	}
-	// finish releases the slot once its terminal frame has been sent.
-	finish := func(reqID uint64) {
-		mu.Lock()
-		defer mu.Unlock()
-		if sl, ok := inflight[reqID]; ok {
-			sl.cancel()
-			delete(inflight, reqID)
-		}
+	c := &conn{
+		st:      st,
+		trySend: trySend,
+		queue:   make(chan *pb.Exec, QueueCap),
+		reg:     newExecRegistry(),
 	}
 
-	queue := make(chan *pb.Exec, QueueCap)
 	for i := 0; i < s.cfg.MaxConcurrent; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for e := range queue {
-				mu.Lock()
-				sl := inflight[e.GetReqId()]
-				mu.Unlock()
+			for e := range c.queue {
+				sl := c.reg.slotFor(e.GetReqId())
 				if sl == nil {
 					// Defensive only: the sole path that removes a slot before dequeue
 					// is accept's queue-full branch, and that branch never enqueues.
 					continue
 				}
 				s.runOne(sl.ctx, enqueue, e)
-				finish(e.GetReqId())
+				c.reg.finish(e.GetReqId())
 			}
 		}()
 	}
 
-	recvErr := s.recvLoop(connCtx, st, trySend, queue, inflight, &mu, abortReq)
+	recvErr := s.recvLoop(connCtx, c)
 
 	// Cancel BEFORE closing the queue: a still-queued exec must see a done ctx
 	// once dequeued, so runOne takes its "aborted while queued" branch instead of
 	// spawning a real bash child only to kill it immediately.
 	cancelConn() // stop heartbeats and kill in-flight/queued children
-	close(queue)
+	close(c.queue)
 	wg.Wait() // producers done: no more enqueues to outbound
 	close(outbound)
 	wgSender.Wait()
@@ -360,17 +458,9 @@ func (s *Session) Serve(ctx context.Context, st Stream) error {
 // dispatch blocked on a full queue — or on sending a refusal frame — an Abort
 // queued behind it could never be read, and that abort is what would free the
 // pool (spec §6.2). Every send accept makes goes through trySend accordingly.
-func (s *Session) recvLoop(
-	ctx context.Context,
-	st Stream,
-	trySend func(*pb.WorkerFrame) bool,
-	queue chan *pb.Exec,
-	inflight map[uint64]*slot,
-	mu *sync.Mutex,
-	abortReq func(uint64),
-) error {
+func (s *Session) recvLoop(ctx context.Context, c *conn) error {
 	for {
-		sf, err := st.Recv()
+		sf, err := c.st.Recv()
 		if err != nil {
 			return err
 		}
@@ -380,15 +470,16 @@ func (s *Session) recvLoop(
 			// CONNECTION rather than to the exec: returning it here ends this session
 			// so the caller re-dials, instead of continuing to accept work that can
 			// never be answered (#173 item 1).
-			if err := s.accept(ctx, trySend, queue, inflight, mu, m.Exec); err != nil {
+			if err := s.accept(ctx, c, m.Exec); err != nil {
 				return err
 			}
 		case *pb.ServerFrame_Abort:
 			// Cancel only — do NOT remove the slot. runOne owns the terminal frame in
 			// both cases: a running exec's Run returns ErrAborted, and a queued exec
 			// sees a done ctx before spawning bash and emits End{-1} without running.
-			// Abort for an unknown req_id is a no-op (spec §8).
-			abortReq(m.Abort.GetReqId())
+			// Abort for an unknown req_id is a no-op (spec §8). The "leaves it in the
+			// map" reasoning now lives on execRegistry.abort.
+			c.reg.abort(m.Abort.GetReqId())
 		}
 	}
 }
@@ -403,44 +494,66 @@ func (s *Session) recvLoop(
 // cache-hit replay. A replay looks harmless ("a duplicate of a frame already
 // delivered once") but usually is not: the harness redelivers precisely because it
 // never got the first answer, so dropping the replay strands that caller too.
-func (s *Session) accept(
-	ctx context.Context,
-	trySend func(*pb.WorkerFrame) bool,
-	queue chan *pb.Exec,
-	inflight map[uint64]*slot,
-	mu *sync.Mutex,
-	e *pb.Exec,
-) error {
+func (s *Session) accept(ctx context.Context, c *conn, e *pb.Exec) error {
 	reqID := e.GetReqId()
 	fp := Fingerprint(e.GetCommand(), e.GetStdin(), e.GetTimeoutS(), e.GetStreaming())
 
 	slotCtx, cancel := context.WithCancel(ctx)
-	mu.Lock()
-	// IN-FLIGHT IS CHECKED FIRST, AHEAD OF THE CACHE — the order is load-bearing.
-	// runOne calls cache.Put BEFORE sending its terminal frame, and the slot is
-	// only released (by finish) after runOne returns. Consulting the cache first
-	// let a duplicate arriving in that window hit the cache and replay a terminal
-	// frame while the original's own terminal frame was still in flight: two
-	// terminal frames for one exec, against the invariant this file asserts. The
-	// window widens under backpressure — exactly when duplicates are likeliest.
-	// With the slot consulted first, such a duplicate is coalesced instead. The
-	// completed-redelivery path is unaffected: once finish has deleted the slot,
-	// inflight misses and the cache lookup below answers it.
-	if sl, running := inflight[reqID]; running {
-		same := sl.fp == fp
-		mu.Unlock()
-		cancel()
-		if same {
-			// A genuine redelivery of a still-running exec. The original's terminal
-			// frame for this req_id is already owed and on its way. Sending a refusal
-			// here would be a SECOND terminal frame for one id: a caller keyed on
-			// req_id would settle it as failed on this refusal, then receive the real
-			// (possibly successful, possibly filesystem-mutating) result and have
-			// nowhere to put it. Silently coalesce instead — the exec already owes
-			// exactly one terminal frame, and it is coming.
-			log.Printf("session: req_id %d already in flight; coalescing duplicate delivery", reqID)
+
+	// The decision is taken under the registry's lock; every side effect it implies
+	// is performed below, after the lock is dropped. outcome and cached carry it out.
+	var (
+		outcome   claimOutcome
+		cached    *pb.WorkerFrame
+		collision bool
+	)
+	c.reg.claim(reqID, func(running *slot) *slot {
+		// IN-FLIGHT IS CHECKED FIRST, AHEAD OF THE CACHE — the order is load-bearing.
+		// runOne calls cache.Put BEFORE sending its terminal frame, and the slot is
+		// only released (by finish) after runOne returns. Consulting the cache first
+		// let a duplicate arriving in that window hit the cache and replay a terminal
+		// frame while the original's own terminal frame was still in flight: two
+		// terminal frames for one exec, against the invariant this file asserts. The
+		// window widens under backpressure — exactly when duplicates are likeliest.
+		// With the slot consulted first, such a duplicate is coalesced instead. The
+		// completed-redelivery path is unaffected: once finish has deleted the slot,
+		// the registry misses and the cache lookup below answers it.
+		if running != nil {
+			if running.fp == fp {
+				outcome = claimCoalesced
+			} else {
+				outcome = claimCollision
+			}
 			return nil
 		}
+		// Consulted before enqueue: a redelivery of a COMPLETED exec must not consume
+		// a queue slot or a pool goroutine. Held under the registry lock so accept's
+		// decision is atomic with respect to the slot map (Cache takes its own lock;
+		// nothing ever acquires the registry lock while holding it, so the nesting
+		// cannot deadlock).
+		frame, hit, coll := s.cache.Lookup(reqID, fp)
+		if hit {
+			outcome, cached = claimCacheHit, frame
+			return nil
+		}
+		outcome, collision = claimAdmitted, coll
+		return &slot{ctx: slotCtx, cancel: cancel, fp: fp}
+	})
+
+	switch outcome {
+	case claimCoalesced:
+		cancel()
+		// A genuine redelivery of a still-running exec. The original's terminal
+		// frame for this req_id is already owed and on its way. Sending a refusal
+		// here would be a SECOND terminal frame for one id: a caller keyed on
+		// req_id would settle it as failed on this refusal, then receive the real
+		// (possibly successful, possibly filesystem-mutating) result and have
+		// nowhere to put it. Silently coalesce instead — the exec already owes
+		// exactly one terminal frame, and it is coming.
+		log.Printf("session: req_id %d already in flight; coalescing duplicate delivery", reqID)
+		return nil
+	case claimCollision:
+		cancel()
 		// NOT a redelivery: different command+stdin under an id already in flight,
 		// which a req_id salt collision across harness replicas still makes reachable
 		// (spec §3.1) — and the in-flight window is where it is widest, since
@@ -450,42 +563,34 @@ func (s *Session) accept(
 		// frame for the same logical exec, precisely because it is a different one.
 		log.Printf("session: req_id %d reused for a different command while the original is still "+
 			"in flight; refusing it (req_id is only probabilistically unique across replicas — see spec §3.1)", reqID)
-		if !trySend(errFrame(reqID, "req_id collision: a different command is already in flight for this id")) {
+		if !c.trySend(errFrame(reqID, "req_id collision: a different command is already in flight for this id")) {
 			return ErrEgressWedged
 		}
 		return nil
-	}
-	// Consulted before enqueue: a redelivery of a COMPLETED exec must not consume
-	// a queue slot or a pool goroutine. Held under mu so accept's decision is
-	// atomic with respect to the slot map (Cache takes its own lock; nothing ever
-	// acquires mu while holding it, so the nesting cannot deadlock).
-	frame, hit, collision := s.cache.Lookup(reqID, fp)
-	if hit {
-		mu.Unlock()
+	case claimCacheHit:
 		cancel()
-		if !trySend(frame) {
+		if !c.trySend(cached) {
 			return ErrEgressWedged
 		}
 		return nil
 	}
-	inflight[reqID] = &slot{ctx: slotCtx, cancel: cancel, fp: fp}
-	mu.Unlock()
+
 	if collision {
 		log.Printf("session: req_id %d reused for a different command; running it fresh "+
 			"(req_id is only probabilistically unique across replicas — see spec §3.1)", reqID)
 	}
 
 	select {
-	case queue <- e:
+	case c.queue <- e:
 	default:
-		mu.Lock()
-		delete(inflight, reqID)
-		mu.Unlock()
+		// remove, not finish: this caller still holds cancel and calls it outside the
+		// lock, which is the scope this branch has always had.
+		c.reg.remove(reqID)
 		cancel()
 		// The frame this item was filed about. The exec never ran and never will, so
 		// losing this refusal loses the caller's only answer — hence the reserve, and
 		// hence ending the connection if even the reserve cannot take it.
-		if !trySend(errFrame(reqID, "busy: queue full")) {
+		if !c.trySend(errFrame(reqID, "busy: queue full")) {
 			return ErrEgressWedged
 		}
 	}
