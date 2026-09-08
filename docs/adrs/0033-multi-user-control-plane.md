@@ -24,7 +24,8 @@ Three forces shape the answer:
 - **The target design is not available.** [Z1](../specs/2026-06-26-identity-spine-design.md) puts a
   trusted orchestrator above the harness and keeps credentials out of it entirely, with per-subject
   resolution happening at the [Z3](../specs/2026-06-26-inference-injector-design.md)/[Z5](../specs/2026-06-19-m13-generalized-credentialed-egress-design.md)
-  injector. That resolution lives in `kagenti-extensions`, outside this repo, so building on it blocks
+  injector. That resolution lives in `rossoctl/cortex` (formerly `kagenti-extensions`), outside this repo, so
+  building on it blocks
   every user-visible deliverable on another codebase.
 - **The harness is the wrong place for either.** It processes untrusted model output, so it must not be
   able to mint identity, and per Z2/ADR-0011 it should hold no secret. An ambient credential there is
@@ -66,7 +67,7 @@ The containments are the reason the cost is bounded:
   harness would then trust an asserted header, which Z1 §3.2 identifies as precisely the spoofable
   signal that per-session identity exists to replace.
 - **Wait for Z3/Z5 per-subject resolution** — the correct end state, and still the slice-3 target, but
-  it blocks all user-visible work on `kagenti-extensions`.
+  it blocks all user-visible work on `rossoctl/cortex`.
 - **Per-user credentials in Redis** — rejected on inspection: `deploy/knative/redis.yaml` has no PVC and
   no `appendonly`, so every user's key would be lost on a pod restart.
 

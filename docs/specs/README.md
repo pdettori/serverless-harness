@@ -163,8 +163,8 @@ stop being held by anything model-influenced.
 | ID      | Title                                                                                                                                                                                                                                                | Status            | Spec / decision                                                                                                                                        |
 | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **MU1** | **Multi-user control plane** — always-on trusted tier owning the authenticated `/v1` API, session-ownership index, per-user credential store, resource introspection; Ed25519 session token; per-turn credential exchange; composes with `P5` (§3.5) | design (proposed) | [`2026-09-08-multi-user-control-plane-design.md`](2026-09-08-multi-user-control-plane-design.md); [ADR-0033](../adrs/0033-multi-user-control-plane.md) |
-| **MU2** | Tenant-labelled sandbox pool partition; `sandbox-egress` credential delivery; quotas and cost attribution; generic OIDC; owned schedules and runs                                                                                                    | planned           | MU1 §10; gated on [#237](https://github.com/rossoctl/serverless-harness/issues/237)                                                                    |
-| **MU3** | Injector-resolved per-user credentials — retires MU1's ADR-0033 divergence                                                                                                                                                                           | planned           | MU1 §10; needs Z3/Z5 per-subject resolution in `kagenti-extensions`                                                                                    |
+| **MU2** | Tenant-labelled sandbox pool partition (request-scoped selector on the `/turn` path); `sandbox-egress` credential delivery; quotas and cost attribution; generic OIDC; owned schedules and runs                                                      | planned           | MU1 §10, §8.2                                                                                                                                          |
+| **MU3** | Injector-resolved per-user credentials — retires MU1's ADR-0033 divergence                                                                                                                                                                           | planned           | MU1 §10; needs Z3/Z5 per-subject resolution in `rossoctl/cortex`                                                                                       |
 
 ### Dependencies (MU)
 
@@ -176,9 +176,11 @@ stop being held by anything model-influenced.
   does if P5's implementation has not landed.
 - **MU1 diverges from Z1 §2** by holding identity and credentials in one tier
   ([ADR-0033](../adrs/0033-multi-user-control-plane.md)); **Z3/Z5 retire that divergence** as MU3.
-- **MU2 is gated** on the deferred ADR-0028 decision in
-  [#237](https://github.com/rossoctl/serverless-harness/issues/237), which also affects the
-  non-multi-user `/runs` path.
+- **MU2 is _not_ gated on [#237](https://github.com/rossoctl/serverless-harness/issues/237).** That
+  issue governs the **workload-addressed** pool selector; MU2's partition uses the **envelope**
+  selector, which prompt leaves already honour (`run-leaf.ts:124-128`, reached at `:390`). MU2's real
+  work is that the `/turn` path resolves a single pod (`run-turn.ts:57`) rather than leasing from the
+  pool — see MU1 §8.2.
 
 ---
 

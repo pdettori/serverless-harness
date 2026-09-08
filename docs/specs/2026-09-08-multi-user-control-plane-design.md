@@ -180,7 +180,8 @@ jewel out of the credential blast radius. This design puts both in one component
 mints session identity **and** holds the credential store.
 
 That is a real concentration of risk, accepted for one reason: the alternative — per-subject
-resolution at the inference injector — lives in `kagenti-extensions`, outside this repo, and would
+resolution at the inference injector — lives in `rossoctl/cortex` (formerly `kagenti-extensions`),
+outside this repo, and would
 block every user-visible deliverable on another codebase. Two containments make the cost bounded:
 
 - A `CredentialStore` interface (§6.6), so slice 3 moves resolution behind the Z3/Z5 injector without
@@ -214,6 +215,7 @@ control plane ──exchange──▶ TurnConfig.anthropicAuthToken
                               ▼  applyModelGateway (per turn)
                         model.headers.Authorization = Bearer <subject's token>
                         ANTHROPIC_API_KEY = P5's inert sentinel   ← satisfies pi's existence check
+                        ANTHROPIC_OAUTH_TOKEN deleted            ← or it would outrank the sentinel
 ```
 
 Two consequences follow, and they are the reason §3.5 changed:
@@ -224,7 +226,11 @@ Two consequences follow, and they are the reason §3.5 changed:
 - **Deleting the `:310-312` seed is not MU1's to do, and must not be done without P5's sentinel.**
   Delete it alone and `ANTHROPIC_API_KEY` goes absent, so gateway mode breaks outright (P5 §3.3).
   P5's step 3 replaces it with a fixed non-secret sentinel; MU1 consumes that, and duplicating it
-  would be both redundant and a merge conflict.
+  would be both redundant and a merge conflict. Note the sentinel is only what pi resolves if
+  `ANTHROPIC_OAUTH_TOKEN` is **absent** — `getApiKeyEnvVars('anthropic')` returns
+  `["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]` in that order, OAuth first — which is why P5's
+  step 3 **deletes** it rather than only overwriting `ANTHROPIC_API_KEY`, and why §9.3 test 1 asserts
+  the absence and not just the sentinel.
 
 ### 3.5 Composition with P5 — and what MU1 does before it lands
 
@@ -421,8 +427,14 @@ At turn start the data plane exchanges the presented token for that subject's cr
 
 ```
 harness ──POST /internal/credentials { token } ──▶ control plane
-        ◀── { anthropicAuthToken, anthropicBaseUrl }
+        ◀── { mode, anthropicAuthToken, anthropicBaseUrl }
 ```
+
+`mode` tags the credential as `placeholder` or `direct` (§3.6). `anthropicBaseUrl` resolves from the
+credential's `endpoint`, else the deployment default, else the exchange refuses with
+`endpoint_unresolved` (§6.2) — it is never returned undefined, because `run-turn.ts:313` would then
+fall through to the environment and, failing that, send the subject's token to the default endpoint
+with no `baseUrl` override.
 
 If the credential rode inside the token, a client-visible bearer string would contain a provider key —
 landing in browser storage, proxy logs, and shell history. This keeps it server-side and matches the
@@ -477,9 +489,28 @@ PUT /v1/credentials/github-work
   "consumer": "sandbox-egress",
   "destination": { "hosts": ["api.github.com", "github.com"] },
   "binding": { "header": "Authorization", "format": "Bearer {token}" },
+  "endpoint": null,                     // inference only: full gateway origin, e.g. "https://litellm.internal/v1"
   "secret": { "token": "…" }            // the only encrypted part
 }
 ```
+
+`destination.hosts` is a **host allow-list**, not a base URL, so it cannot serve as the gateway
+address `applyModelGateway` needs — that requires a full origin plus path. Hence a separate optional
+**`endpoint`** field, meaningful only for `consumer: inference`.
+
+**Resolution order, and why it must fail closed.** For an `inference` credential the exchange resolves
+`anthropicBaseUrl` from the credential's `endpoint`, else the deployment-level default, else it
+**refuses with `endpoint_unresolved`** and the turn does not run.
+
+Refusing matters because of the `||` at `run-turn.ts:313`: if `config.anthropicBaseUrl` comes back
+undefined, `gatewayBase` falls through to `process.env.ANTHROPIC_BASE_URL`, and if that is also unset
+`applyModelGateway` returns a model carrying `Authorization: Bearer <subject's token>` with **no
+`baseUrl` override** — sending one user's gateway token to the default Anthropic endpoint, where it is
+neither valid nor intended to go. A credential whose destination cannot be resolved is not a
+degraded request; it is a misdirected secret, so it is refused rather than defaulted.
+
+Per-credential rather than deployment-only because a user may hold keys for different gateways, and
+`endpoint` is non-secret metadata, so it lists without decryption like the rest.
 
 `name` is **user-chosen**, so `github-work` and `github-personal` coexist. `kind` is a **registry**
 entry carrying validation and binding rules, not a closed union — adding SigV4 or an MCP server's
@@ -653,9 +684,32 @@ The slice-2 design is a **tenant-labelled pool partition**: the control plane su
 label, and a lease can only ever match its own partition. This preserves the warm pool and the P2/P3
 density work, at the cost of a minimum idle pod count per active tenant.
 
-It is blocked on the deferred ADR-0028 decision recorded in §2.6: the resolver **ignores** a workload's
-selector for `kind: 'prompt'` leaves, which is precisely the shape of a user session turn. That
-decision has to be taken before the partition can be enforced (§11).
+**This is not blocked on [#237](https://github.com/rossoctl/serverless-harness/issues/237)** — an
+earlier draft of this section said it was, and that inverted the dependency. There are **two distinct
+selectors**, and `server.ts:308-311` says so in the same breath:
+
+> A prompt leaf DOES lease a pool sandbox now, and honors an envelope `sandboxPoolSelector`
+> (ADR 0028 amendment, 2026-09-01) — but a _workload-addressed_ one still ignores the workload's own
+> selector.
+
+| Selector                                                                                        | Honoured for `kind: 'prompt'`? | Governed by                                                       |
+| ----------------------------------------------------------------------------------------------- | ------------------------------ | ----------------------------------------------------------------- |
+| **Envelope** `sandboxPoolSelector` (what the control plane would inject after the `:553` scrub) | **yes**, today                 | —                                                                 |
+| **Workload-addressed** `WorkloadRecord.sandboxSelector`                                         | no — ignored with a warn       | [#237](https://github.com/rossoctl/serverless-harness/issues/237) |
+
+#237 governs only the second. The mechanism this section proposes is the first, and it already works
+on the `/runs` path: `sandboxEnvironment()` (`run-leaf.ts:124-128`) is **not gated on `kind`**, and
+`runPromptLeaf` reaches it at `:390`. `selectPoolSandbox` also takes its environment as an
+**argument** (`select-sandbox.ts:75`), so the selector is already request-scoped rather than
+process-global — exactly what a per-tenant partition needs.
+
+One real gap remains, and it is smaller and different: **the `/turn` path does not lease from the pool
+at all.** `run-turn.ts:57` resolves a single pod via `resolveSandboxConfig`, never `selectPoolSandbox`.
+So MU2's work on MU1's interactive path is to make `/turn` take a request-scoped selector the way
+`runPromptLeaf` already does — a substitution its own comment at `run-leaf.ts:385-387` describes as
+"a superset, not a behavior swap", since with no selector set it falls back to the same single-pod
+resolution. That is plumbing on a path this spec already touches, not a deferred cross-cutting
+decision.
 
 Rejected alternatives: **exclusive lease + scrub on release** (isolation reduces to the completeness of
 a scrub list — the #216/#222 bug class, permanently); **per-session ephemeral sandbox** (strongest and
@@ -671,22 +725,26 @@ Typed errors at the boundary, mapped once. Codes stay `snake_case` and bodies st
 `{ error, message?, sessionId? }`, matching `invalid_json` / `session_not_found` / `prompt_required`
 already in `server.ts`.
 
-| Condition                             | Code                             | Status                       |
-| ------------------------------------- | -------------------------------- | ---------------------------- |
-| Missing, invalid, or expired token    | `token_invalid`, `token_expired` | 401                          |
-| Non-owner on a session route          | `session_not_found`              | 404                          |
-| Non-admin passing `?owner=`           | `forbidden`                      | 403                          |
-| Owner has no inference credential     | `credential_required`            | 400                          |
-| Owner has several, none named         | `credential_ambiguous`           | 400                          |
-| Control plane unreachable at exchange | `credential_unavailable`         | 503                          |
-| `token.sid` ≠ body `sessionId`        | `session_mismatch`               | 400                          |
-| Pool saturated                        | `saturated`                      | 503 + `Retry-After` (exists) |
-| Delete accepted, turn in flight       | —                                | 202                          |
+| Condition                                                 | Code                             | Status                       |
+| --------------------------------------------------------- | -------------------------------- | ---------------------------- |
+| Missing, invalid, or expired token                        | `token_invalid`, `token_expired` | 401                          |
+| Non-owner on a session route                              | `session_not_found`              | 404                          |
+| Non-admin passing `?owner=`                               | `forbidden`                      | 403                          |
+| Owner has no inference credential                         | `credential_required`            | 400                          |
+| Owner has several, none named                             | `credential_ambiguous`           | 400                          |
+| Control plane unreachable at exchange                     | `credential_unavailable`         | 503                          |
+| `inference` credential has no resolvable gateway endpoint | `endpoint_unresolved`            | 400                          |
+| `token.sid` ≠ body `sessionId`                            | `session_mismatch`               | 400                          |
+| Pool saturated                                            | `saturated`                      | 503 + `Retry-After` (exists) |
+| Delete accepted, turn in flight                           | —                                | 202                          |
 
 ### 9.2 Fail-closed requirements
 
 - **Control plane unreachable → the turn fails.** It does not fall back to the environment. This is the
   single most important behaviour in the design; §6 is scaffolding for it.
+- **An unresolvable gateway endpoint → the turn fails** (`endpoint_unresolved`, §6.2). Defaulting
+  here would send one subject's gateway token to the wrong endpoint — a misdirected secret rather
+  than a degraded request.
 - **Token expiry is evaluated at turn start only**, so a long turn is not killed mid-stream when its
   5-minute token lapses.
 - **An identity-provider outage does not break running work.** Session-token verification is local
@@ -744,9 +802,11 @@ holds with the deployment's own key present in the environment.
 ## 11. Open decisions owed
 
 1. **Should a workload's pool bound its `kind: 'prompt'` leaves?** Deferred at
-   `server.ts:308-320` under ADR-0028; §8.2's tenant partition cannot be enforced until it is taken.
-   Not decided here because it predates this spec and affects the non-multi-user `/runs` path too.
-   Tracked as [#237](https://github.com/rossoctl/serverless-harness/issues/237).
+   `server.ts:308-320` under ADR-0028, tracked as
+   [#237](https://github.com/rossoctl/serverless-harness/issues/237). Still a real open decision, but
+   **it does not gate §8.2's tenant partition** — that uses the _envelope_ selector, which prompt
+   leaves already honour, not the _workload-addressed_ one #237 is about (§8.2). Left undecided here
+   because it predates this spec and affects the non-multi-user `/runs` path too.
 2. **Tenant granularity.** This spec treats one subject as one tenant. Teams and shared sessions would
    introduce a tenant that is not a user, changing the owner zset into a membership lookup. Deliberately
    not designed now (YAGNI), but the `tenant` field exists in the session hash and the token so the
