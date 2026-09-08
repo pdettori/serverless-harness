@@ -408,6 +408,43 @@ The frame _semantics_ are carried from the superseded design verbatim — only t
   seam a second truncation concept for bytes it does not return would buy nothing, and the Go
   worker logs the event instead.
 
+- **Message-size ceiling, and why it is derived rather than chosen.** gRPC defaults every
+  receive limit to 4 MiB on both implementations (grpc-js
+  `DEFAULT_MAX_RECEIVE_MESSAGE_LENGTH`, grpc-go `defaultClient/ServerMaxReceiveMessageSize`);
+  send limits default to unlimited. 4 MiB is **smaller than this contract's own write path
+  needs.** A write travels as base64 in `Exec.stdin`, inflating the file by 4/3, so the
+  largest _readable_ file — `DEFAULT_OUTPUT_CAP`, 8 MiB — becomes a ~10.7 MiB `Exec`. Left at
+  the default, every file between ~3 MiB and 8 MiB was **readable but not writable**, and Pi's
+  Edit composes read with write, so editing one succeeded at reading and then failed.
+  `KubectlTransport` pipes base64 through `kubectl exec` stdin with no such ceiling, making
+  this one more divergence decided by which backend was leased.
+
+  The ceiling is therefore **16 MiB**, clearing
+  `base64EncodedLength(DEFAULT_OUTPUT_CAP) + EXEC_FRAMING_HEADROOM` = 11,184,812 + 65,536, so
+  write capacity ≥ read capacity by construction. It is `MAX_EXEC_MESSAGE_BYTES`
+  (`transport.ts`) and `session.MaxRecvMsgBytes` (`dial.go`), pinned equal by
+  `message-size-coupling.test.ts` — which also asserts the derivation, so raising the output
+  cap alone cannot silently restore the asymmetry. The floor uses the **exact** encoded
+  length `4·⌈n/3⌉`, not the ×4/3 ratio: the ratio gives 11,184,810.67, which sits _below_ the
+  real payload and would admit a ceiling too small to carry an 8 MiB file.
+
+  **Memory budget.** Raising a receive limit raises worst-case ingress buffering with it, 4×
+  here, so it is stated as a formula the way `BufferCap` states its own:
+  `concurrently decoding ExecRequests × MAX_EXEC_MESSAGE_BYTES`. It is a **transient, not a
+  residency** — the relay forwards `exec` onto the Attach stream and keeps no copy — so the
+  peak is however many oversized requests are mid-decode, not however many execs are in
+  flight. Nothing in the contract bounds that count (the relay is single-replica and serves
+  every harness replica), so this is a ceiling to size the relay against rather than a proof.
+  For scale, one such request costs a quarter of the worker's own 64 MiB
+  (`2 × MaxConcurrent × BufferCap`) budget, and only a write near the read cap reaches it.
+
+  **Both ends must move together, and the worker's must not be lower.** The relay's ingress
+  limit rejects an oversized `ExecRequest` with `RESOURCE_EXHAUSTED`, and that failure is
+  contained to one exec. A relay that accepts more than the worker forwards a payload the
+  worker then refuses **on the Attach stream**, whose death takes every concurrent and queued
+  exec with it and forces a re-dial — strictly worse than both sitting at the default. That
+  ordering is why the limits are pinned as an equality rather than as a floor.
+
 - **Abort/end races.** A late `End` for an aborted `req_id` is dropped; an `Abort` for an
   already-ended `req_id` is a no-op.
 

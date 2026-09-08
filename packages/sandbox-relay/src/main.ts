@@ -17,13 +17,20 @@ import {
   type ExecEvent,
   type AbortRequest,
   type AbortResponse,
+  MAX_EXEC_MESSAGE_BYTES,
 } from '@sh/k8s-sandbox';
 import { RedisRecordStore } from '@sh/harness';
 import { createRelay, type RelayDeps, type AttachStream } from './relay.js';
 
 export function buildServer(deps: RelayDeps): { server: Server } {
   const relay = createRelay(deps);
-  const server = new Server();
+  // Raise the ingress limit above gRPC's 4 MiB default. This is the hop that rejects an
+  // oversized write today: the harness's ExecRequest carries base64 stdin at 4/3 of the
+  // file, so a file the read path can return (DEFAULT_OUTPUT_CAP, 8 MiB) needs ~10.7 MiB
+  // here. MAX_EXEC_MESSAGE_BYTES is shared with the Go worker's session.MaxRecvMsgBytes
+  // and pinned equal to it — a relay that accepts more than the worker would forward a
+  // payload the worker refuses on its Attach stream, killing every exec on it (#173 item 2).
+  const server = new Server({ 'grpc.max_receive_message_length': MAX_EXEC_MESSAGE_BYTES });
 
   const workerImpl: SandboxWorkerServer = {
     // AttachStream types metadata.get() as returning string[]; grpc-js's real
