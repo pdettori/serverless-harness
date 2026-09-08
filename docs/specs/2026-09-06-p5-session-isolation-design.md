@@ -396,7 +396,21 @@ it is the pin that proves §3.2 step 2's fail-open, which is why the 401 carries
   slice (ADR-0011 · Z2) and injector deployment (ADR-0012 · Z3), not by this one.
 - **Caller authentication.** `X-SH-Subject` states _who the work is for_, not _who may ask_. Caller
   auth is ADR-0011's lock-down work; §3.2 keeps `Authorization` free for it.
-- **Per-tenant sandbox or data isolation.** Untouched here.
+- **Per-tenant sandbox or data isolation.** Untouched here — but one case is called out rather than
+  left to the general disclaimer, because §3.1's guarantees do not cover it and a reader could
+  reasonably assume they do. **Sessions are not bound to subjects, so this slice does not prevent
+  cross-tenant session resumption.** `/turn` takes `sessionId` from the request body
+  (`server.ts:101`) and passes it to `SessionManager.openFromCheckpoint` (`run-turn.ts:439`), and the
+  Redis keyspace is flat — `session:${sid}` and `session:${sid}:seq` (`redis-backend.ts:6-7`). A
+  caller supplying another subject's session id therefore resumes that conversation and reads its
+  history, and does so while the upstream call carries the caller's _own_ placeholder: §3.1 clause 1
+  holds exactly as specified and the leak happens anyway. The two are orthogonal, which is why this
+  needs stating. The leaf path already closes it — `leafSessionId` prefixes `tenant/sessionId` before
+  sanitizing (`run-leaf.ts:158-159`) — so the turn path lacking an equivalent is the same dual-path
+  asymmetry §2.3 records for credentials, one layer up. **Precondition on the deployment:** until a
+  subject→session binding exists, `/turn` must not be reachable by mutually untrusted callers, and
+  §7's tenancy-_neutral_ claim assumes a gateway that has already partitioned them. Binding the id
+  (prefix on write, verify on resume) belongs to the deployment-model slice.
 
 ## 7. Dependencies & what #220 may claim
 
