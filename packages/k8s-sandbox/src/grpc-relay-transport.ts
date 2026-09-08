@@ -130,6 +130,19 @@ export function GrpcRelayTransport(
             }
           }
         } else if (ev.end) {
+          // The WORKER cut its own output at BufferCap and says so (#189). We cannot
+          // detect this: BufferCap is the same 8 MiB as our cap and the trip above is
+          // strictly-greater, so exactly-cap output never fires it. Honour the seam
+          // invariant here rather than passing the worker's real exit code through --
+          // `truncated === true ⇒ exitCode === null` (spec §8) is what lets a caller
+          // tell "cut short" from "finished", and Pi reads the marker out of stdout.
+          if (ev.end.truncated) {
+            stdout.push(Buffer.from(OUTPUT_TRUNCATED_MARKER));
+            finish(() =>
+              resolve({ stdout: Buffer.concat(stdout), exitCode: null, truncated: true }),
+            );
+            return;
+          }
           const code = ev.end.exitCode < 0 ? null : ev.end.exitCode;
           finish(() =>
             resolve({ stdout: Buffer.concat(stdout), exitCode: code, truncated: false }),

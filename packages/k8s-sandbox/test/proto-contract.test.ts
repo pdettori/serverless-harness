@@ -37,8 +37,24 @@ describe('sandbox/v1 generated TypeScript stubs', () => {
   });
 
   it('preserves a negative exit_code (sint32 zigzag)', () => {
-    const back = End.decode(End.encode({ reqId: 7, exitCode: -9 }).finish());
+    const back = End.decode(End.encode({ reqId: 7, exitCode: -9, truncated: false }).finish());
     expect(back.exitCode).toBe(-9);
+  });
+
+  // #189: truncated travels alongside the command's real exit code, not instead of
+  // it. The worker reports what the command did; mapping truncation to a null status
+  // is the transport's job (spec §8), so both values must survive the wire together.
+  it('carries truncated alongside a real exit_code', () => {
+    const back = End.decode(End.encode({ reqId: 7, exitCode: 0, truncated: true }).finish());
+    expect(back.truncated).toBe(true);
+    expect(back.exitCode).toBe(0);
+  });
+
+  // A worker that never drops output never sets the field, and proto3's default must
+  // read as "not truncated" — the pre-#189 behaviour, which is correct for it.
+  it('defaults truncated to false when a worker omits it', () => {
+    const back = End.decode(End.encode({ reqId: 7, exitCode: 0, truncated: false }).finish());
+    expect(back.truncated).toBe(false);
   });
 });
 

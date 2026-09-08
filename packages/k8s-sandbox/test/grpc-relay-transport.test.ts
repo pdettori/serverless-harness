@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import { runConformance, type FakeBehavior, type TransportFactory } from './conformance.js';
 import { GrpcRelayTransport, type ExecClientLike } from '../src/grpc-relay-transport.js';
-import { DEFAULT_EXEC_TIMEOUT_S } from '../src/transport.js';
+import { DEFAULT_EXEC_TIMEOUT_S, OUTPUT_TRUNCATED_MARKER } from '../src/transport.js';
 import {
   Stream,
   type AbortRequest,
@@ -146,6 +146,30 @@ describe('GrpcRelayTransport extra semantics', () => {
     const r = await p;
     expect(r.stdout.toString()).toContain('[output truncated]');
     expect(aborted()).toContain(reqId());
+  });
+
+  // #189. This is the one truncation the harness cannot detect for itself: the Go
+  // worker's BufferCap is the SAME 8 MiB as DEFAULT_OUTPUT_CAP and our own trip is
+  // `bytes > cap`, strictly greater, so a worker that cut its output and delivered
+  // exactly the cap looks complete. Only End.truncated distinguishes it, and no
+  // first-party client can reach the path — `streaming: true` is hardcoded above —
+  // so this scripted frame is the artifact that makes the defect observable at all.
+  it('a worker-truncated End resolves as truncated with a null exit code', async () => {
+    const { client, emit, reqId } = manualClient();
+    const t = GrpcRelayTransport('sbx-1', client as never);
+    const p = t.exec('cat huge');
+    await Promise.resolve();
+    emit({
+      chunk: { reqId: reqId()!, data: Buffer.from('partial'), stream: Stream.STREAM_STDOUT },
+    } as ExecEvent);
+    // The worker reports the command's REAL status alongside the flag; honouring the
+    // seam invariant `truncated ⇒ exitCode === null` is this transport's job.
+    emit({ end: { reqId: reqId()!, exitCode: 0, truncated: true } } as ExecEvent);
+
+    const r = await p;
+    expect(r.truncated).toBe(true);
+    expect(r.exitCode).toBeNull();
+    expect(r.stdout.toString()).toBe(`partial${OUTPUT_TRUNCATED_MARKER}`);
   });
 
   it('dedups: a late End for a settled reqId is dropped', async () => {

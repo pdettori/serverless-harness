@@ -147,9 +147,26 @@ export interface Chunk {
   stream: Stream;
 }
 
+/**
+ * End is the terminal success frame. exit_code < 0 = signal/none.
+ *
+ * truncated says the WORKER cut this exec's STDOUT at its own buffer cap, which
+ * the harness cannot infer: the two caps are the same 8 MiB and the harness trips
+ * on strictly-greater, so exactly-cap output reads as complete (#189). exit_code
+ * stays the command's REAL status — a worker reports what the command did, and it
+ * is the harness seam that owes `truncated ⇒ exitCode == null` (spec §8). A worker
+ * that never sets it reads as false, which is proto3's default and the old
+ * behaviour; only a worker that drops stdout is obliged to set it.
+ *
+ * STDOUT ONLY, deliberately. A worker may cap stderr separately, but the seam
+ * returns stdout and applies its cap to stdout alone, so setting this for a cut
+ * stderr would discard a valid exit_code and mark whole stdout as truncated. There
+ * is no wire signal for a cut stderr; a worker that cares should log it.
+ */
 export interface End {
   reqId: number;
   exitCode: number;
+  truncated: boolean;
 }
 
 export interface ExecError {
@@ -952,7 +969,7 @@ export const Chunk: MessageFns<Chunk> = {
 };
 
 function createBaseEnd(): End {
-  return { reqId: 0, exitCode: 0 };
+  return { reqId: 0, exitCode: 0, truncated: false };
 }
 
 export const End: MessageFns<End> = {
@@ -962,6 +979,9 @@ export const End: MessageFns<End> = {
     }
     if (message.exitCode !== 0) {
       writer.uint32(16).sint32(message.exitCode);
+    }
+    if (message.truncated !== false) {
+      writer.uint32(24).bool(message.truncated);
     }
     return writer;
   },
@@ -989,6 +1009,14 @@ export const End: MessageFns<End> = {
           message.exitCode = reader.sint32();
           continue;
         }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.truncated = reader.bool();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -1002,6 +1030,7 @@ export const End: MessageFns<End> = {
     return {
       reqId: isSet(object.reqId) ? globalThis.Number(object.reqId) : 0,
       exitCode: isSet(object.exitCode) ? globalThis.Number(object.exitCode) : 0,
+      truncated: isSet(object.truncated) ? globalThis.Boolean(object.truncated) : false,
     };
   },
 
@@ -1013,6 +1042,9 @@ export const End: MessageFns<End> = {
     if (message.exitCode !== 0) {
       obj.exitCode = Math.round(message.exitCode);
     }
+    if (message.truncated !== false) {
+      obj.truncated = message.truncated;
+    }
     return obj;
   },
 
@@ -1023,6 +1055,7 @@ export const End: MessageFns<End> = {
     const message = createBaseEnd();
     message.reqId = object.reqId ?? 0;
     message.exitCode = object.exitCode ?? 0;
+    message.truncated = object.truncated ?? false;
     return message;
   },
 };

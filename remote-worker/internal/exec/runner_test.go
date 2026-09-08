@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	osexec "os/exec"
 	"strings"
@@ -21,7 +22,14 @@ type recorder struct {
 	stderr []byte
 	calls  int
 	failAt int // when >0, return an error on that call number (1-based)
+	// dropped counts reported dropped bytes PER STREAM. Keyed rather than summed
+	// because the two streams are capped separately and only stdout's overflow is a
+	// seam-level truncation — a summing recorder cannot tell the session's filter
+	// from a stream-blind one (#189 review).
+	dropped map[pb.Stream]int
 }
+
+func (r *recorder) droppedOn(s pb.Stream) int { return r.dropped[s] }
 
 func (r *recorder) Chunk(stream pb.Stream, data []byte) error {
 	r.calls++
@@ -35,6 +43,13 @@ func (r *recorder) Chunk(stream pb.Stream, data []byte) error {
 		r.stdout = append(r.stdout, data...)
 	}
 	return nil
+}
+
+func (r *recorder) Dropped(stream pb.Stream, n int) {
+	if r.dropped == nil {
+		r.dropped = map[pb.Stream]int{}
+	}
+	r.dropped[stream] += n
 }
 
 var errStreamGone = errStr("stream gone")
@@ -106,6 +121,80 @@ func TestChunkCapSplitsLargeOutput(t *testing.T) {
 	}
 }
 
+// #189: the non-streaming path drops output past BufferCap. Silently dropping it
+// is the whole defect — the harness's own cap is the SAME 8 MiB and trips on
+// `bytes > cap`, strictly greater, so a worker that delivers exactly BufferCap
+// resolves as {truncated: false, exitCode: <real code>} over cut output. The
+// runner must therefore report what it dropped; only then can the session say so
+// on the wire.
+func TestNonStreamingReportsBytesDroppedAtBufferCap(t *testing.T) {
+	const excess = 1000
+	var r recorder
+	code, err := wexec.BashRunner{}.Run(context.Background(), wexec.Spec{
+		ReqID:     5,
+		Command:   fmt.Sprintf("head -c %d /dev/zero", wexec.BufferCap+excess),
+		Streaming: false,
+	}, &r)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The real exit code survives truncation: the runner reports what the command
+	// did, and it is the harness that owes `truncated ⇒ exitCode == null` (spec §8).
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0 — truncation must not fabricate a failure", code)
+	}
+	// Exactly the cap arrives, which is precisely why the harness cannot notice.
+	if len(r.stdout) != wexec.BufferCap {
+		t.Errorf("delivered %d bytes, want BufferCap (%d)", len(r.stdout), wexec.BufferCap)
+	}
+	if got := r.droppedOn(pb.Stream_STREAM_STDOUT); got != excess {
+		t.Errorf("reported %d dropped stdout bytes, want %d", got, excess)
+	}
+}
+
+// The two buffers are capped SEPARATELY, so the report must name the stream it is
+// about. Only stdout's overflow is a seam-level truncation — the harness's cap
+// excludes stderr from both its buffer and its byte count — so a report that lost
+// the stream would make the session mark a whole stdout as truncated (#189 review).
+func TestNonStreamingReportsDroppedBytesPerStream(t *testing.T) {
+	const excess = 1000
+	var r recorder
+	code, err := wexec.BashRunner{}.Run(context.Background(), wexec.Spec{
+		ReqID:     7,
+		Command:   fmt.Sprintf("echo ok; head -c %d /dev/zero >&2", wexec.BufferCap+excess),
+		Streaming: false,
+	}, &r)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if got := r.droppedOn(pb.Stream_STREAM_STDERR); got != excess {
+		t.Errorf("reported %d dropped stderr bytes, want %d", got, excess)
+	}
+	// stdout produced 3 bytes and lost none. A stream-blind report would show the
+	// stderr overflow here.
+	if got := r.droppedOn(pb.Stream_STREAM_STDOUT); got != 0 {
+		t.Errorf("reported %d dropped stdout bytes, want 0 — the stream was lost", got)
+	}
+}
+
+// Output that fits is not reported as dropped — otherwise every non-streaming
+// exec would mark itself truncated and the flag would carry no information.
+func TestNonStreamingReportsNoDropUnderTheCap(t *testing.T) {
+	var r recorder
+	_, err := wexec.BashRunner{}.Run(context.Background(), wexec.Spec{
+		ReqID: 6, Command: "echo hi", Streaming: false,
+	}, &r)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(r.dropped); got != 0 {
+		t.Errorf("reported drops on %d stream(s) for 3 bytes of output, want none: %v", got, r.dropped)
+	}
+}
+
 // A sink failure means the stream is gone: Run reports it so the session knows
 // not to try sending a terminal frame.
 func TestSinkErrorPropagates(t *testing.T) {
@@ -121,6 +210,11 @@ func TestSinkErrorPropagates(t *testing.T) {
 type sinkFunc func(pb.Stream, []byte) error
 
 func (f sinkFunc) Chunk(s pb.Stream, d []byte) error { return f(s, d) }
+
+// Discarded: every sinkFunc test is a streaming one, and the streaming path never
+// buffers, so it never drops. A non-streaming test wanting the count uses
+// recorder.
+func (f sinkFunc) Dropped(pb.Stream, int) {}
 
 // A pipe holder that escapes the process group survives the SIGKILL, so only
 // the drain watchdog can unblock Run. Without it, this test hangs.

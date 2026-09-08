@@ -24,8 +24,16 @@ import (
 const ChunkSize = 32 * 1024
 
 // BufferCap bounds buffered output for non-streaming execs, matching the
-// harness's DEFAULT_OUTPUT_CAP (grpc-relay-transport.ts:30). Output past it is
-// dropped — the harness applies its own cap and truncation marker anyway.
+// harness's DEFAULT_OUTPUT_CAP (transport.ts). It applies to stdout and stderr
+// SEPARATELY — see the memory budget below. Output past it is dropped, and every
+// dropped byte is reported to the Sink, tagged with its stream, so the session can
+// set End.truncated for the stream the seam actually returns (stdout; the caller
+// decides, not this package). The harness CANNOT infer it: its cap is this same 8 MiB and
+// trips on `bytes > cap`, strictly greater, so a worker that delivers exactly
+// BufferCap resolves as {truncated: false, exitCode: <real code>} over cut
+// output. This comment previously claimed "the harness applies its own cap and
+// truncation marker anyway"; the equality of the two caps is precisely what
+// made that false (#189).
 //
 // MEMORY BUDGET — this is a PER-STREAM cap, so it sets the worker's worst-case
 // resident size:
@@ -100,8 +108,26 @@ type Spec struct {
 // process rather than return an error. BashRunner honors this: both pumps have
 // finished (wg.Wait) and the non-streaming emission has completed before any
 // return path.
+//
+// Dropped reports bytes the runner threw away at BufferCap, before any of them
+// reached Chunk. stream is significant, not decoration: the two buffers are capped
+// independently, and only stdout's overflow is a truncation the harness seam can
+// express, so a Sink that ignores the stream will mark a whole stdout as truncated
+// for a cut stderr. Report faithfully here and let the Sink decide.
+//
+// It is REQUIRED rather than an optional extension for the same
+// reason `truncated` is required on the harness seam (transport.ts): an optional
+// report lets a Sink omit it and read as "nothing dropped", which is the exact
+// silence #189 is about, one layer down. Required, a Sink that forgets it is a
+// compile error.
+//
+// It returns nothing: the count is a report about output already lost, not a
+// delivery that can fail, and a Sink has no way to un-drop it. Called under the
+// same serialization as Chunk, so implementations need not synchronize; both
+// pumps can drop concurrently.
 type Sink interface {
 	Chunk(stream pb.Stream, data []byte) error
+	Dropped(stream pb.Stream, n int)
 }
 
 // lockedSink serializes Chunk calls. Run drains stdout and stderr in two
@@ -116,6 +142,12 @@ func (l *lockedSink) Chunk(stream pb.Stream, data []byte) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.inner.Chunk(stream, data)
+}
+
+func (l *lockedSink) Dropped(stream pb.Stream, n int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.inner.Dropped(stream, n)
 }
 
 // Runner runs one command. ctx cancellation means Abort: kill the process group.
@@ -369,8 +401,18 @@ func drain(r io.Reader, which pb.Stream, s Spec, sink Sink, buf *bytes.Buffer, r
 				if err := sink.Chunk(which, append([]byte(nil), b[:n]...)); err != nil {
 					return err
 				}
-			} else if room := BufferCap - buf.Len(); room > 0 {
-				buf.Write(b[:min(n, room)])
+			} else {
+				// Buffer what fits and REPORT the rest. max() guards the already-full
+				// case, where room is negative-or-zero and every byte of this read is
+				// lost. Reporting is what makes the loss visible to the harness at all
+				// (#189) — see BufferCap on why it cannot infer it.
+				kept := min(n, max(BufferCap-buf.Len(), 0))
+				if kept > 0 {
+					buf.Write(b[:kept])
+				}
+				if kept < n {
+					sink.Dropped(which, n-kept)
+				}
 			}
 		}
 		if err != nil {

@@ -29,8 +29,14 @@ describe('output cap is pinned across the language boundary', () => {
     // one and change the other". Nothing enforced that, so the two could drift: a
     // larger BufferCap lets the worker buffer bytes the harness will throw away
     // (wasted worker memory against its OOM limit), a smaller one truncates before
-    // the harness cap ever trips, so the marker Pi relies on never appears and the
-    // remote path silently returns short reads the kubectl path returns in full.
+    // the harness cap ever trips, so the remote path returns short reads the kubectl
+    // path returns in full.
+    //
+    // What equality no longer means is SILENT truncation. It used to: the harness
+    // trips on `bytes > cap`, strictly greater, so a worker delivering exactly the cap
+    // read as complete. #189 closed that by making the worker set `End.truncated`, so
+    // the marker now appears on this path whichever side cuts first. Equality is
+    // therefore still the right pin — for memory and parity, not for detectability.
     expect(DEFAULT_OUTPUT_CAP).toBe(readBufferCapBytes());
   });
 });

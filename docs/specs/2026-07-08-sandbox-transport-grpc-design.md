@@ -326,7 +326,8 @@ The frame _semantics_ are carried from the superseded design verbatim — only t
   byte-for-byte. Non-streaming ops (read/write) differ only in _when_ bytes leave: the
   worker withholds them until exit and then emits `ChunkSize`-capped `Chunk` frames
   followed by `End`. `streaming: false` means "no incremental delivery", not "exactly one
-  frame" — `End` carries no payload.
+  frame" — `End` carries no output bytes (it does carry the exit status and, since #189, a
+  `truncated` flag; output only ever travels in `Chunk`).
 - **At-least-once → dedup.** A reconnect mid-exec can redeliver a command. The worker's
   bounded `req_id → End` cache re-emits the cached terminal result rather than re-running.
   **A cache hit therefore returns the exit code with no output** — a redelivered streaming
@@ -381,6 +382,31 @@ The frame _semantics_ are carried from the superseded design verbatim — only t
   loudly. Neither kubectl mechanism defends against a producer that traps or ignores
   SIGPIPE and keeps burning CPU after we stop reading; that residual threat belongs to
   VM-level isolation (#57), not to the cap.
+
+  **The worker has a cap of its own, and declares it.** On the non-streaming path the Go
+  worker buffers output to `BufferCap` and drops the rest, which the harness **cannot**
+  infer: `BufferCap` and `DEFAULT_OUTPUT_CAP` are the same 8 MiB and the harness trips on
+  `bytes > cap`, strictly greater, so a worker delivering exactly the cap reads as complete.
+  Until #189 that resolved as `{truncated: false, exitCode: <real code>}` over cut output —
+  the last path where this contract was violated rather than merely qualified.
+
+  `End` therefore carries **`truncated`**, set by any worker that dropped **stdout**.
+  `exit_code` stays the command's **real** status: a worker reports what the command did, and
+  the harness applies `truncated ⇒ exitCode === null` when it resolves the exec, so the
+  invariant above holds unchanged for callers. A worker that never drops stdout never sets the
+  field, and proto3's `false` default is the correct reading for it. Reachability is the reason
+  this needed a wire field at all rather than a client-side rule: `streaming` is relay-supplied
+  and `false` is its proto3 default, so any third-party relay or client reaches the buffered
+  path with no privilege, and `sandbox/v1` is a language-neutral contract for workers this repo
+  does not own.
+
+  **`truncated` is about stdout, and only stdout.** A worker may cap stderr separately — the Go
+  one does, at the same `BufferCap` — but the seam returns stdout and applies its cap to stdout
+  alone, so a flag set for a cut stderr would null a valid `exit_code` and glue the marker onto
+  output that was never cut. That is the mirror of the defect above: under-reporting traded for
+  over-reporting. There is deliberately **no** wire signal for a truncated stderr; giving the
+  seam a second truncation concept for bytes it does not return would buy nothing, and the Go
+  worker logs the event instead.
 
 - **Abort/end races.** A late `End` for an aborted `req_id` is dropped; an `Abort` for an
   already-ended `req_id` is a no-op.
