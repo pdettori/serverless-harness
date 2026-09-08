@@ -193,18 +193,31 @@ func (r *execRegistry) slotFor(reqID uint64) *slot {
 // exists because that decision is compound: it reads the slot map, then may consult
 // the dedup cache, then may insert — and those three must not interleave with
 // another accept or a finish. decide receives the slot currently in flight for reqID
-// (nil if none) and returns the slot to insert, or nil to insert nothing.
+// (nil if none) and returns its verdict plus the slot to insert, or nil to insert
+// nothing.
+//
+// The outcome is RETURNED rather than written back through a captured variable, and
+// that is a safety property, not a style choice. claimAdmitted is iota's zero value
+// and admitting is accept's fall-through case, so a captured outcome makes "decide
+// decided to admit" and "decide never ran" the same state. Returning it means a
+// caller cannot observe an outcome that was never decided: today claim always calls
+// decide, but if it ever gained an early return, the failure would be the silent one
+// this file works hardest to prevent — an exec enqueued with no slot, skipped by the
+// pool at sl == nil, and never given a terminal frame, leaving the caller to wait out
+// DEFAULT_EXEC_TIMEOUT_S (30 minutes since #182).
 //
 // decide must DECIDE ONLY. Side effects — cancel, trySend, logging — belong after
 // claim returns, because the pre-refactor code released the mutex before every one
 // of them and holding it across a channel send or a log write would widen the
 // critical section rather than merely relocate it.
-func (r *execRegistry) claim(reqID uint64, decide func(running *slot) *slot) {
+func (r *execRegistry) claim(reqID uint64, decide func(running *slot) (claimOutcome, *slot)) claimOutcome {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if sl := decide(r.inflight[reqID]); sl != nil {
+	outcome, sl := decide(r.inflight[reqID])
+	if sl != nil {
 		r.inflight[reqID] = sl
 	}
+	return outcome
 }
 
 // claimOutcome is what accept's admission decision resolved to. It exists so the
@@ -500,14 +513,16 @@ func (s *Session) accept(ctx context.Context, c *conn, e *pb.Exec) error {
 
 	slotCtx, cancel := context.WithCancel(ctx)
 
-	// The decision is taken under the registry's lock; every side effect it implies
-	// is performed below, after the lock is dropped. outcome and cached carry it out.
+	// The decision is taken under the registry's lock; every side effect it implies is
+	// performed below, after the lock is dropped. The verdict comes back as claim's
+	// return value — see claim on why it is not a captured variable. cached and
+	// collision are payload for a verdict already decided, and each is assigned in the
+	// same statement as the outcome that makes it meaningful.
 	var (
-		outcome   claimOutcome
 		cached    *pb.WorkerFrame
 		collision bool
 	)
-	c.reg.claim(reqID, func(running *slot) *slot {
+	outcome := c.reg.claim(reqID, func(running *slot) (claimOutcome, *slot) {
 		// IN-FLIGHT IS CHECKED FIRST, AHEAD OF THE CACHE — the order is load-bearing.
 		// runOne calls cache.Put BEFORE sending its terminal frame, and the slot is
 		// only released (by finish) after runOne returns. Consulting the cache first
@@ -520,11 +535,9 @@ func (s *Session) accept(ctx context.Context, c *conn, e *pb.Exec) error {
 		// the registry misses and the cache lookup below answers it.
 		if running != nil {
 			if running.fp == fp {
-				outcome = claimCoalesced
-			} else {
-				outcome = claimCollision
+				return claimCoalesced, nil
 			}
-			return nil
+			return claimCollision, nil
 		}
 		// Consulted before enqueue: a redelivery of a COMPLETED exec must not consume
 		// a queue slot or a pool goroutine. Held under the registry lock so accept's
@@ -533,11 +546,11 @@ func (s *Session) accept(ctx context.Context, c *conn, e *pb.Exec) error {
 		// cannot deadlock).
 		frame, hit, coll := s.cache.Lookup(reqID, fp)
 		if hit {
-			outcome, cached = claimCacheHit, frame
-			return nil
+			cached = frame
+			return claimCacheHit, nil
 		}
-		outcome, collision = claimAdmitted, coll
-		return &slot{ctx: slotCtx, cancel: cancel, fp: fp}
+		collision = coll
+		return claimAdmitted, &slot{ctx: slotCtx, cancel: cancel, fp: fp}
 	})
 
 	switch outcome {
@@ -573,8 +586,23 @@ func (s *Session) accept(ctx context.Context, c *conn, e *pb.Exec) error {
 			return ErrEgressWedged
 		}
 		return nil
+	case claimAdmitted:
+		return s.enqueueAdmitted(c, e, reqID, cancel, collision)
 	}
+	// Unreachable while claim returns one of the four above, and named rather than
+	// left as a fall-through on purpose: admitting is what happens when nothing else
+	// applies, so a fifth outcome added without a case here would silently be treated
+	// as "admit it" — enqueuing an exec whose verdict nobody handled. Failing loudly
+	// costs one exec; the silent version costs the caller a 30-minute wait.
+	return fmt.Errorf("session: unhandled claim outcome %d for req_id %d", outcome, reqID)
+}
 
+// enqueueAdmitted hands a freshly admitted exec to the pool, or refuses it if the
+// queue is full. Split out of accept only so accept's switch can name every outcome
+// instead of letting one of them be the fall-through.
+func (s *Session) enqueueAdmitted(
+	c *conn, e *pb.Exec, reqID uint64, cancel context.CancelFunc, collision bool,
+) error {
 	if collision {
 		log.Printf("session: req_id %d reused for a different command; running it fresh "+
 			"(req_id is only probabilistically unique across replicas — see spec §3.1)", reqID)
