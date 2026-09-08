@@ -151,6 +151,39 @@ live only in identity-keyed egress points. Dependency-ordered:
 
 ---
 
+## Multi-User Service (`MU`-prefix)
+
+Turning the harness from a single-tenant deployment into a **multi-user service**: an authenticated
+API, sessions owned by the user who created them, and per-user credentials. Its own track rather than
+a Phase-2 `Z` id, because Phase 2 is the **zero-trust credential plane** — a security architecture —
+while this is a **product surface** with its own consumers and compatibility obligations. The two
+meet at the credential: `MU` needs per-user credentials today, and Phase 2 is how they eventually
+stop being held by anything model-influenced.
+
+| ID      | Title                                                                                                                                                                                                                                                | Status            | Spec / decision                                                                                                                                        |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **MU1** | **Multi-user control plane** — always-on trusted tier owning the authenticated `/v1` API, session-ownership index, per-user credential store, resource introspection; Ed25519 session token; per-turn credential exchange; composes with `P5` (§3.5) | design (proposed) | [`2026-09-08-multi-user-control-plane-design.md`](2026-09-08-multi-user-control-plane-design.md); [ADR-0033](../adrs/0033-multi-user-control-plane.md) |
+| **MU2** | Tenant-labelled sandbox pool partition (request-scoped selector on the `/turn` path); `sandbox-egress` credential delivery; quotas and cost attribution; generic OIDC; owned schedules and runs                                                      | planned           | MU1 §10, §8.2                                                                                                                                          |
+| **MU3** | Injector-resolved per-user credentials — retires MU1's ADR-0033 divergence                                                                                                                                                                           | planned           | MU1 §10; needs Z3/Z5 per-subject resolution in `rossoctl/cortex`                                                                                       |
+
+### Dependencies (MU)
+
+- **MU1 composes with `P5`**, which is merged as a design
+  ([ADR-0032](../adrs/0032-per-request-subject-no-ambient-credential.md)) with implementation on a
+  separate contributor's track. P5 reserved `Authorization` for "may this caller use the harness" —
+  which is exactly MU1 — and carries _whose work it is_ in `X-SH-Subject`. MU1 supplies the tier that
+  makes that subject **trustworthy** rather than asserted. MU1 §3.5 records the split and what MU1
+  does if P5's implementation has not landed.
+- **MU1 diverges from Z1 §2** by holding identity and credentials in one tier
+  ([ADR-0033](../adrs/0033-multi-user-control-plane.md)); **Z3/Z5 retire that divergence** as MU3.
+- **MU2 is _not_ gated on [#237](https://github.com/rossoctl/serverless-harness/issues/237).** That
+  issue governs the **workload-addressed** pool selector; MU2's partition uses the **envelope**
+  selector, which prompt leaves already honour (`run-leaf.ts:124-128`, reached at `:390`). MU2's real
+  work is that the `/turn` path resolves a single pod (`run-turn.ts:57`) rather than leasing from the
+  pool — see MU1 §8.2.
+
+---
+
 ## Rosso Cortex Integration (`RC`-prefix)
 
 Reframes the Phase-2 credential plane around **Rosso Cortex / AuthBridge** as the concrete injection
