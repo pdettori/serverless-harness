@@ -178,10 +178,11 @@ output past 8 MiB and then sent `End` with the command's real exit code, so
 greater — so a worker delivering exactly the cap looks complete. A difference of one byte in
 either direction would have exposed it.
 
-**Decided:** `bool truncated = 3` on `End`. The worker keeps sending the command's **real**
-`exit_code`; the transport applies the seam invariant. Splitting it that way keeps the wire
-honest for any client that wants the status, and keeps `truncated ⇒ exitCode === null` in the
-one place that owes it. Inside the worker the count reaches the frame through a **required**
+**Decided:** `bool truncated = 3` on `End`, **scoped to stdout**. The worker keeps sending the
+command's **real** `exit_code`; the transport applies the seam invariant. Splitting it that way
+keeps the wire honest for any client that wants the status, and keeps
+`truncated ⇒ exitCode === null` in the one place that owes it. Inside the worker the count
+reaches the frame through a **required**
 `Sink.Dropped` method, not an optional extension, for the same reason §8's `truncated` is
 required rather than optional: an omitted report reads as "nothing dropped", which is the
 defect one layer down. Required, a `Sink` that forgets it does not compile.
@@ -198,6 +199,17 @@ to reason about for no gain once the flag exists.
 narrows the surface without fixing the contract, and it breaks legitimate non-streaming
 third-party clients — the mode exists in the proto and `read`/`write` are exactly what it is
 for.
+
+**Scope caveat, found in review.** The worker caps stdout and stderr **separately**, each at
+`BufferCap`, but the seam's cap covers stdout alone — `grpc-relay-transport.ts` excludes stderr
+from both its buffer and its byte count. The first implementation summed both streams into the
+flag, which would have made a cut stderr beside a whole stdout resolve as
+`{exitCode: null, truncated: true}` with the marker glued onto output that was never cut: the
+mirror of this defect, under-reporting traded for over-reporting, and it discards a valid exit
+status. The flag is therefore stdout-only, using the transport's own `!= STDERR` predicate so
+both ends read `STREAM_UNSPECIFIED` as stdout identically. A truncated stderr gets **no** wire
+signal — a second truncation concept for bytes the seam does not return would buy nothing — and
+is logged by the worker instead, since going entirely silent is what this issue was about.
 
 **Consequence:** the defect is unreachable from any first-party path — `grpc-relay-
 transport.ts` hardcodes `streaming: true` — so a scripted `End{truncated: true}` in

@@ -24,9 +24,11 @@ import (
 const ChunkSize = 32 * 1024
 
 // BufferCap bounds buffered output for non-streaming execs, matching the
-// harness's DEFAULT_OUTPUT_CAP (transport.ts). Output past it is dropped, and
-// every dropped byte is reported to the Sink so the session can set
-// End.truncated — the harness CANNOT infer it. Its cap is this same 8 MiB and
+// harness's DEFAULT_OUTPUT_CAP (transport.ts). It applies to stdout and stderr
+// SEPARATELY — see the memory budget below. Output past it is dropped, and every
+// dropped byte is reported to the Sink, tagged with its stream, so the session can
+// set End.truncated for the stream the seam actually returns (stdout; the caller
+// decides, not this package). The harness CANNOT infer it: its cap is this same 8 MiB and
 // trips on `bytes > cap`, strictly greater, so a worker that delivers exactly
 // BufferCap resolves as {truncated: false, exitCode: <real code>} over cut
 // output. This comment previously claimed "the harness applies its own cap and
@@ -108,7 +110,12 @@ type Spec struct {
 // return path.
 //
 // Dropped reports bytes the runner threw away at BufferCap, before any of them
-// reached Chunk. It is REQUIRED rather than an optional extension for the same
+// reached Chunk. stream is significant, not decoration: the two buffers are capped
+// independently, and only stdout's overflow is a truncation the harness seam can
+// express, so a Sink that ignores the stream will mark a whole stdout as truncated
+// for a cut stderr. Report faithfully here and let the Sink decide.
+//
+// It is REQUIRED rather than an optional extension for the same
 // reason `truncated` is required on the harness seam (transport.ts): an optional
 // report lets a Sink omit it and read as "nothing dropped", which is the exact
 // silence #189 is about, one layer down. Required, a Sink that forgets it is a

@@ -18,12 +18,18 @@ import (
 
 // recorder is a Sink that keeps every chunk, tagged by stream.
 type recorder struct {
-	stdout  []byte
-	stderr  []byte
-	calls   int
-	failAt  int // when >0, return an error on that call number (1-based)
-	dropped int // bytes the runner reported dropping at BufferCap
+	stdout []byte
+	stderr []byte
+	calls  int
+	failAt int // when >0, return an error on that call number (1-based)
+	// dropped counts reported dropped bytes PER STREAM. Keyed rather than summed
+	// because the two streams are capped separately and only stdout's overflow is a
+	// seam-level truncation — a summing recorder cannot tell the session's filter
+	// from a stream-blind one (#189 review).
+	dropped map[pb.Stream]int
 }
+
+func (r *recorder) droppedOn(s pb.Stream) int { return r.dropped[s] }
 
 func (r *recorder) Chunk(stream pb.Stream, data []byte) error {
 	r.calls++
@@ -39,7 +45,12 @@ func (r *recorder) Chunk(stream pb.Stream, data []byte) error {
 	return nil
 }
 
-func (r *recorder) Dropped(_ pb.Stream, n int) { r.dropped += n }
+func (r *recorder) Dropped(stream pb.Stream, n int) {
+	if r.dropped == nil {
+		r.dropped = map[pb.Stream]int{}
+	}
+	r.dropped[stream] += n
+}
 
 var errStreamGone = errStr("stream gone")
 
@@ -136,8 +147,36 @@ func TestNonStreamingReportsBytesDroppedAtBufferCap(t *testing.T) {
 	if len(r.stdout) != wexec.BufferCap {
 		t.Errorf("delivered %d bytes, want BufferCap (%d)", len(r.stdout), wexec.BufferCap)
 	}
-	if r.dropped != excess {
-		t.Errorf("reported %d dropped bytes, want %d", r.dropped, excess)
+	if got := r.droppedOn(pb.Stream_STREAM_STDOUT); got != excess {
+		t.Errorf("reported %d dropped stdout bytes, want %d", got, excess)
+	}
+}
+
+// The two buffers are capped SEPARATELY, so the report must name the stream it is
+// about. Only stdout's overflow is a seam-level truncation — the harness's cap
+// excludes stderr from both its buffer and its byte count — so a report that lost
+// the stream would make the session mark a whole stdout as truncated (#189 review).
+func TestNonStreamingReportsDroppedBytesPerStream(t *testing.T) {
+	const excess = 1000
+	var r recorder
+	code, err := wexec.BashRunner{}.Run(context.Background(), wexec.Spec{
+		ReqID:     7,
+		Command:   fmt.Sprintf("echo ok; head -c %d /dev/zero >&2", wexec.BufferCap+excess),
+		Streaming: false,
+	}, &r)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if got := r.droppedOn(pb.Stream_STREAM_STDERR); got != excess {
+		t.Errorf("reported %d dropped stderr bytes, want %d", got, excess)
+	}
+	// stdout produced 3 bytes and lost none. A stream-blind report would show the
+	// stderr overflow here.
+	if got := r.droppedOn(pb.Stream_STREAM_STDOUT); got != 0 {
+		t.Errorf("reported %d dropped stdout bytes, want 0 — the stream was lost", got)
 	}
 }
 
@@ -151,8 +190,8 @@ func TestNonStreamingReportsNoDropUnderTheCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if r.dropped != 0 {
-		t.Errorf("reported %d dropped bytes for 3 bytes of output, want 0", r.dropped)
+	if got := len(r.dropped); got != 0 {
+		t.Errorf("reported drops on %d stream(s) for 3 bytes of output, want none: %v", got, r.dropped)
 	}
 }
 

@@ -390,15 +390,23 @@ The frame _semantics_ are carried from the superseded design verbatim — only t
   Until #189 that resolved as `{truncated: false, exitCode: <real code>}` over cut output —
   the last path where this contract was violated rather than merely qualified.
 
-  `End` therefore carries **`truncated`**, set by any worker that dropped output. `exit_code`
-  stays the command's **real** status: a worker reports what the command did, and the harness
-  applies `truncated ⇒ exitCode === null` when it resolves the exec, so the invariant above
-  holds unchanged for callers. A worker that never drops output never sets the field, and
-  proto3's `false` default is the correct reading for it. Reachability is the reason this
-  needed a wire field at all rather than a client-side rule: `streaming` is relay-supplied and
-  `false` is its proto3 default, so any third-party relay or client reaches the buffered path
-  with no privilege, and `sandbox/v1` is a language-neutral contract for workers this repo
+  `End` therefore carries **`truncated`**, set by any worker that dropped **stdout**.
+  `exit_code` stays the command's **real** status: a worker reports what the command did, and
+  the harness applies `truncated ⇒ exitCode === null` when it resolves the exec, so the
+  invariant above holds unchanged for callers. A worker that never drops stdout never sets the
+  field, and proto3's `false` default is the correct reading for it. Reachability is the reason
+  this needed a wire field at all rather than a client-side rule: `streaming` is relay-supplied
+  and `false` is its proto3 default, so any third-party relay or client reaches the buffered
+  path with no privilege, and `sandbox/v1` is a language-neutral contract for workers this repo
   does not own.
+
+  **`truncated` is about stdout, and only stdout.** A worker may cap stderr separately — the Go
+  one does, at the same `BufferCap` — but the seam returns stdout and applies its cap to stdout
+  alone, so a flag set for a cut stderr would null a valid `exit_code` and glue the marker onto
+  output that was never cut. That is the mirror of the defect above: under-reporting traded for
+  over-reporting. There is deliberately **no** wire signal for a truncated stderr; giving the
+  seam a second truncation concept for bytes it does not return would buy nothing, and the Go
+  worker logs the event instead.
 
 - **Abort/end races.** A late `End` for an aborted `req_id` is dropped; an `Abort` for an
   already-ended `req_id` is a no-op.

@@ -500,8 +500,9 @@ func (s *Session) accept(
 // frame of their own — they are an absence — so the count is accumulated here and
 // read once, after Run returns, to set End.truncated (#189).
 type frameSink struct {
-	reqID   uint64
-	send    func(*pb.WorkerFrame)
+	reqID uint64
+	send  func(*pb.WorkerFrame)
+	// dropped counts STDOUT bytes only — see Dropped.
 	dropped int
 }
 
@@ -512,10 +513,34 @@ func (f *frameSink) Chunk(stream pb.Stream, data []byte) error {
 	return nil
 }
 
-// Dropped needs no lock of its own: the runner serializes every Sink call through
-// one mutex, and it guarantees no call is in flight once Run has returned — which
-// is the only point runOne reads the field.
-func (f *frameSink) Dropped(_ pb.Stream, n int) { f.dropped += n }
+// Dropped counts STDOUT overflow only, because that is what End.truncated is about.
+// The runner caps outBuf and errBuf SEPARATELY, but the harness's own cap covers
+// stdout alone — grpc-relay-transport.ts excludes stderr from both its buffer and its
+// byte count — and the flag makes it append the truncation marker to stdout and null
+// the exit code. Summing both streams would therefore trade this fix's
+// under-reporting for over-reporting: a cut stderr beside a whole stdout would
+// discard a valid exit status and tell Pi that complete output was truncated.
+//
+// The predicate is deliberately `!= STDERR` rather than `== STDOUT`, mirroring the
+// transport's byte-for-byte: STREAM_UNSPECIFIED means stdout per the proto, so the
+// two ends must agree on that reading as well as on the stream.
+//
+// A cut stderr is logged rather than signalled. It has no wire field, and inventing
+// one would need the seam to grow a second truncation concept for output it does not
+// return — but going entirely silent about it is what #189 was about, so it is at
+// least visible in the worker's own log.
+//
+// No lock of its own: the runner serializes every Sink call through one mutex, and
+// guarantees none is in flight once Run has returned — the only point runOne reads
+// the field.
+func (f *frameSink) Dropped(stream pb.Stream, n int) {
+	if stream == pb.Stream_STREAM_STDERR {
+		log.Printf("session: req_id %d dropped %d bytes of stderr at the buffer cap; "+
+			"End.truncated covers stdout only, so this is not signalled on the wire", f.reqID, n)
+		return
+	}
+	f.dropped += n
+}
 
 // runOne executes one exec and sends exactly one terminal frame (spec §5).
 // send is the blocking enqueue: runOne runs on a pool goroutine, not the recv
@@ -549,12 +574,19 @@ func (s *Session) runOne(ctx context.Context, send func(*pb.WorkerFrame), e *pb.
 		// req_id so every later redelivery answered -1 without re-running.
 		frame, cacheable = endFrame(reqID, code, sink.dropped > 0), code >= 0
 	case errors.Is(err, wexec.ErrTimeout):
-		// Truncation is not carried on the error paths, and does not need to be: an
-		// ExecError already tells the harness this exec produced no usable result, so
-		// there is no success status for a truncation flag to qualify.
+		// Truncation is not carried here, and does not need to be: this path emits an
+		// ExecError, which has no truncated field because it already tells the harness
+		// the exec produced no usable result — there is no success status for a
+		// truncation flag to qualify. That reasoning covers THIS case only; the abort
+		// case below emits an End and must report honestly.
 		frame, cacheable = errFrame(reqID, fmt.Sprintf("timeout:%d", e.GetTimeoutS())), true
 	case errors.Is(err, wexec.ErrAborted):
-		frame = endFrame(reqID, -1, false)
+		// An abort still delivered whatever was buffered: emitBuffered runs BEFORE the
+		// exit-status switch in runner.go, so a non-streaming exec that hit BufferCap
+		// and was then aborted sends exactly BufferCap bytes of Chunks ahead of this
+		// frame. Declaring that untruncated is a false answer to the one question the
+		// flag exists to answer, and the signalled case above already reports it.
+		frame = endFrame(reqID, -1, sink.dropped > 0)
 	default:
 		frame = errFrame(reqID, err.Error())
 	}

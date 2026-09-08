@@ -221,8 +221,11 @@ type scriptedRunner struct {
 	// any block/ctx handling — used to drive more Sends than outbound can buffer.
 	chunks int
 	// dropBytes, when > 0, makes Run report that many dropped bytes to the sink,
-	// standing in for the real runner hitting BufferCap (#189).
-	dropBytes int
+	// standing in for the real runner hitting BufferCap (#189). dropStream picks the
+	// stream to report them against; the zero value means stdout, matching the
+	// proto's reading of STREAM_UNSPECIFIED.
+	dropBytes  int
+	dropStream pb.Stream
 	// delivered counts Chunk calls that RETURNED. With the sender parked, it stops
 	// advancing at exactly the point outbound is full and the next enqueue blocks,
 	// which is how a test proves saturation instead of sleeping and hoping.
@@ -250,7 +253,11 @@ func (r *scriptedRunner) Run(ctx context.Context, s wexec.Spec, sink wexec.Sink)
 		r.mu.Unlock()
 	}
 	if r.dropBytes > 0 {
-		sink.Dropped(pb.Stream_STREAM_STDOUT, r.dropBytes)
+		which := r.dropStream
+		if which == pb.Stream_STREAM_UNSPECIFIED {
+			which = pb.Stream_STREAM_STDOUT
+		}
+		sink.Dropped(which, r.dropBytes)
 	}
 	if r.block != nil {
 		select {
@@ -380,6 +387,63 @@ func TestDroppedOutputMarksEndTruncated(t *testing.T) {
 	// the code away here would lose information no other frame carries.
 	if end.GetExitCode() != 0 {
 		t.Errorf("End.exit_code = %d, want 0 — truncation must not rewrite the status", end.GetExitCode())
+	}
+}
+
+// The two buffers are capped separately, but `truncated` is about the STDOUT the
+// harness returns: grpc-relay-transport.ts excludes stderr from both its buffer and
+// its byte count, and the flag makes it append the marker to stdout and null the exit
+// code. So a cut stderr with whole stdout must NOT set it — otherwise this fix trades
+// under-reporting for over-reporting, discarding a valid exit status and telling Pi
+// that complete stdout was cut (#189 review).
+func TestDroppedStderrDoesNotMarkEndTruncated(t *testing.T) {
+	st := newFakeStream()
+	s := session.New(testConfig(), &scriptedRunner{
+		code: 0, dropBytes: 1000, dropStream: pb.Stream_STREAM_STDERR,
+	})
+	serve(t, s, st)
+	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
+
+	st.exec(&pb.Exec{ReqId: 42, Command: "noisy 2>&1", Streaming: false})
+	waitFor(t, "terminal frame", func() bool { return terminalFor(st.sent(), 42) != nil })
+
+	end := terminalFor(st.sent(), 42).GetEnd()
+	if end == nil {
+		t.Fatalf("terminal = %+v, want an End frame", terminalFor(st.sent(), 42))
+	}
+	if end.GetTruncated() {
+		t.Errorf("End.truncated = true for a stderr-only cut: the harness would null a " +
+			"valid exit code and glue the marker onto stdout that was never truncated")
+	}
+	if end.GetExitCode() != 0 {
+		t.Errorf("End.exit_code = %d, want 0", end.GetExitCode())
+	}
+}
+
+// An abort still delivers whatever was buffered: emitBuffered runs BEFORE the
+// exit-status switch in runner.go, so an aborted non-streaming exec that hit
+// BufferCap sends exactly BufferCap bytes of Chunks and then its End. Declaring that
+// untruncated is a false answer to the one question the flag exists to answer — and
+// the signalled case right beside it already reports honestly, so the polarity has to
+// match (#189 review).
+func TestAbortedExecStillReportsTruncation(t *testing.T) {
+	st := newFakeStream()
+	s := session.New(testConfig(), &scriptedRunner{dropBytes: 1000, err: wexec.ErrAborted})
+	serve(t, s, st)
+	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
+
+	st.exec(&pb.Exec{ReqId: 43, Command: "cat huge", Streaming: false})
+	waitFor(t, "terminal frame", func() bool { return terminalFor(st.sent(), 43) != nil })
+
+	end := terminalFor(st.sent(), 43).GetEnd()
+	if end == nil {
+		t.Fatalf("terminal = %+v, want an End frame", terminalFor(st.sent(), 43))
+	}
+	if end.GetExitCode() != -1 {
+		t.Errorf("End.exit_code = %d, want -1 for an abort", end.GetExitCode())
+	}
+	if !end.GetTruncated() {
+		t.Errorf("End.truncated = false: an aborted exec that dropped output still dropped it")
 	}
 }
 

@@ -150,13 +150,18 @@ export interface Chunk {
 /**
  * End is the terminal success frame. exit_code < 0 = signal/none.
  *
- * truncated says the WORKER cut this exec's output at its own buffer cap, which
+ * truncated says the WORKER cut this exec's STDOUT at its own buffer cap, which
  * the harness cannot infer: the two caps are the same 8 MiB and the harness trips
  * on strictly-greater, so exactly-cap output reads as complete (#189). exit_code
  * stays the command's REAL status — a worker reports what the command did, and it
  * is the harness seam that owes `truncated ⇒ exitCode == null` (spec §8). A worker
  * that never sets it reads as false, which is proto3's default and the old
- * behaviour; only a worker that drops output is obliged to set it.
+ * behaviour; only a worker that drops stdout is obliged to set it.
+ *
+ * STDOUT ONLY, deliberately. A worker may cap stderr separately, but the seam
+ * returns stdout and applies its cap to stdout alone, so setting this for a cut
+ * stderr would discard a valid exit_code and mark whole stdout as truncated. There
+ * is no wire signal for a cut stderr; a worker that cares should log it.
  */
 export interface End {
   reqId: number;
