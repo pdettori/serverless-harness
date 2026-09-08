@@ -68,7 +68,8 @@ Every claim here was traced in the tree at `f78081f`, not inferred from the issu
 This is the finding that shapes the design. Pi does **not** rely on ambient credentials:
 
 - `AgentSession` resolves auth **per request** via `_getRequiredRequestAuth` (`agent-session.ts:357-381`),
-  which reads from `this._modelRegistry` — a **per-instance** field (`:353-355`).
+  which reads `this._modelRegistry` — a **per-instance** field, whose `modelRegistry` accessor is at
+  `:353-355`.
 - The resolved `apiKey` is passed **explicitly** into stream options (`agent-session.ts:1705`, `:1978`, `:2791`).
 - `withEnvApiKey` (`stream.ts:22-30`) consults the environment **only when no explicit key was
   given**: `if (hasExplicitApiKey(options?.apiKey)) return options;` at `:26`, before
@@ -150,9 +151,30 @@ the `process.env.ANTHROPIC_API_KEY` seed (`:310-312`) and the `|| process.env.AN
 fallback (`:306`). The signature does not change — only what it trusts. **Only safe after step 1**,
 which is the whole reason for the ordering.
 
+_The leaf path shares this function and step 1 does not reach it_ — `run-turn.ts:307-309` says both
+call sites run it and warns against "cleaning it up", while step 1's per-request subject arrives in
+`server.ts`, which a leaf `ScaledJob` never enters. The leaf survives both deletions anyway, for two
+independent reasons, so no leaf-side compensation is needed:
+
+- `deploy/knative/leaf-scaledjob.yaml:65-66` mounts `ANTHROPIC_API_KEY` from `llm-credentials`
+  directly, so the `:310-312` seed never fires in a leaf pod — its `!process.env.ANTHROPIC_API_KEY`
+  guard is already false — and the by-provider-name lookup that §3.3 shows to be load-bearing
+  therefore still resolves there.
+- `leaf-job.ts:13-19` populates `anthropicAuthToken` from `process.env.ANTHROPIC_AUTH_TOKEN` itself
+  (`:18`), so the token reaches `applyModelGateway` through `config`, not through the `:306` fallback.
+
+The leaf never depended on either. This is the dual-path check most likely to be re-derived from
+scratch, which is why it is recorded here rather than left to §8.
+
 **Step 3 — scrub at the server entrypoint.** At server startup, **replace** `ANTHROPIC_API_KEY` with
 an inert sentinel and **delete** `ANTHROPIC_OAUTH_TOKEN` and `ANTHROPIC_AUTH_TOKEN` (the first two
-are the names `getApiKeyEnvVars` returns for the `anthropic` provider, `env-api-keys.ts:96-99`).
+are the names `getApiKeyEnvVars` returns for the `anthropic` provider, `env-api-keys.ts:96-98`).
+
+The deletion of `ANTHROPIC_OAUTH_TOKEN` is not incidental. `getApiKeyEnvVars` returns
+`["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]` **in that order**, under a comment stating the
+former takes precedence. An OAuth token left in the environment therefore **outranks** the sentinel,
+and the sentinel's whole argument (§3.3, reason 3) collapses — which is why §5 asserts the deletions
+and not only the replacement.
 
 The scrub belongs at the **server entrypoint only** — not in `run-turn`, not in `leaf-job`. This is
 what keeps the leaf path working: a leaf `ScaledJob` is one pod per leaf, so ambient env is correct
@@ -206,6 +228,24 @@ certifies it. Placeholder isolation is therefore in scope, at the same strictnes
   `leaf-job.ts:77`) until the deployment model changes. They are on the 1:1 path today.
 - **`registrationQueue` is left alone** (§4).
 
+### 3.6 What the scrub does not cover: the pod as deployed
+
+The scrub is **in-process only**, and the manifests still hand the container the real thing:
+`deploy/knative/service.yaml:45-49` mounts `api-key` from `llm-credentials` into the ksvc and `:56`
+mounts `auth-token`. So after step 3 the harness _process_ holds a sentinel while the harness _pod_
+was still delivered a secret. §5's lock-down row is scoped to the process for exactly this reason —
+ADR-0011/0012's "harness holds no key" comes out of this slice **partly** pinned, and claiming
+otherwise would repeat the §2.4 failure this spec is trying to end.
+
+Closing it is deliberately out of scope, because it cannot be done by editing `service.yaml`. Nothing
+puts an injector in the **harness's** egress path today: the base `kustomization.yaml` renders redis +
+sandbox pool + ksvc + relay with no AuthBridge, and `overlays/ocp-authbridge` adds only the AB1/AB2
+_sandbox_-egress demo without patching the ksvc's env. Replacing the ksvc's `api-key` with the §3.3
+sentinel would therefore leave the harness unable to reach any model, in every deployment including
+the AB-gated ones. A secret-free harness pod needs the lock-down's own work (ADR-0011 · Z2) plus
+injector deployment (ADR-0012 · Z3); it is recorded as follow-up in §6, and §8's touched-files list
+carries no manifest for the same reason.
+
 ## 4. The other four globals — pinned, not refactored
 
 The principle: **an inert global should be proven inert and left alone.** Refactoring it raises
@@ -246,14 +286,14 @@ exists at all (§2.3).
 the hazard shape is precisely "a global mutated between two awaits". A sequential two-session test
 would pass while the bug remained, which makes it worse than no test.
 
-| Test                          | Asserts                                                                                                                         | Fails today because                  |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| Two-tenant interleaved turns  | Each upstream request carries its own subject's placeholder                                                                     | No per-request subject exists        |
-| Fail-closed: no subject       | 401 before a session is created, **and no upstream request made**                                                               | Ambient env silently supplies one    |
-| Ambient-absence               | With a real tenant token in `ANTHROPIC_API_KEY` before startup, a subject-less session still fails rather than borrowing it     | This is the leak (`run-turn.ts:310`) |
-| Sentinel identity (§3.3)      | After startup `ANTHROPIC_API_KEY` equals the sentinel **exactly**, and is byte-identical across two differently-subjected turns | No scrub exists                      |
-| Lock-down invariant           | No real provider credential is reachable from the harness process in server mode                                                | Unpinned prose today (§2.4)          |
-| Four reachability guards (§4) | Each inert global stays inert                                                                                                   | New guards                           |
+| Test                            | Asserts                                                                                                                                                                                                                                                                                                                                                                  | Fails today because                  |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------ |
+| Two-tenant interleaved turns    | Each upstream request carries its own subject's placeholder                                                                                                                                                                                                                                                                                                              | No per-request subject exists        |
+| Fail-closed: no subject         | 401 before a session is created, **and no upstream request made**                                                                                                                                                                                                                                                                                                        | Ambient env silently supplies one    |
+| Ambient-absence                 | With a real tenant token in `ANTHROPIC_API_KEY` before startup, a subject-less session still fails rather than borrowing it                                                                                                                                                                                                                                              | This is the leak (`run-turn.ts:310`) |
+| Sentinel identity (§3.3)        | After startup `ANTHROPIC_API_KEY` equals the sentinel **exactly** and is byte-identical across two differently-subjected turns, **and `ANTHROPIC_OAUTH_TOKEN` / `ANTHROPIC_AUTH_TOKEN` are absent** — the first outranks the sentinel in pi's own lookup (§3.2 step 3), so asserting the sentinel alone would stay green while a real credential took precedence over it | No scrub exists                      |
+| Lock-down invariant, in-process | After the startup scrub, no real provider credential is reachable from the harness **process** in server mode. Scoped to the process on purpose: the pod as _deployed_ still receives one (§3.6)                                                                                                                                                                         | Unpinned prose today (§2.4)          |
+| Four reachability guards (§4)   | Each inert global stays inert                                                                                                                                                                                                                                                                                                                                            | New guards                           |
 
 Homes: `harness/test` and `packages/knative-server/test` — both typechecked since #190, which is the
 gate that made this work sequenceable (threading per-session identity is exactly the change whose
@@ -274,6 +314,10 @@ omits the env var proves nothing.
 - **`SessionContext` threaded through `pi-fork`.** §2.2 and §4: the credential path is already
   per-session, and the other globals are inert. Four `pi-fork` refactors would add divergence and
   fix nothing.
+- **The secret-free harness _pod_.** `service.yaml:45-49` and `:56` keep mounting `llm-credentials`,
+  so this slice pins the lock-down invariant in-process only (§3.6). Making it true of the deployment
+  needs an injector in the harness's egress path, which no manifest provides — owed by the lock-down
+  slice (ADR-0011 · Z2) and injector deployment (ADR-0012 · Z3), not by this one.
 - **Caller authentication.** `X-SH-Subject` states _who the work is for_, not _who may ask_. Caller
   auth is ADR-0011's lock-down work; §3.2 keeps `Authorization` free for it.
 - **Per-tenant sandbox or data isolation.** Untouched here.

@@ -76,8 +76,8 @@ than refactored, on the principle that an inert global should be proven inert an
 
 - Positive: isolation becomes **structural** — with no ambient identity in the process, "we passed
   the right one" stops being a hoped-for behaviour and becomes a precondition the process cannot
-  violate. Zero `pi-fork` divergence. ADR-0011/0012's "harness holds no key" invariant gains the
-  test that has been missing since it was written.
+  violate. Zero `pi-fork` divergence. ADR-0011/0012's "harness holds no key" invariant gains its
+  first test — scoped to the **process**, not yet to the pod (see the follow-up below).
 - Positive: the harness becomes tenancy-**neutral**, so enabling mixed tenancy later is an injector
   configuration change, not a harness rewrite.
 - Negative / accepted cost: a new inbound header contract and a new non-secret subject → placeholder
@@ -90,10 +90,18 @@ than refactored, on the principle that an inert global should be proven inert an
 - Negative / accepted cost: `ANTHROPIC_API_KEY` remains set, to a sentinel. "The process holds no
   ambient credential" is therefore true of _identity_ but not literally of the variable — a
   distinction a reader could mistake for a loophole, which is why the sentinel's exact value is
-  asserted by a test rather than left to convention.
+  asserted by a test rather than left to convention, together with the absence of the
+  higher-precedence `ANTHROPIC_OAUTH_TOKEN`, which would otherwise outrank it.
+- Negative / accepted cost: the scrub is **in-process**, while the manifests still deliver a real
+  credential to the container (`service.yaml:45-49`, `:56`). The harness _process_ ends up
+  sentinel-only; the harness _pod_ does not. Editing the manifest alone cannot fix it, since no
+  manifest puts an injector in the harness's egress path — a sentinel-only pod could reach no model.
 - Negative / accepted: an ambient **placeholder** is treated as strictly as an ambient key, because
   the injector faithfully swaps it for the real credential — so a leaked placeholder spends tenant
   A's budget on B's work and produces an audit trail that certifies the error instead of catching it.
+- Follow-up owed: the **secret-free harness pod** — dropping `llm-credentials` from the ksvc and
+  putting an injector in the harness's egress path — belongs to the lock-down slice (ADR-0011 · Z2)
+  and injector deployment (ADR-0012 · Z3), not to this one.
 - Follow-up owed: the deployment-model slice (`ScaledJob` → elastic pod pool, and #55's overload
   shift from pod-level to session-level) is separate and unblocked by this. `#220`'s severity table
   needs the spec's §2.1 corrections before anyone scopes from it. `cwd` (`server.ts:69`) is
