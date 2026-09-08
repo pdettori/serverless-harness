@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -60,7 +61,11 @@ func (h *harness) attach(t *testing.T) *relaytest.Conn {
 // stream's own context is cancelled.
 func (h *harness) attachCancellable(t *testing.T) (*relaytest.Conn, context.CancelFunc, <-chan error) {
 	t.Helper()
-	cc, err := grpc.NewClient(h.relay.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// session.DialOptions, not a hand-rolled option list: these tests are the only
+	// place the worker's dial configuration is exercised, so building their own would
+	// leave "does main.go actually apply it?" unanswered — and an unapplied option is
+	// indistinguishable from an absent one (#173 item 2).
+	cc, err := grpc.NewClient(h.relay.Addr, session.DialOptions(insecure.NewCredentials())...)
 	if err != nil {
 		t.Fatalf("dial %s: %v", h.relay.Addr, err)
 	}
@@ -494,6 +499,52 @@ func TestContractNonStreamingBuffersThenChunksAtExit(t *testing.T) {
 	if elapsed := firstChunkAt.Sub(start); elapsed < sleepFor-300*time.Millisecond {
 		t.Errorf("first chunk arrived after %v, want it withheld until close to the %v sleep: "+
 			"streaming:false is not actually buffering until child exit", elapsed, sleepFor)
+	}
+}
+
+// #173 item 2. A write travels as base64 in Exec.stdin, which inflates the payload by
+// 4/3 — so an 8 MiB file (readable, since DEFAULT_OUTPUT_CAP is 8 MiB) becomes an
+// ~10.7 MiB Exec, far past gRPC's 4 MiB default receive limit. The harness's read path
+// can therefore fetch files this path cannot write back.
+//
+// THE ORDER OF THE TWO FIXES MATTERS, which is what this test guards. Raising only the
+// relay's ingress limit would let the oversized ExecRequest through and move the
+// rejection one hop later, onto the worker's Attach stream — and THAT kills the whole
+// connection, taking every concurrent and queued exec with it. It is the failure item 2
+// originally described, so fixing the relay alone would have created the bug the item
+// wrongly claimed already existed. The worker's receive limit must be at least the
+// relay's, and this test fails if the worker is left at the 4 MiB default.
+func TestContractAcceptsAnOversizedWritePayload(t *testing.T) {
+	h := newHarness(t)
+	conn := h.attach(t)
+
+	// Just past the 4 MiB default once base64-encoded, exactly as writeFile encodes it
+	// (operations.ts) — the real shape of the payload, not a synthetic blob.
+	content := make([]byte, 4*1024*1024)
+	for i := range content {
+		content[i] = byte('a' + i%26)
+	}
+	b64 := base64.StdEncoding.EncodeToString(content)
+	if len(b64) <= 4*1024*1024 {
+		t.Fatalf("payload is %d bytes, which does not cross the 4 MiB default it exists to cross", len(b64))
+	}
+
+	const reqID = 900
+	conn.SendExec(t, &pb.Exec{
+		ReqId:     reqID,
+		Command:   "base64 -d | wc -c",
+		Stdin:     []byte(b64),
+		Streaming: false,
+	})
+
+	stdout, _, terminal := conn.Collect(t, reqID)
+	if terminal.GetEnd() == nil || terminal.GetEnd().GetExitCode() != 0 {
+		t.Fatalf("terminal = %+v, want End{exit_code:0}: the oversized Exec did not survive the stream", terminal)
+	}
+	// The command decodes what it received and counts the bytes, so this proves the
+	// payload arrived WHOLE rather than merely that the stream stayed up.
+	if got := strings.TrimSpace(string(stdout)); got != strconv.Itoa(len(content)) {
+		t.Errorf("worker decoded %s bytes, want %d: the payload was truncated in transit", got, len(content))
 	}
 }
 

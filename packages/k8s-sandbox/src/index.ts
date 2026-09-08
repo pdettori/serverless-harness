@@ -2,6 +2,9 @@ export { k8sSandboxExtension } from './extension.js';
 export { resolveConfig, type K8sSandboxConfig } from './config.js';
 export { buildKubectlArgs, KubectlTransport, type ExecInPod, type ExecResult } from './exec.js';
 export type { SandboxTransport } from './transport.js';
+// Exported for the relay, which must set its ingress limit to the SAME value the Go
+// worker uses — see MAX_EXEC_MESSAGE_BYTES on why the two cannot move independently.
+export { MAX_EXEC_MESSAGE_BYTES } from './transport.js';
 export { buildPersistentKubectlArgs, persistentExecInPod } from './persistent-exec.js';
 export {
   buildSelectorArgs,

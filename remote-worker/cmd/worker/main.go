@@ -24,7 +24,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 
 	pb "github.com/kagenti/serverless-harness/gen/go/sandbox/v1"
@@ -126,19 +125,11 @@ func main() {
 	// alive and registered while answering nothing. These params bound that to
 	// ~40s (Time + Timeout) instead of TCP retransmit exhaustion.
 	//
-	// PermitWithoutStream: false is deliberate and safe here. The Attach stream is
-	// open for the entire time liveness matters, so pinging only while a stream is
-	// active loses nothing — and the relay (packages/sandbox-relay) configures no
-	// keepalive enforcement policy at all, so this cannot trip a server-side
-	// GOAWAY ENHANCE_YOUR_CALM.
-	conn, err := grpc.NewClient(relayAddr,
-		grpc.WithTransportCredentials(creds),
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                30 * time.Second,
-			Timeout:             10 * time.Second,
-			PermitWithoutStream: false,
-		}),
-	)
+	// The params themselves, and the raised receive limit that travels with them, now
+	// live in session.DialOptions so the contract tests dial exactly as production
+	// does — an unapplied option is indistinguishable from an absent one otherwise
+	// (#173 item 2).
+	conn, err := grpc.NewClient(relayAddr, session.DialOptions(creds)...)
 	if err != nil {
 		log.Fatalf("dial %s: %v", relayAddr, err)
 	}

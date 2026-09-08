@@ -76,6 +76,39 @@ export const DEFAULT_OUTPUT_CAP = 8 * 1024 * 1024; // 8 MiB
 export const OUTPUT_TRUNCATED_MARKER = '\n[output truncated]';
 
 /**
+ * BASE64_INFLATION is what a write costs on the wire. `createPodWriteOps` sends file
+ * content as base64 in `Exec.stdin` (operations.ts), and base64 encodes 3 bytes as 4.
+ */
+export const BASE64_INFLATION = 4 / 3;
+
+/**
+ * MAX_EXEC_MESSAGE_BYTES raises gRPC's 4 MiB default receive limit, which is smaller
+ * than this contract's own write path needs (#173 item 2).
+ *
+ * THE DERIVATION, because the number must not be arbitrary. The largest readable file
+ * is DEFAULT_OUTPUT_CAP, and writing it back costs DEFAULT_OUTPUT_CAP ×
+ * BASE64_INFLATION ≈ 10.7 MiB of `Exec`. At the 4 MiB default, every file between
+ * ~3 MiB and 8 MiB was READABLE BUT NOT WRITABLE — and Pi's Edit composes read with
+ * write, so editing one succeeded at reading and then failed. 16 MiB covers the
+ * inflated cap with room for the command string and protobuf framing, making write
+ * capacity >= read capacity by construction. `KubectlTransport` pipes base64 through
+ * `kubectl exec` stdin with no such ceiling, so this also removes a divergence where
+ * the same write succeeded or failed depending on which backend was leased.
+ *
+ * BOTH ENDS MUST MOVE TOGETHER, and the worker's limit must be at least this one.
+ * The relay's ingress is what rejects an oversized `ExecRequest` today, and that
+ * rejection is contained to a single exec. Raising the relay alone would forward the
+ * payload and move the rejection onto the worker's Attach stream, whose death takes
+ * every concurrent and queued exec with it. The Go side is
+ * `session.MaxRecvMsgBytes`, pinned to this value by
+ * test/message-size-coupling.test.ts — change one and change the other.
+ *
+ * Send limits need no change: grpc-js defaults max_send_message_length to -1 and
+ * grpc-go defaults MaxCallSendMsgSize to MaxInt32, both effectively unlimited.
+ */
+export const MAX_EXEC_MESSAGE_BYTES = 16 * 1024 * 1024; // 16 MiB
+
+/**
  * Ceiling on one exec when the caller names no `timeout` (spec §3; issue #182). Shared by
  * ALL THREE implementations, for the same reason DEFAULT_OUTPUT_CAP is: an exec that
  * behaves differently depending on which transport happened to serve it is a divergence

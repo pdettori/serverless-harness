@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import { buildServer } from '../src/main.js';
 import type { RecordStore } from '@sh/harness';
+import { MAX_EXEC_MESSAGE_BYTES } from '@sh/k8s-sandbox';
 
 const records: RecordStore = { put: async () => {}, remove: async () => {}, list: async () => [] };
 
@@ -15,6 +16,19 @@ function getHandler(server: unknown, path: string): (call: unknown) => unknown {
 }
 
 describe('relay server wiring', () => {
+  // #173 item 2. This is the limit that actually rejects an oversized write today: the
+  // harness sends an ExecRequest whose base64 stdin is 4/3 of the file, and gRPC's
+  // default ingress ceiling is 4 MiB — so a file the read path can return (up to
+  // DEFAULT_OUTPUT_CAP, 8 MiB) could not be written back. It must equal the worker's
+  // MaxRecvMsgBytes, not merely be raised: a relay that accepts MORE than the worker
+  // forwards a payload the worker then refuses on the Attach stream, killing every
+  // concurrent exec on it. message-size-coupling.test.ts pins the equality.
+  it('raises the ingress message limit to the shared MAX_EXEC_MESSAGE_BYTES', () => {
+    const { server } = buildServer({ records, validateToken: () => true });
+    const options = (server as unknown as { options: Record<string, unknown> }).options;
+    expect(options['grpc.max_receive_message_length']).toBe(MAX_EXEC_MESSAGE_BYTES);
+  });
+
   it('registers both gRPC services', () => {
     const { server } = buildServer({ records, validateToken: () => true });
     // grpc-js Server keeps registered handlers in a private `handlers` Map keyed
