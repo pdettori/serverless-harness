@@ -1,6 +1,6 @@
 # Multi-Session Harness Isolation — Per-Request Subject, No Ambient Credential — Design
 
-Version: 1.0 — September 6, 2026
+Version: 1.1 — September 6, 2026; amended September 8, 2026
 Status: Proposed
 Scope: Make **N concurrent Pi sessions in one harness process** provably isolated, by carrying the
 LLM identity **per request** and removing every ambient (process-global) credential source that a
@@ -85,7 +85,9 @@ Every caller fills the credential from process env:
 
 - `packages/knative-server/src/server.ts:66-73` — `buildConfig()` takes no arguments and reads
   `process.env.ANTHROPIC_AUTH_TOKEN` (`:71`), `ANTHROPIC_BASE_URL` (`:70`), and `cwd` (`:69`).
-  Called at `:111` (sync turn), `:174` (async dispatch), `:411`/`:415` (leaf).
+  Called at `:111` (sync turn), `:174` (**the SSE branch of the same `/turn` route**, not async
+  dispatch: `handleTurnStream:150` ← `handleTurn:108`, `if (wantsStream)` ← `POST /turn` at `:564`),
+  `:411`/`:415` (leaf).
 - `packages/knative-server/src/leaf-job.ts:13-18`, used at `:77`.
 - `harness/src/cli.ts:13`.
 
@@ -128,13 +130,27 @@ Three statements, each testable:
    tenant (§3.3), so `withEnvApiKey`'s fallback (`stream.ts:27`) can never resolve to anyone's
    identity.
 3. **Fail closed, twice.** A request with no subject is rejected before a session is created. A
-   subject with no placeholder resolution makes **no upstream request at all**.
+   subject with no placeholder resolution makes **no upstream request at all**. This clause rests
+   entirely on step 1's explicit 401 — §3.2 step 2 records why removing the ambient fallbacks adds no
+   enforcement of its own.
 
 ### 3.2 Three ordered steps (the order is forced by §2.3)
 
 **Step 1 — per-request subject inflow.** `buildConfig()` becomes `buildConfig(req)` in
 `packages/knative-server/src/server.ts`, reading the subject from the inbound request and deriving
 the per-request placeholder from it. The turn path gains what the leaf path already has (§2.3).
+
+**Both `/turn` call sites convert: `:111` (sync) and `:174` (SSE).** They are the two branches of one
+route, split at `:107-108` on the `Accept` header, so converting only `:111` leaves a bypass rather
+than a partial rollout (§3.5). `handleTurnStream` already receives `req` (`:153`), so the subject is
+in scope there with no signature change.
+
+The placeholder rides in on the existing `TurnConfig.anthropicAuthToken` field — `applyModelGateway`
+installs `Authorization: Bearer ${authToken}` (`run-turn.ts:336`) from it, so no new credential field
+is needed. `TurnConfig` **does** gain an explicit `subject` field: without it the tenant is knowable
+only by reverse-mapping the placeholder, which would put the logging path in contact with the
+credential mapping this slice exists to isolate, and the §5 two-tenant test would have nothing but
+the outbound header to assert on.
 
 Subject transport: a dedicated header, **`X-SH-Subject`**, not `Authorization`. `Authorization` is
 unused on inbound requests today (the server consumes no auth header), but its meaning there is "may
@@ -150,6 +166,13 @@ non-secret configuration. It contains no credentials, so it may be logged and as
 the `process.env.ANTHROPIC_API_KEY` seed (`:310-312`) and the `|| process.env.ANTHROPIC_AUTH_TOKEN`
 fallback (`:306`). The signature does not change — only what it trusts. **Only safe after step 1**,
 which is the whole reason for the ordering.
+
+**Step 2 does not itself make anything fail closed.** `run-turn.ts:314`
+(`if (!gatewayBase && !authToken) return baseModel;`) returns the model **unchanged** rather than
+throwing, leaving pi's own `withEnvApiKey` fallback (§2.2) reachable below it — and
+`model-gateway.test.ts:27` pins that behaviour deliberately. So step 1's explicit 401 is the **only**
+enforcement of §3.1 clause 3: step 1 shipped without the 401, or step 2 landing first, fails open
+silently rather than loudly.
 
 _The leaf path shares this function and step 1 does not reach it_ — `run-turn.ts:307-309` says both
 call sites run it and warns against "cleaning it up", while step 1's per-request subject arrives in
@@ -176,7 +199,14 @@ former takes precedence. An OAuth token left in the environment therefore **outr
 and the sentinel's whole argument (§3.3, reason 3) collapses — which is why §5 asserts the deletions
 and not only the replacement.
 
-The scrub belongs at the **server entrypoint only** — not in `run-turn`, not in `leaf-job`. This is
+**"Entrypoint" means the exported `startServer()` (`server.ts:576`), not the `isMainModule` guard
+(`:592-593`).** The choice is not cosmetic: §5's _Sentinel identity_ row is assertable in-process only
+in the former — inside the guard it needs a subprocess, which would leave the one line that makes
+step 2 safe without unit coverage. The accepted cost is that every test which starts a server now
+mutates process env and needs the save/restore discipline `model-gateway.test.ts` already applies;
+skip it once and the failure mode is an order-dependent test that passes for the wrong reason.
+
+The scrub belongs at that entrypoint **only** — not in `run-turn`, not in `leaf-job`. This is
 what keeps the leaf path working: a leaf `ScaledJob` is one pod per leaf, so ambient env is correct
 there and multiplexing never applies. Scrubbing inside `run-turn` would break leaf mode, since both
 paths share it.
@@ -224,8 +254,11 @@ certifies it. Placeholder isolation is therefore in scope, at the same strictnes
 
 - **`anthropicBaseUrl` stays deployment-level.** The gateway is infrastructure, not tenant identity.
   Extension point noted: a tenant needing its own gateway makes base URL subject-derived too.
-- **The non-turn `buildConfig()` call sites keep ambient config** (`server.ts:174`, `:411`, `:415`;
+- **The genuinely non-turn `buildConfig()` call sites keep ambient config** (`server.ts:411`, `:415`;
   `leaf-job.ts:77`) until the deployment model changes. They are on the 1:1 path today.
+  **`server.ts:174` is not one of them** — it was listed here in error. It is the SSE branch of
+  `POST /turn` (§2.3), so leaving it ambient would let any client bypass the per-request subject by
+  sending `Accept: text/event-stream`, making §3.1 clause 1 false and never reaching step 1's 401.
 - **`registrationQueue` is left alone** (§4).
 
 ### 3.6 What the scrub does not cover: the pod as deployed
@@ -252,13 +285,13 @@ The principle: **an inert global should be proven inert and left alone.** Refact
 `pi-fork` divergence to fix nothing, while a reachability test catches the thing actually feared —
 that it quietly becomes reachable later.
 
-| Global                                               | Disposition                          | Pinned by                                                                                                                     |
-| ---------------------------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| `stdoutTakeoverState` (`output-guard.ts:7`)          | Unreachable in server mode           | `isStdoutTakenOver()` stays false across a server turn                                                                        |
-| `sessionResourceCleanups` (`session-resources.ts:3`) | Already session-scoped               | Cleaning up A leaves B's resources intact; the no-arg `cleanupSessionResources()` form is never reached from the harness path |
-| `fileMutationQueues` (`file-mutation-queue.ts:4`)    | Left alone deliberately              | Documented, not changed — keyed by `realpath`, so the residual global is one serialized `realpath()`                          |
-| `commandResultCache` (`resolve-config-value.ts:10`)  | Unreachable with harness config      | No harness config value begins with `!`                                                                                       |
-| `cwd` (`server.ts:69`)                               | **Not in the issue**; must be pinned | No session-scoped file operation resolves against `process.cwd()`                                                             |
+| Global                                               | Disposition                         | Pinned by                                                                                                                     |
+| ---------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `stdoutTakeoverState` (`output-guard.ts:7`)          | Unreachable in server mode          | `isStdoutTakenOver()` stays false across a server turn                                                                        |
+| `sessionResourceCleanups` (`session-resources.ts:3`) | Already session-scoped              | Cleaning up A leaves B's resources intact; the no-arg `cleanupSessionResources()` form is never reached from the harness path |
+| `fileMutationQueues` (`file-mutation-queue.ts:4`)    | Left alone deliberately             | Documented, not changed — keyed by `realpath`, so the residual global is one serialized `realpath()`                          |
+| `commandResultCache` (`resolve-config-value.ts:10`)  | Unreachable with harness config     | No harness config value begins with `!`                                                                                       |
+| `cwd` (`server.ts:69`)                               | **Not in the issue**; probed, inert | No **write** resolves under `cwd` across a server turn; the settings read is the only cwd contact                             |
 
 Two notes on this table:
 
@@ -268,11 +301,37 @@ unwritable stdout; in a multiplexed server it is a **fleet-wide outage triggered
 write error**. Pinning the module unreachable covers both, and is a further argument against ever
 routing server output through it.
 
-**`cwd` is the one item that could change this slice's verdict.** It is process-wide, so if any
-session-scoped file operation resolves against `process.cwd()`, that is a genuine second blocker and
-the scope grows. Under FS-free two-tier (P1) file operations go to the sandbox, so it is expected to
-be inert — but expected is not proven, and a failure here must upgrade scope rather than be papered
-over.
+**`cwd` was the one item that could change this slice's verdict**, so it was probed rather than
+assumed. `cwd` is threaded per-turn (`run-turn.ts:417`, `config?.cwd ?? process.cwd()`) and is
+identical for every request, reaching `SessionManager.create`/`openFromCheckpoint` (`:429-442`) and
+`SettingsManager.create` (`:446`). Result: **inert, and the scope does not grow** — but the 1.0 pin
+above ("no session-scoped file operation resolves against `process.cwd()`") was too strong, because
+one cwd-derived path _is_ computed. The accurate statement:
+
+- **`SessionManager` — proven inert.** `create` sets `dir = backend ? "" : getDefaultSessionDir(cwd)`
+  (`session-manager.ts:1421`) and the harness always passes a backend (`run-turn.ts:419-420`, `:432`,
+  `:442`); `openFromCheckpoint` routes to `openFromBackend` (`:1465`, `:1469`). With `sessionDir`
+  empty the constructor's `mkdirSync` is guarded off (`:792`), and every write in the class targets
+  `this.sessionFile`, which the backend path never sets. `cwd` survives only as a **value** in the
+  session header (`:856`, `:1333`).
+- **`SettingsManager` — cwd-derived, but read-only on this path.** `FileSettingsStorage` computes
+  `projectSettingsPath = join(resolvedCwd, CONFIG_DIR_NAME, "settings.json")`
+  (`settings-manager.ts:189`). Startup is a pure read: `loadFromStorage` (`:349-352`) passes a
+  callback returning `undefined`, and `withLock` writes only on a non-`undefined` return (`:232-241`).
+  Writes require `updateProjectSettings` → `assertProjectTrustedForWrite` (`:527`), and the only
+  project-scope mutators repo-wide are `package-manager-cli.ts:487` and `resource-loader.ts:328`/`:338`
+  — none reachable from a server turn.
+
+Two residuals to pin rather than assume, since both hold by "no caller" and not by refusal:
+
+1. **The trust gate is open.** `projectTrusted` defaults to `true` (`settings-manager.ts:313`) and
+   `run-turn.ts:446` passes no options, so a future project-scope write would succeed, not throw —
+   and all N sessions share one `<cwd>/.pi/settings.json`, re-read every turn.
+2. **The settings lock busy-waits synchronously.** `acquireLockSyncWithRetry` (`:192-217`) spins up to
+   10 × 20 ms and is entered on the **read** path too whenever the file exists (`:226-228`). On a
+   single-threaded event loop that stalls _every_ multiplexed session for up to 200 ms. Like
+   `registrationQueue` in §2.1 this is throughput, not correctness — recorded so it is not rediscovered
+   as a mystery latency spike.
 
 ## 5. Testing & verification gate
 
@@ -289,6 +348,7 @@ would pass while the bug remained, which makes it worse than no test.
 | Test                            | Asserts                                                                                                                                                                                                                                                                                                                                                                  | Fails today because                  |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------ |
 | Two-tenant interleaved turns    | Each upstream request carries its own subject's placeholder                                                                                                                                                                                                                                                                                                              | No per-request subject exists        |
+| Two-tenant interleaved, **SSE** | The same assertion over `POST /turn` with `Accept: text/event-stream` — the `:174` branch (§3.2 step 1). Not optional: the sync-only version above passes green while the SSE branch still resolves its credential from ambient env                                                                                                                                      | `:174` keeps ambient config today    |
 | Fail-closed: no subject         | 401 before a session is created, **and no upstream request made**                                                                                                                                                                                                                                                                                                        | Ambient env silently supplies one    |
 | Ambient-absence                 | With a real tenant token in `ANTHROPIC_API_KEY` before startup, a subject-less session still fails rather than borrowing it                                                                                                                                                                                                                                              | This is the leak (`run-turn.ts:310`) |
 | Sentinel identity (§3.3)        | After startup `ANTHROPIC_API_KEY` equals the sentinel **exactly** and is byte-identical across two differently-subjected turns, **and `ANTHROPIC_OAUTH_TOKEN` / `ANTHROPIC_AUTH_TOKEN` are absent** — the first outranks the sentinel in pi's own lookup (§3.2 step 3), so asserting the sentinel alone would stay green while a real credential took precedence over it | No scrub exists                      |
@@ -302,6 +362,22 @@ test fakes need compiler checking).
 The ambient-absence test deserves emphasis: it is the only test that would have caught the original
 defect, and it must set the env var _deliberately_ and assert failure anyway. A test that merely
 omits the env var proves nothing.
+
+**Three existing tests assert exactly what step 2 deletes, and must be inverted rather than updated.**
+They are currently correct about `main`, so they will fail on a correct implementation — expect them
+in the step-2 diff and do not let a green run be achieved by weakening them:
+
+- `harness/test/model-gateway.test.ts:50` — _"seeds `ANTHROPIC_API_KEY` from the auth token when the
+  key is unset"_ pins the `:310-312` seed. Invert: assert the env key is **not** written from the token.
+- `:42` — _"reads `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` from env when config omits them"_ must
+  be **split**, not deleted: the `BASE_URL` half survives (§3.5 keeps `anthropicBaseUrl`
+  deployment-level), while the `AUTH_TOKEN` half inverts to assert no `Authorization` header.
+- `:78` — _"treats an empty-string config value as unset and falls back to the env var"_ takes the same
+  split; after step 2 the `||`-not-`??` reasoning at `run-turn.ts:304-305` applies to `gatewayBase` only.
+
+`:27` (_"returns the base model unchanged…"_) stays as-is and is load-bearing in the other direction —
+it is the pin that proves §3.2 step 2's fail-open, which is why the 401 carries clause 3.
+`run-turn.test.ts`, `run-turn-model.test.ts` and `turn-stream.test.ts` also touch these env vars.
 
 ## 6. Scope / YAGNI — explicitly NOT building
 
@@ -341,11 +417,12 @@ from it.
 
 Verified mechanics, so a clean session does not rediscover them.
 
-**Files this slice touches.** `packages/knative-server/src/server.ts` (`buildConfig` → request-scoped,
-subject header parsing, startup scrub, 401 path), `harness/src/run-turn.ts` (`applyModelGateway`
-:306, :310-312), plus new tests in `harness/test` and `packages/knative-server/test`. **No
-`pi-fork` changes.** `harness/src/cli.ts:13` and `packages/knative-server/src/leaf-job.ts:13-18`
-stay ambient on purpose (§3.2 step 3).
+**Files this slice touches.** `packages/knative-server/src/server.ts` (`buildConfig` → request-scoped
+at **both** `/turn` call sites `:111` and `:174`, subject header parsing, the startup scrub in
+`startServer()` `:576`, 401 path), `harness/src/run-turn.ts` (`applyModelGateway` :306, :310-312),
+`harness/test/model-gateway.test.ts` (invert `:50`, split `:42` and `:78` — §5), plus new tests in
+`harness/test` and `packages/knative-server/test`. **No `pi-fork` changes.** `harness/src/cli.ts:13`
+and `packages/knative-server/src/leaf-job.ts:13-18` stay ambient on purpose (§3.2 step 3).
 
 **Worktree setup.** `link:` deps resolve inside the worktree, so a fresh one needs, in order:
 `git submodule update --init --recursive`, then `cd pi-fork && npm ci && npm run build`, then
