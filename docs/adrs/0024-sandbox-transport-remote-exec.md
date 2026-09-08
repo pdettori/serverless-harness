@@ -165,6 +165,46 @@ running with nothing left to stop it. Both defaults are pinned by the shared bat
 the wire value by `grpc-relay-transport.test.ts`, since a transport-blind battery cannot
 distinguish a ceiling both ends enforce from one only the harness does.
 
+### 2026-09-07 — the worker declares its own truncation on the wire (issue #189)
+
+The 2026-08-30 revision above made truncation explicit on the seam and asserted
+`truncated === true ⇒ exitCode === null` for all three transports. One producer was still
+outside that guarantee: the Go worker's own `BufferCap`. On the non-streaming path it dropped
+output past 8 MiB and then sent `End` with the command's real exit code, so
+`GrpcRelayTransport` resolved `{ truncated: false, exitCode: 0 }` over cut output.
+
+**The equality of the two caps is what made it silent.** `BufferCap` and
+`DEFAULT_OUTPUT_CAP` are both 8 MiB, and the harness trips on `bytes > cap` — strictly
+greater — so a worker delivering exactly the cap looks complete. A difference of one byte in
+either direction would have exposed it.
+
+**Decided:** `bool truncated = 3` on `End`. The worker keeps sending the command's **real**
+`exit_code`; the transport applies the seam invariant. Splitting it that way keeps the wire
+honest for any client that wants the status, and keeps `truncated ⇒ exitCode === null` in the
+one place that owes it. Inside the worker the count reaches the frame through a **required**
+`Sink.Dropped` method, not an optional extension, for the same reason §8's `truncated` is
+required rather than optional: an omitted report reads as "nothing dropped", which is the
+defect one layer down. Required, a `Sink` that forgets it does not compile.
+
+**Rejected:** making the caps deliberately unequal so the harness's cap always trips first
+(worker `BufferCap` = harness cap + one chunk). No proto change, and it does fix our client —
+but it fixes only clients whose cap is below `BufferCap`. `sandbox/v1` is a language-neutral
+contract for third-party workers and clients, so a fix that depends on the harness's private
+constant is not a contract fix. It also converts a stated invariant
+(`output-cap-coupling.test.ts` pins the two as equal) into a stated offset, which is harder
+to reason about for no gain once the flag exists.
+
+**Rejected:** rejecting `streaming: false` at the relay, since our client never sets it. It
+narrows the surface without fixing the contract, and it breaks legitimate non-streaming
+third-party clients — the mode exists in the proto and `read`/`write` are exactly what it is
+for.
+
+**Consequence:** the defect is unreachable from any first-party path — `grpc-relay-
+transport.ts` hardcodes `streaming: true` — so a scripted `End{truncated: true}` in
+`grpc-relay-transport.test.ts` is what makes it observable, alongside Go unit tests on the
+runner's accounting and the session's frame. Equality of the two caps is still pinned, but
+it now pins memory parity rather than detectability, and the test says so.
+
 ---
 
 _Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>_

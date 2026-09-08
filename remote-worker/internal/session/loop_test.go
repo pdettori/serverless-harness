@@ -220,6 +220,9 @@ type scriptedRunner struct {
 	// chunks, when > 0, makes Run emit that many stdout chunks via sink before
 	// any block/ctx handling — used to drive more Sends than outbound can buffer.
 	chunks int
+	// dropBytes, when > 0, makes Run report that many dropped bytes to the sink,
+	// standing in for the real runner hitting BufferCap (#189).
+	dropBytes int
 	// delivered counts Chunk calls that RETURNED. With the sender parked, it stops
 	// advancing at exactly the point outbound is full and the next enqueue blocks,
 	// which is how a test proves saturation instead of sleeping and hoping.
@@ -245,6 +248,9 @@ func (r *scriptedRunner) Run(ctx context.Context, s wexec.Spec, sink wexec.Sink)
 		r.mu.Lock()
 		r.delivered++
 		r.mu.Unlock()
+	}
+	if r.dropBytes > 0 {
+		sink.Dropped(pb.Stream_STREAM_STDOUT, r.dropBytes)
 	}
 	if r.block != nil {
 		select {
@@ -347,6 +353,49 @@ func TestExecEmitsEndWithExitCode(t *testing.T) {
 	got := terminalFor(st.sent(), 1)
 	if got.GetEnd() == nil || got.GetEnd().GetExitCode() != 7 {
 		t.Errorf("terminal = %+v, want End{exit_code:7}", got)
+	}
+}
+
+// #189: output the runner dropped at BufferCap must reach the harness as
+// End.truncated. Nothing else can tell it — the harness's cap is the same 8 MiB
+// and trips on strictly-greater, so exactly-cap output reads as complete.
+func TestDroppedOutputMarksEndTruncated(t *testing.T) {
+	st := newFakeStream()
+	s := session.New(testConfig(), &scriptedRunner{code: 0, dropBytes: 1000})
+	serve(t, s, st)
+	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
+
+	st.exec(&pb.Exec{ReqId: 40, Command: "cat huge", Streaming: false})
+	waitFor(t, "terminal frame", func() bool { return terminalFor(st.sent(), 40) != nil })
+
+	end := terminalFor(st.sent(), 40).GetEnd()
+	if end == nil {
+		t.Fatalf("terminal = %+v, want an End frame", terminalFor(st.sent(), 40))
+	}
+	if !end.GetTruncated() {
+		t.Errorf("End.truncated = false, want true: %d dropped bytes went unreported", 1000)
+	}
+	// The REAL exit code survives. The worker reports what the command did; mapping
+	// truncation to a null status is the harness seam's job (spec §8), and throwing
+	// the code away here would lose information no other frame carries.
+	if end.GetExitCode() != 0 {
+		t.Errorf("End.exit_code = %d, want 0 — truncation must not rewrite the status", end.GetExitCode())
+	}
+}
+
+// The flag carries information only if an untruncated exec clears it. A
+// wrong-polarity or always-set implementation passes the test above and fails here.
+func TestUndroppedOutputLeavesEndUntruncated(t *testing.T) {
+	st := newFakeStream()
+	s := session.New(testConfig(), &scriptedRunner{code: 0})
+	serve(t, s, st)
+	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
+
+	st.exec(&pb.Exec{ReqId: 41, Command: "echo hi", Streaming: false})
+	waitFor(t, "terminal frame", func() bool { return terminalFor(st.sent(), 41) != nil })
+
+	if end := terminalFor(st.sent(), 41).GetEnd(); end == nil || end.GetTruncated() {
+		t.Errorf("terminal = %+v, want End{truncated:false}", terminalFor(st.sent(), 41))
 	}
 }
 

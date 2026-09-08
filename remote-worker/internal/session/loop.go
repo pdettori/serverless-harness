@@ -495,9 +495,14 @@ func (s *Session) accept(
 // frameSink turns runner output into Chunk frames. It only ever enqueues: with
 // a dedicated sender goroutine owning st.Send, Chunk itself never observes a
 // send failure, so there is nothing to report and nothing to remember.
+//
+// dropped is the ONE thing it does remember. Bytes lost at BufferCap have no
+// frame of their own — they are an absence — so the count is accumulated here and
+// read once, after Run returns, to set End.truncated (#189).
 type frameSink struct {
-	reqID uint64
-	send  func(*pb.WorkerFrame)
+	reqID   uint64
+	send    func(*pb.WorkerFrame)
+	dropped int
 }
 
 func (f *frameSink) Chunk(stream pb.Stream, data []byte) error {
@@ -507,6 +512,11 @@ func (f *frameSink) Chunk(stream pb.Stream, data []byte) error {
 	return nil
 }
 
+// Dropped needs no lock of its own: the runner serializes every Sink call through
+// one mutex, and it guarantees no call is in flight once Run has returned — which
+// is the only point runOne reads the field.
+func (f *frameSink) Dropped(_ pb.Stream, n int) { f.dropped += n }
+
 // runOne executes one exec and sends exactly one terminal frame (spec §5).
 // send is the blocking enqueue: runOne runs on a pool goroutine, not the recv
 // goroutine, so backpressure here is correct rather than dangerous.
@@ -514,7 +524,8 @@ func (s *Session) runOne(ctx context.Context, send func(*pb.WorkerFrame), e *pb.
 	reqID := e.GetReqId()
 	if ctx.Err() != nil {
 		// Aborted while queued: never spawn bash, but still owe a terminal frame.
-		send(endFrame(reqID, -1))
+		// Never truncated — nothing ran, so there was no output to cut.
+		send(endFrame(reqID, -1, false))
 		return
 	}
 
@@ -536,11 +547,14 @@ func (s *Session) runOne(ctx context.Context, send func(*pb.WorkerFrame), e *pb.
 		// End{-1} with no error. Emit it, but never cache it: a signal is not a
 		// determination the worker would reproduce, and caching it would poison the
 		// req_id so every later redelivery answered -1 without re-running.
-		frame, cacheable = endFrame(reqID, code), code >= 0
+		frame, cacheable = endFrame(reqID, code, sink.dropped > 0), code >= 0
 	case errors.Is(err, wexec.ErrTimeout):
+		// Truncation is not carried on the error paths, and does not need to be: an
+		// ExecError already tells the harness this exec produced no usable result, so
+		// there is no success status for a truncation flag to qualify.
 		frame, cacheable = errFrame(reqID, fmt.Sprintf("timeout:%d", e.GetTimeoutS())), true
 	case errors.Is(err, wexec.ErrAborted):
-		frame = endFrame(reqID, -1)
+		frame = endFrame(reqID, -1, false)
 	default:
 		frame = errFrame(reqID, err.Error())
 	}
@@ -555,8 +569,13 @@ func (s *Session) runOne(ctx context.Context, send func(*pb.WorkerFrame), e *pb.
 	send(frame)
 }
 
-func endFrame(reqID uint64, code int32) *pb.WorkerFrame {
-	return &pb.WorkerFrame{Msg: &pb.WorkerFrame_End{End: &pb.End{ReqId: reqID, ExitCode: code}}}
+// endFrame builds the terminal success frame. truncated says the runner dropped
+// output at BufferCap; a cached frame keeps it, which is right — a redelivery of a
+// truncated exec is still truncated, and re-running is exactly what dedup forbids.
+func endFrame(reqID uint64, code int32, truncated bool) *pb.WorkerFrame {
+	return &pb.WorkerFrame{Msg: &pb.WorkerFrame_End{End: &pb.End{
+		ReqId: reqID, ExitCode: code, Truncated: truncated,
+	}}}
 }
 
 func errFrame(reqID uint64, msg string) *pb.WorkerFrame {
