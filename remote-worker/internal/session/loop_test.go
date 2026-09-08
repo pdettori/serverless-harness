@@ -644,7 +644,7 @@ func TestAbortWhileQueuedStillEmitsTerminal(t *testing.T) {
 	// permits. "Never spawned" is only guaranteed when the abort provably precedes
 	// the dequeue, which is what these two lines establish.
 	waitFor(t, "the abort frame to be delivered", func() bool { return st.pending() == 0 })
-	time.Sleep(50 * time.Millisecond) // let recvLoop's abortReq land before the pool frees up
+	time.Sleep(50 * time.Millisecond) // let recvLoop's reg.abort land before the pool frees up
 	close(r.block)
 
 	waitFor(t, "a terminal frame for the queued exec", func() bool {
