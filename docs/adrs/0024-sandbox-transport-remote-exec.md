@@ -234,11 +234,26 @@ write ceiling. Files between ~3 and 8 MiB were **readable but not writable**, an
 composes read with write. `KubectlTransport` has no such ceiling, so the same write succeeded
 on the pod path — the divergence class of the three revisions above.
 
-**Decided:** 16 MiB on both receive limits, **derived** as `DEFAULT_OUTPUT_CAP × 4/3` plus
-command and framing headroom, so write capacity ≥ read capacity by construction. Pinned equal
-across the language boundary by `message-size-coupling.test.ts`, which asserts the derivation
-too, so raising the output cap alone cannot restore the asymmetry. Send limits were already
-unlimited on both implementations and are untouched.
+**Decided:** 16 MiB on both receive limits, **derived** as
+`base64EncodedLength(DEFAULT_OUTPUT_CAP) + EXEC_FRAMING_HEADROOM` (11,184,812 + 65,536), so
+write capacity ≥ read capacity by construction. Pinned equal across the language boundary by
+`message-size-coupling.test.ts`, which asserts the derivation too, so raising the output cap
+alone cannot restore the asymmetry. Send limits were already unlimited on both implementations
+and are untouched.
+
+The floor uses the **exact** encoded length `4·⌈n/3⌉` rather than the ×4/3 ratio. Caught in
+review: the ratio yields 11,184,810.67 against a real base64 length of 11,184,812, so a bound
+written against it sat 1.33 bytes _below_ the smallest payload it existed to admit and would
+have certified a ceiling of 11,184,811 that cannot carry an 8 MiB file. **A guard derived from
+an approximation can fail at exactly the boundary it was written for.**
+
+**Memory budget**, stated because moving a ceiling in this repo comes with one (`BufferCap`
+gives `2 × MaxConcurrent × BufferCap`; the 2026-08-28 revision pins the caps equal for memory
+parity). Worst-case ingress buffering rises 4×, as
+`concurrently decoding ExecRequests × MAX_EXEC_MESSAGE_BYTES`. It is a transient rather than a
+residency — the relay forwards `exec` and keeps no copy — and nothing in the contract bounds
+the count, so it sizes the relay rather than proving a bound. One such request is a quarter of
+the worker's 64 MiB budget, and only a write near the read cap reaches it.
 
 **Rejected:** raising only the relay, the hop that visibly rejects today. It would forward the
 payload and move the rejection onto the worker's Attach stream — killing every concurrent and

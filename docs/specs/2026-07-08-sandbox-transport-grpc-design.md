@@ -419,11 +419,24 @@ The frame _semantics_ are carried from the superseded design verbatim — only t
   `KubectlTransport` pipes base64 through `kubectl exec` stdin with no such ceiling, making
   this one more divergence decided by which backend was leased.
 
-  The ceiling is therefore **16 MiB**, covering `DEFAULT_OUTPUT_CAP × 4/3` plus the command
-  string and framing, so write capacity ≥ read capacity by construction. It is
-  `MAX_EXEC_MESSAGE_BYTES` (`transport.ts`) and `session.MaxRecvMsgBytes` (`dial.go`), pinned
-  equal by `message-size-coupling.test.ts` — which also asserts the derivation, so raising the
-  output cap alone cannot silently restore the asymmetry.
+  The ceiling is therefore **16 MiB**, clearing
+  `base64EncodedLength(DEFAULT_OUTPUT_CAP) + EXEC_FRAMING_HEADROOM` = 11,184,812 + 65,536, so
+  write capacity ≥ read capacity by construction. It is `MAX_EXEC_MESSAGE_BYTES`
+  (`transport.ts`) and `session.MaxRecvMsgBytes` (`dial.go`), pinned equal by
+  `message-size-coupling.test.ts` — which also asserts the derivation, so raising the output
+  cap alone cannot silently restore the asymmetry. The floor uses the **exact** encoded
+  length `4·⌈n/3⌉`, not the ×4/3 ratio: the ratio gives 11,184,810.67, which sits _below_ the
+  real payload and would admit a ceiling too small to carry an 8 MiB file.
+
+  **Memory budget.** Raising a receive limit raises worst-case ingress buffering with it, 4×
+  here, so it is stated as a formula the way `BufferCap` states its own:
+  `concurrently decoding ExecRequests × MAX_EXEC_MESSAGE_BYTES`. It is a **transient, not a
+  residency** — the relay forwards `exec` onto the Attach stream and keeps no copy — so the
+  peak is however many oversized requests are mid-decode, not however many execs are in
+  flight. Nothing in the contract bounds that count (the relay is single-replica and serves
+  every harness replica), so this is a ceiling to size the relay against rather than a proof.
+  For scale, one such request costs a quarter of the worker's own 64 MiB
+  (`2 × MaxConcurrent × BufferCap`) budget, and only a write near the read cap reaches it.
 
   **Both ends must move together, and the worker's must not be lower.** The relay's ingress
   limit rejects an oversized `ExecRequest` with `RESOURCE_EXHAUSTED`, and that failure is

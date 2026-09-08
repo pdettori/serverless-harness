@@ -76,24 +76,48 @@ export const DEFAULT_OUTPUT_CAP = 8 * 1024 * 1024; // 8 MiB
 export const OUTPUT_TRUNCATED_MARKER = '\n[output truncated]';
 
 /**
- * BASE64_INFLATION is what a write costs on the wire. `createPodWriteOps` sends file
- * content as base64 in `Exec.stdin` (operations.ts), and base64 encodes 3 bytes as 4.
+ * base64EncodedLength is what a write costs on the wire, EXACTLY. `createPodWriteOps`
+ * sends file content as base64 in `Exec.stdin` (operations.ts), and base64 emits 4
+ * bytes per 3 consumed, padding the final group — so the length is `4·⌈n/3⌉`, which is
+ * up to 2 bytes more than the ×4/3 ratio suggests.
+ *
+ * The ratio is fine for prose and wrong for a bound: at DEFAULT_OUTPUT_CAP the two
+ * differ by 1.33 bytes, and 8 MiB × 4/3 = 11184810.67 sits BELOW the real 11184812. A
+ * guard written against the ratio therefore admits a ceiling that cannot actually carry
+ * the largest readable file — it fails to certify the one property it exists for, at
+ * exactly its own boundary. Use this instead of multiplying.
  */
-export const BASE64_INFLATION = 4 / 3;
+export const base64EncodedLength = (bytes: number): number => 4 * Math.ceil(bytes / 3);
+
+/**
+ * EXEC_FRAMING_HEADROOM is what an `Exec` costs BEYOND its base64 stdin: the command
+ * string, the protobuf field tags and length prefixes, and `ExecRequest`'s `sandbox_id`.
+ *
+ * Measured, not guessed: a 4 MiB write arrived as 5592440 bytes against a base64 payload
+ * of 5592408 — a delta of **32 bytes**. 64 KiB is three orders of magnitude above that,
+ * which is deliberate: the command string is the only unbounded term (`base64 -d > <path>`
+ * today, a few dozen bytes) and nothing in the contract caps it.
+ */
+export const EXEC_FRAMING_HEADROOM = 64 * 1024;
 
 /**
  * MAX_EXEC_MESSAGE_BYTES raises gRPC's 4 MiB default receive limit, which is smaller
  * than this contract's own write path needs (#173 item 2).
  *
  * THE DERIVATION, because the number must not be arbitrary. The largest readable file
- * is DEFAULT_OUTPUT_CAP, and writing it back costs DEFAULT_OUTPUT_CAP ×
- * BASE64_INFLATION ≈ 10.7 MiB of `Exec`. At the 4 MiB default, every file between
- * ~3 MiB and 8 MiB was READABLE BUT NOT WRITABLE — and Pi's Edit composes read with
- * write, so editing one succeeded at reading and then failed. 16 MiB covers the
- * inflated cap with room for the command string and protobuf framing, making write
- * capacity >= read capacity by construction. `KubectlTransport` pipes base64 through
- * `kubectl exec` stdin with no such ceiling, so this also removes a divergence where
- * the same write succeeded or failed depending on which backend was leased.
+ * is DEFAULT_OUTPUT_CAP, and writing it back costs
+ * `base64EncodedLength(DEFAULT_OUTPUT_CAP) + EXEC_FRAMING_HEADROOM` = 11184812 + 65536
+ * ≈ 10.7 MiB of `Exec`. At the 4 MiB default, every file between ~3 MiB and 8 MiB was
+ * READABLE BUT NOT WRITABLE — and Pi's Edit composes read with write, so editing one
+ * succeeded at reading and then failed. 16 MiB clears that floor with ~5 MiB to spare,
+ * making write capacity >= read capacity by construction. `KubectlTransport` pipes
+ * base64 through `kubectl exec` stdin with no such ceiling, so this also removes a
+ * divergence where the same write succeeded or failed depending on which backend was
+ * leased.
+ *
+ * The floor is asserted against the EXACT encoded length, not the ×4/3 ratio — see
+ * base64EncodedLength for why the ratio cannot certify this property at its own
+ * boundary.
  *
  * BOTH ENDS MUST MOVE TOGETHER, and the worker's limit must be at least this one.
  * The relay's ingress is what rejects an oversized `ExecRequest` today, and that
@@ -102,6 +126,19 @@ export const BASE64_INFLATION = 4 / 3;
  * every concurrent and queued exec with it. The Go side is
  * `session.MaxRecvMsgBytes`, pinned to this value by
  * test/message-size-coupling.test.ts — change one and change the other.
+ *
+ * MEMORY BUDGET — raising a receive limit raises worst-case ingress buffering with it,
+ * 4x here, so state it the way `BufferCap` states its own (runner.go):
+ *
+ *	concurrently decoding ExecRequests × MAX_EXEC_MESSAGE_BYTES
+ *
+ * It is a TRANSIENT, not a residency: the relay forwards `exec` to the Attach stream and
+ * keeps no copy (relay.ts routeExec), so the peak is however many oversized requests are
+ * mid-decode at once rather than however many execs are in flight. Nothing in the
+ * contract bounds that count — the relay is single-replica and serves every harness
+ * replica — so this is a ceiling to size the relay's limits against, not a proof. For
+ * scale: one such request costs a quarter of the worker's own 64 MiB
+ * (2 × MaxConcurrent × BufferCap) budget, and only a write near the read cap reaches it.
  *
  * Send limits need no change: grpc-js defaults max_send_message_length to -1 and
  * grpc-go defaults MaxCallSendMsgSize to MaxInt32, both effectively unlimited.
