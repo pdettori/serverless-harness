@@ -24,9 +24,20 @@ type fakeStream struct {
 	// stream, so a test that also closes it mid-run (to observe a reconnect, or
 	// Serve's return value) must not panic on the second close.
 	closeOnce sync.Once
+	// recvCalls counts entries into Recv — see recvEntries.
+	recvCalls int
 	// failAfter, when > 0, makes Send fail once sendCalls exceeds it.
 	failAfter int
 	sendCalls int
+	// gateAfter, when > 0, makes Send BLOCK once sendCalls exceeds it, until
+	// releaseGate. This is a different fault from failAfter and not a variation on
+	// it: a FAILING Send lets the sender goroutine keep draining outbound, whereas
+	// a BLOCKING one stops the drain dead. Only the latter fills outbound, which is
+	// the precondition for a dropped terminal frame (#173 item 1) — and for the
+	// teardown wedge that a blocked producer causes.
+	gateAfter int
+	gate      chan struct{}
+	gateOnce  sync.Once
 }
 
 func newFakeStream() *fakeStream {
@@ -35,22 +46,72 @@ func newFakeStream() *fakeStream {
 
 func (f *fakeStream) Send(fr *pb.WorkerFrame) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.sendCalls++
 	if f.failAfter > 0 && f.sendCalls > f.failAfter {
+		f.mu.Unlock()
 		return errors.New("stream gone")
 	}
+	// Keyed on the gate's existence, not on gateAfter > 0: gateAfter == 0 is the
+	// useful case ("park every Send from here on"), and a > 0 guard would silently
+	// disable exactly that, leaving a test green because it never gated anything.
+	gate, gated := f.gate, f.gate != nil && f.sendCalls > f.gateAfter
+	f.mu.Unlock()
+
+	if gated {
+		// Deliberately NOT holding mu across the block: sent() takes it, and a test
+		// has to be able to inspect the wire while a Send is parked here.
+		<-gate
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.out = append(f.out, fr)
 	return nil
 }
 
+// gateSendAfter makes Send succeed n times and then block until releaseGate, so a
+// test can hold the drain still and let outbound fill behind it.
+func (f *fakeStream) gateSendAfter(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gateAfter = n
+	f.gate = make(chan struct{})
+	f.sendCalls = 0
+}
+
+// releaseGate lets every parked and future Send through. Idempotent, so it is safe
+// both as a t.Cleanup and as an explicit step mid-test.
+func (f *fakeStream) releaseGate() {
+	f.mu.Lock()
+	g := f.gate
+	f.mu.Unlock()
+	if g != nil {
+		f.gateOnce.Do(func() { close(g) })
+	}
+}
+
 func (f *fakeStream) Recv() (*pb.ServerFrame, error) {
+	f.mu.Lock()
+	f.recvCalls++
+	f.mu.Unlock()
 	select {
 	case fr := <-f.in:
 		return fr, nil
 	case <-f.done:
 		return nil, errors.New("stream closed")
 	}
+}
+
+// recvEntries reports how many times recvLoop has ENTERED Recv. That count is a
+// synchronisation primitive, not a statistic: recvLoop is a single goroutine
+// running Recv -> dispatch -> Recv, so entering Recv for the (N+1)th time proves
+// dispatch of the Nth frame RETURNED. It turns "has accept finished with the frame
+// I just pushed?" — otherwise only answerable with a sleep — into an observable
+// condition, with no test-only hook in the session itself.
+func (f *fakeStream) recvEntries() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.recvCalls
 }
 
 func (f *fakeStream) exec(e *pb.Exec) { f.in <- &pb.ServerFrame{Msg: &pb.ServerFrame_Exec{Exec: e}} }
@@ -159,16 +220,31 @@ type scriptedRunner struct {
 	// chunks, when > 0, makes Run emit that many stdout chunks via sink before
 	// any block/ctx handling — used to drive more Sends than outbound can buffer.
 	chunks int
+	// delivered counts Chunk calls that RETURNED. With the sender parked, it stops
+	// advancing at exactly the point outbound is full and the next enqueue blocks,
+	// which is how a test proves saturation instead of sleeping and hoping.
+	delivered int
+	// finished counts Run calls that RETURNED, which is the only way to observe that
+	// a pool goroutine escaped a blocked enqueue.
+	finished int
 }
 
 func (r *scriptedRunner) Run(ctx context.Context, s wexec.Spec, sink wexec.Sink) (int32, error) {
 	r.mu.Lock()
 	r.specs = append(r.specs, s)
 	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		r.finished++
+		r.mu.Unlock()
+	}()
 	for i := 0; i < r.chunks; i++ {
 		if err := sink.Chunk(pb.Stream_STREAM_STDOUT, []byte("x")); err != nil {
 			return -1, err
 		}
+		r.mu.Lock()
+		r.delivered++
+		r.mu.Unlock()
 	}
 	if r.block != nil {
 		select {
@@ -184,6 +260,18 @@ func (r *scriptedRunner) count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.specs)
+}
+
+func (r *scriptedRunner) chunksDelivered() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.delivered
+}
+
+func (r *scriptedRunner) runsFinished() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.finished
 }
 
 func testConfig() session.Config {
@@ -509,6 +597,250 @@ func TestQueueOverflowIsRefusedNotBlocking(t *testing.T) {
 		return terminalFor(st.sent(), 1) != nil
 	})
 	close(r.block)
+}
+
+// countBusyRefusals reports how many "busy: queue full" refusals reached the wire.
+func countBusyRefusals(frames []*pb.WorkerFrame) int {
+	n := 0
+	for _, f := range frames {
+		if e := f.GetError(); e != nil && e.GetMessage() == "busy: queue full" {
+			n++
+		}
+	}
+	return n
+}
+
+// #173 item 1. The sibling test above refuses an overflow with an EMPTY outbound,
+// which is the easy half. This is the half that mattered: the refusal has to
+// survive a chunk backlog.
+//
+// Why it was dropped. accept runs on the recv goroutine, which must never block —
+// an Abort queued behind a stalled dispatch is exactly what would free the pool —
+// so it sends through the non-blocking trySend. But every frame accept sends is
+// TERMINAL, refusals are never cached, and outbound is shared with the chunk
+// stream of every running exec. So the drop correlated with the overload that
+// produced it, and the caller then waited out its own deadline: since #182 made
+// DEFAULT_EXEC_TIMEOUT_S 30 minutes, up to half an hour of nothing.
+//
+// The gate is what makes this reproducible rather than probabilistic. A blocking
+// Send parks the sender, the pool goroutine fills outbound behind it, and
+// chunksDelivered stops advancing at exactly the point the next enqueue blocks —
+// so saturation is OBSERVED, not slept for. Only then is the queue overflowed.
+func TestBusyRefusalSurvivesAChunkBacklog(t *testing.T) {
+	st := newFakeStream()
+	// Far more chunks than any buffer here can hold, so the backlog is not a
+	// near-miss; block keeps the worker occupied if it ever drains.
+	r := &scriptedRunner{chunks: 8 * session.QueueCap, block: make(chan struct{})}
+	cfg := testConfig()
+	cfg.MaxConcurrent = 1     // one worker, so every later exec has to queue
+	cfg.Heartbeat = time.Hour // heartbeats must not compete for the buffer
+	s := session.New(cfg, r)
+	serve(t, s, st)
+	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
+
+	st.gateSendAfter(0) // Hello is already out; from here nothing drains
+	t.Cleanup(st.releaseGate)
+	defer close(r.block)
+
+	// Occupy the only worker with an exec whose output floods outbound.
+	st.exec(&pb.Exec{ReqId: 1, Command: "yes", Streaming: true})
+	// Saturation needs BOTH conditions. "Unchanged between two polls" alone fires on
+	// a scheduling hiccup — the producer simply not having run for 5ms — which left
+	// this test green against the unfixed code because outbound still had room. The
+	// floor is what makes it real: the sender is parked holding one frame, so the
+	// channel cannot be full until QueueCap+1 chunks have been accepted.
+	saturated := -1
+	waitFor(t, "outbound to saturate (chunk delivery to stall at a full buffer)", func() bool {
+		n := r.chunksDelivered()
+		if n >= session.QueueCap+1 && n == saturated {
+			return true
+		}
+		saturated = n
+		return false
+	})
+
+	// 1 running + QueueCap queued + 2 too many, so at least one exec is refused.
+	pushed := 1 // the chunk-flooding exec above
+	for i := uint64(2); i <= uint64(session.QueueCap+3); i++ {
+		st.exec(&pb.Exec{ReqId: i, Command: "sleep 30", Streaming: true})
+		pushed++
+	}
+
+	// The refusal must be ATTEMPTED while outbound is still full — that IS the
+	// scenario, and this is the only thing standing between this test and vacuity.
+	// st.exec merely buffers into the fake's Recv channel, so returning from the loop
+	// above proves nothing about what accept has done; release the gate too early and
+	// the sender drains first, the refusal sails into a buffer with room, and the test
+	// passes against the unfixed code. The FIFO assertion below does not backstop that
+	// — in the racy ordering the sender has already drained >= QueueCap chunks, so it
+	// passes too.
+	//
+	// So this is an observed condition rather than a sleep: entering Recv for the
+	// (pushed+1)th time proves dispatch of the last pushed frame returned, because
+	// recvLoop is one goroutine alternating Recv and dispatch.
+	// A timeout here has one other cause worth naming, since the message is what a
+	// future maintainer will read: if TerminalReserve is ever lowered below the
+	// couple of refusals this test provokes, accept escalates instead, recvLoop
+	// returns, and Recv is never entered again.
+	waitFor(t, "accept to finish with every pushed exec (the last one refused) — or, if this "+
+		"timed out, the reserve was too small to absorb them and the session escalated instead",
+		func() bool { return st.recvEntries() >= pushed+1 })
+
+	// Only now let the wire drain. The refusal must be ON it, not dropped.
+	st.releaseGate()
+	waitFor(t, "a busy refusal on the wire despite the chunk backlog", func() bool {
+		return countBusyRefusals(st.sent()) >= 1
+	})
+
+	// And it must not have jumped the queue to get there. Reserved capacity is not
+	// a priority lane: spec §8 requires Chunk* then End per req_id, so a terminal
+	// frame overtaking buffered chunks would let the harness settle an exec and
+	// then discard the real output that followed.
+	frames := st.sent()
+	firstRefusal := -1
+	for i, f := range frames {
+		if e := f.GetError(); e != nil && e.GetMessage() == "busy: queue full" {
+			firstRefusal = i
+			break
+		}
+	}
+	chunksBefore := 0
+	for _, f := range frames[:firstRefusal] {
+		if f.GetChunk() != nil {
+			chunksBefore++
+		}
+	}
+	if chunksBefore < session.QueueCap {
+		t.Errorf("refusal arrived after only %d chunks, want >= %d: it overtook frames enqueued "+
+			"before it, so egress is no longer FIFO", chunksBefore, session.QueueCap)
+	}
+}
+
+// A producer parked on a full outbound must be released when the connection dies,
+// even though Send is still blocked. This hazard PREDATES the reserve and nothing
+// covered it: TestSendFailureDoesNotWedgeTeardown uses a Send that FAILS, and a
+// failing Send lets the sender keep draining, so producers never park. A Send that
+// BLOCKS stops the drain, and a producer waiting for room then waits forever —
+// wg.Wait() in Serve's teardown never reaches zero.
+//
+// Scope, stated plainly: this pins that PRODUCERS are released. Serve itself still
+// cannot return here, because teardown ends with wgSender.Wait() and the sender is
+// parked inside Send — in production that is bounded by gRPC's keepalive killing
+// the stream, not by anything this package does. Releasing the producers is what
+// makes the escalation path reachable at all, so it is worth its own guard.
+func TestBlockedSendDoesNotWedgeProducers(t *testing.T) {
+	st := newFakeStream()
+	r := &scriptedRunner{chunks: 8 * session.QueueCap, block: make(chan struct{})}
+	cfg := testConfig()
+	cfg.MaxConcurrent = 1
+	cfg.Heartbeat = time.Hour
+	s := session.New(cfg, r)
+	serve(t, s, st)
+	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
+
+	st.gateSendAfter(0)
+	t.Cleanup(st.releaseGate)
+	defer close(r.block)
+
+	st.exec(&pb.Exec{ReqId: 1, Command: "yes", Streaming: true})
+	saturated := -1
+	waitFor(t, "the producer to park on a full outbound", func() bool {
+		n := r.chunksDelivered()
+		if n >= session.QueueCap+1 && n == saturated {
+			return true
+		}
+		saturated = n
+		return false
+	})
+	if r.runsFinished() != 0 {
+		t.Fatalf("runner already returned (%d): it never parked, so this proves nothing", r.runsFinished())
+	}
+
+	// Kill the connection. Send stays blocked throughout — the gate is untouched.
+	st.close()
+
+	waitFor(t, "the parked producer to be released by the dying connection", func() bool {
+		return r.runsFinished() == 1
+	})
+}
+
+// The reserve is a probability argument, not a proof — a burst larger than
+// terminalReserve still exhausts it. What must NOT happen then is the old
+// behaviour: log the loss and carry on serving a connection that cannot answer.
+// Exhaustion means nothing is draining at all, which is a different condition from
+// "busy", so the session gives up and lets main.go re-dial; the dedup cache is what
+// makes that safe (spec §5, §6.2).
+//
+// On promptness, honestly: Serve can only return once teardown joins the sender, so
+// a Send blocked FOREVER delays this until gRPC's own keepalive kills the stream.
+// The gate is released below for exactly that reason. Escalation earns its keep in
+// the reachable case — a sender that is slow rather than dead, where the reserve was
+// emptied by a burst and Send does return.
+func TestExhaustedReserveEndsTheSession(t *testing.T) {
+	st := newFakeStream()
+	r := &scriptedRunner{chunks: 8 * session.QueueCap, block: make(chan struct{})}
+	cfg := testConfig()
+	cfg.MaxConcurrent = 1
+	cfg.Heartbeat = time.Hour
+	s := session.New(cfg, r)
+	sv := serve(t, s, st)
+	waitFor(t, "hello", func() bool { return len(st.sent()) >= 1 })
+
+	st.gateSendAfter(0)
+	t.Cleanup(st.releaseGate)
+	defer close(r.block)
+
+	st.exec(&pb.Exec{ReqId: 1, Command: "yes", Streaming: true})
+	saturated := -1
+	waitFor(t, "outbound to saturate", func() bool {
+		n := r.chunksDelivered()
+		if n >= session.QueueCap+1 && n == saturated {
+			return true
+		}
+		saturated = n
+		return false
+	})
+
+	// 1 running + QueueCap queued, then comfortably more refusals than the reserve
+	// can hold, so exhaustion is reached rather than approached.
+	//
+	// Pushed from a goroutine, and that is required rather than tidy: escalation
+	// makes recvLoop RETURN, so nothing drains the fake's Recv channel afterwards
+	// and the tail of this flood blocks forever. Driving it from the test goroutine
+	// deadlocked the test against its own fix — it never reached releaseGate, so the
+	// parked sender was never freed and teardown could not join it.
+	go func() {
+		last := uint64(session.QueueCap + 2*session.TerminalReserve + 4)
+		for i := uint64(2); i <= last; i++ {
+			select {
+			case st.in <- &pb.ServerFrame{Msg: &pb.ServerFrame_Exec{Exec: &pb.Exec{
+				ReqId: i, Command: "sleep 30", Streaming: true,
+			}}}:
+			case <-st.done:
+				return // the stream is gone; stop pushing
+			}
+		}
+	}()
+
+	// Wait for escalation, observed rather than slept for. Once accept returns
+	// ErrEgressWedged, recvLoop returns and Serve cancels connCtx — which makes
+	// every remaining enqueue give up immediately, so the runner's whole chunk
+	// budget drains in an instant. Nothing else in this test cancels connCtx: there
+	// are no Send failures and the stream is never closed.
+	waitFor(t, "the session to give up on the connection", func() bool {
+		return r.chunksDelivered() >= 8*session.QueueCap
+	})
+
+	st.releaseGate() // let teardown join the parked sender
+
+	// Note what is NOT done here: the stream is never closed. Serve must end on its
+	// own initiative, which is the whole point — before this, it went on serving a
+	// connection whose callers would each wait out a 30-minute deadline.
+	err := sv.wait(t, "of the terminal-frame reserve being exhausted")
+	if !errors.Is(err, session.ErrEgressWedged) {
+		t.Errorf("Serve returned %v, want ErrEgressWedged: an unanswerable connection must end, "+
+			"not keep accepting work", err)
+	}
 }
 
 // When the stream dies, Serve returns the recv error and stops cleanly rather
