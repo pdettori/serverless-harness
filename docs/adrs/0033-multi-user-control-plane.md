@@ -83,8 +83,13 @@ The containments are the reason the cost is bounded:
   prompt or a model response.
 - Negative / accepted cost: the identity minter and the credential store are one component, against
   Z1's explicit separation. Compromising the control plane compromises both.
-- Negative / accepted cost: the harness transiently holds a raw provider key in memory, which Z3 exists
-  to eliminate.
+- Negative / accepted cost: in **direct mode** the harness transiently holds a raw provider key in
+  memory. This diverges from **P5 §5**'s in-process lock-down invariant ("no real provider credential
+  is reachable from the harness process in server mode") as well as from Z1 §2 / Z3, and is named in
+  both places so P5's implementation does not assert an invariant this decision knowingly breaks. The
+  credential is **tagged** (`placeholder` vs `direct`) rather than passed as a bare string, so the
+  mode is assertable; placeholder mode wins wherever an injector is configured, and MU3 deletes
+  direct mode outright. Spec §3.6.
 - Negative / accepted cost: until P5's startup sentinel lands, "no ambient identity" is enforced **by
   policy** (two checks) rather than **by construction** (nothing reachable). The spec §3.5 refuses to
   blur the two, and §9.3 test 1 asserts the policy form now and tightens later.

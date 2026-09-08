@@ -17,8 +17,8 @@ Builds on (reuse, no redesign): [Z1](2026-06-26-identity-spine-design.md) trust 
 Composes with: **P5** multi-session isolation ([`2026-09-06-p5-session-isolation-design.md`](2026-09-06-p5-session-isolation-design.md),
 [ADR-0032](../adrs/0032-per-request-subject-no-ambient-credential.md)) — **design merged** in
 [#228](https://github.com/rossoctl/serverless-harness/pull/228), implementation on a separate
-contributor's track. P5 reserved `Authorization` for caller auth, which is exactly this spec; §3.5
-sets the split and what MU1 does if P5 has not yet landed.
+contributor's track. P5 reserved `Authorization` for caller auth, which is exactly this spec; §3.5–§3.6
+set the split, what MU1 does before P5 lands, and the three interactions MU1 carries.
 Decision record: [ADR-0033](../adrs/0033-multi-user-control-plane.md).
 
 > **The one-sentence thesis.** Multi-user reduces to one property — _a request's upstream identity is
@@ -54,12 +54,12 @@ on properties the process cannot violate rather than on care.
 
 - **Sandbox pool tenancy.** Slice 1 ships with a **shared** pool: two users' leaves can be placed on
   the same pod. Isolation in slice 1 holds at the API, the session store, and the inference
-  credential — **not** the sandbox. §8.2 states the partition design; §10 schedules it.
+  credential — **not** the sandbox. §8.2 states the partition design; §10 schedules it as **MU2**.
 - **Leaf and CLI credential paths** stay ambient (`leaf-job.ts:15-18`, `harness/src/cli.ts:9-14`).
 - **Delivery of `sandbox-egress` credentials.** Slice 1 stores them; nothing consumes them, because
   delivery means writing a secret into the untrusted tier — Z5's problem, not this spec's.
-- **Quotas and cost attribution**, generic OIDC, owned `/v1/schedules` and `/v1/runs` — slice 2.
-- **Injector-resolved credentials** (Z3/Z5), which retire this spec's interim trust assumption — slice 3.
+- **Quotas and cost attribution**, generic OIDC, owned `/v1/schedules` and `/v1/runs` — **MU2**.
+- **Injector-resolved credentials** (Z3/Z5), which retire this spec's interim trust assumption — **MU3**.
 - **Vault / External Secrets** as the credential backend — the stated future direction (§6.6), behind
   the `CredentialStore` interface from day one.
 
@@ -90,7 +90,8 @@ Inside the turn there are **three** environment reads on the credential path, no
 | `run-turn.ts:313`     | `config?.anthropicBaseUrl \|\| process.env.ANTHROPIC_BASE_URL`                               | same fallback for the gateway base                                                             |
 
 The middle row is the cross-tenant identity leak P5 §2.1 identified. All three must go for the `/turn`
-path to fail closed; removing only the seed leaves the `||` fallbacks intact.
+path to fail closed **by construction**, and removing only the seed leaves the `||` fallbacks intact —
+but those deletions are **P5's**, not MU1's, and §3.4 explains why MU1 touches none of them.
 
 ### 2.3 The session store has no owner, and its list is unusable for users
 
@@ -278,6 +279,58 @@ The distinction matters and the spec will not blur it: with P5, a credential-les
 run on a neighbour's identity; without P5, it _does not_, because two checks say so. §8.1 records
 which of the two is in force, and §9.3 test 1 is written to assert the policy version today and
 tighten to the process version once the sentinel exists.
+
+### 3.6 What MU1 owes P5's implementation
+
+P5's design is merged and should not be rewritten to accommodate a later spec, so the three
+interactions between them are carried here.
+
+#### 1. The `Bearer` payload is one-or-the-other
+
+|                 | What rides in `Authorization: Bearer …`                                                                                                                                |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **P5 target**   | an **inert placeholder** derived from the subject; RC1's `static-inject` rewrites `Bearer <placeholder>` → `Bearer <real>` from a mounted `secret_dir` (P5 §3.1, §3.2) |
+| **MU1 interim** | the **real token** resolved by the control plane; no injector in the path                                                                                              |
+
+Same field, incompatible contents. Left implicit, a P5 implementation that unconditionally sets the
+placeholder would silently overwrite MU1's token, and requests would fail with no injector configured
+to swap it. So `TurnConfig` carries a **tagged** credential, not a bare string:
+
+```ts
+type UpstreamCredential =
+  | { mode: 'placeholder'; value: string } // P5 + an injector in the egress path
+  | { mode: 'direct'; value: string }; // MU1 interim, control-plane resolved
+```
+
+**Resolution rule: the control plane declares the mode at exchange time, and placeholder mode wins
+whenever the deployment has an injector.** Direct mode is reachable only when none is configured, so
+adding an injector strictly _narrows_ what the harness may hold, and MU3 deletes direct mode outright.
+
+The tag is not ceremony. A bare string makes the two modes indistinguishable, and both failure
+directions are silent: a placeholder-mode deployment with a misconfigured injector sends the
+placeholder upstream and gets an opaque auth error, while a direct-mode deployment that later grows an
+injector has its real key rewritten. P5 §3.4 argues that an ambient _placeholder_ is as dangerous as
+an ambient key, because the injector faithfully swaps in whichever tenant's credential it names — and
+that argument applies with equal force to a **mislabelled** one. The tag makes the mode assertable
+instead of inferred.
+
+#### 2. Direct mode diverges from P5 §5's in-process invariant
+
+P5 §5 asserts that after the startup scrub, **no real provider credential is reachable from the
+harness process** in server mode. Direct mode puts one there every turn.
+[ADR-0033](../adrs/0033-multi-user-control-plane.md) accepts that cost, and it is named here as a
+divergence from **P5 §5** as well as from Z1 §2 / Z3 — so that P5's implementation does not assert an
+invariant MU1 knowingly breaks.
+
+Concretely, P5's lock-down assertion wants scoping to the **environment** (which MU1 never writes)
+rather than to the whole process, or gating on direct mode being disabled. MU3 removes the divergence
+by removing direct mode.
+
+#### 3. Inbound `X-SH-Subject` becomes conditional
+
+Per §3.5, once a session token is present the subject is `token.sub` and an inbound `X-SH-Subject` is
+ignored. P5's implementation should therefore **not** pin "inbound `X-SH-Subject` is always honoured":
+the operator and leaf paths keep that behaviour, the token-bearing path does not.
 
 ---
 
@@ -676,11 +729,11 @@ Live smoke gated by env var per existing convention: `MULTIUSER_LIVE_SMOKE=1` �
 
 ## 10. Slices
 
-| Slice | Contents                                                                                                                                                                                                                                                                                          |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1** | `packages/control-plane`; `github-oauth`; Ed25519 session token + `/internal/credentials` exchange; `/v1/sessions` CRUD + `/resources`; `/v1/credentials` (all kinds stored, `inference` delivered); subject-from-token on `/turn` (§3.5); `docs/api/openapi.yaml`; `demo-multiuser.sh`; ADR-0033 |
-| **2** | Tenant-labelled pool partition (needs §11.1); `sandbox-egress` delivery for git operations; quotas and cost attribution; generic `oidc` provider; owned `/v1/schedules` and `/v1/runs`. The leaf/CLI credential paths are **P5's**, not this slice's (§3.5)                                       |
-| **3** | Z3/Z5 injector-resolved credentials; retire the §3.3 divergence; Vault or ESO behind `CredentialStore`                                                                                                                                                                                            |
+| Slice       | Contents                                                                                                                                                                                                                                                                                          |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1** (MU1) | `packages/control-plane`; `github-oauth`; Ed25519 session token + `/internal/credentials` exchange; `/v1/sessions` CRUD + `/resources`; `/v1/credentials` (all kinds stored, `inference` delivered); subject-from-token on `/turn` (§3.5); `docs/api/openapi.yaml`; `demo-multiuser.sh`; ADR-0033 |
+| **2** (MU2) | Tenant-labelled pool partition (needs §11.1); `sandbox-egress` delivery for git operations; quotas and cost attribution; generic `oidc` provider; owned `/v1/schedules` and `/v1/runs`. The leaf/CLI credential paths are **P5's**, not this slice's (§3.5)                                       |
+| **3** (MU3) | Z3/Z5 injector-resolved credentials; retire the §3.3 and §3.6 divergences by deleting direct mode; Vault or ESO behind `CredentialStore`                                                                                                                                                          |
 
 The demo lands in slice 1: two GitHub logins, two sessions, each user's list containing only their own,
 a 404 across tenants, a `/resources` projection, and — on the `/turn` path — a credential property that
