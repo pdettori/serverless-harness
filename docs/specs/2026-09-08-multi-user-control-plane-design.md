@@ -1,4 +1,4 @@
-# Z8 — Multi-User Control Plane: authenticated API, owned sessions, per-user credentials
+# MU1 — Multi-User Control Plane: authenticated API, owned sessions, per-user credentials
 
 Version: 1.0 — September 8, 2026
 Status: Proposed
@@ -6,17 +6,19 @@ Scope: Turn the harness from a single-tenant deployment into a **multi-user serv
 always-on **control plane** that owns the authenticated API surface (`/v1`), the session-ownership
 index, and a per-user credential store; and makes the data plane carry a **per-request subject**
 instead of an ambient deployment credential.
-Milestone: **Z8** (Phase 2) — the user-facing half of the credential plane. Source of truth for
+Milestone: **MU1**, first entry in the new **`MU` (multi-user service)** track — not a Phase-2 `Z` id,
+because Phase 2 is a security architecture and this is a product surface. Source of truth for
 numbering: [Milestone Registry](README.md).
 Builds on (reuse, no redesign): [Z1](2026-06-26-identity-spine-design.md) trust tiers and the
 `CredentialInjector` shape; [Z2](2026-06-26-harness-lockdown-design.md) secret-free container;
 [Z3](2026-06-26-inference-injector-design.md) "the harness holds no provider key";
 [Z5](2026-06-19-m13-generalized-credentialed-egress-design.md) per-user egress;
 [RC1](2026-07-10-authbridge-egress-control-plane-poc-design.md) placeholder swap.
-Adjacent work: the **P5 session-isolation** spec (per-request subject, no ambient credential) —
-[PR #228](https://github.com/rossoctl/serverless-harness/pull/228), open against `main`. Its
-implementation is a **separate contributor's track on a different timeline**, so Z8 slice 1 is
-self-contained rather than blocked on it; §3.5 sets the ownership boundary between them.
+Composes with: **P5** multi-session isolation ([`2026-09-06-p5-session-isolation-design.md`](2026-09-06-p5-session-isolation-design.md),
+[ADR-0032](../adrs/0032-per-request-subject-no-ambient-credential.md)) — **design merged** in
+[#228](https://github.com/rossoctl/serverless-harness/pull/228), implementation on a separate
+contributor's track. P5 reserved `Authorization` for caller auth, which is exactly this spec; §3.5
+sets the split and what MU1 does if P5 has not yet landed.
 Decision record: [ADR-0033](../adrs/0033-multi-user-control-plane.md).
 
 > **The one-sentence thesis.** Multi-user reduces to one property — _a request's upstream identity is
@@ -44,8 +46,9 @@ on properties the process cannot violate rather than on care.
 - The **credential model**: an open, destination-bound registry keyed by consumer tier, stored as
   per-user Kubernetes Secrets under envelope encryption — §6.
 - **Data model**, cascade delete, and the `/resources` projection — §7.
-- The **narrow P5 cut**: per-request credential inflow on the `/turn` path, with the environment
-  fallback removed there — §3.4, §6.4.
+- **Per-subject credential inflow** on the `/turn` path: the subject derived from the session token
+  (never an inbound header), and that subject's credential installed as the model's per-turn `Bearer`
+  header — §3.4, §3.5, §6.4.
 
 ### Out of scope (later slices, named honestly)
 
@@ -83,7 +86,7 @@ Inside the turn there are **three** environment reads on the credential path, no
 | Location              | Code                                                                                         | Effect                                                                                         |
 | --------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | `run-turn.ts:306`     | `config?.anthropicAuthToken \|\| process.env.ANTHROPIC_AUTH_TOKEN`                           | an absent explicit value silently falls back to the deployment's                               |
-| `run-turn.ts:310-311` | `if (authToken && !process.env.ANTHROPIC_API_KEY) process.env.ANTHROPIC_API_KEY = authToken` | write-once-**if-absent**: session A's token sticks process-wide, so B..N authenticate **as A** |
+| `run-turn.ts:310-312` | `if (authToken && !process.env.ANTHROPIC_API_KEY) process.env.ANTHROPIC_API_KEY = authToken` | write-once-**if-absent**: session A's token sticks process-wide, so B..N authenticate **as A** |
 | `run-turn.ts:313`     | `config?.anthropicBaseUrl \|\| process.env.ANTHROPIC_BASE_URL`                               | same fallback for the gateway base                                                             |
 
 The middle row is the cross-tenant identity leak P5 §2.1 identified. All three must go for the `/turn`
@@ -187,49 +190,94 @@ block every user-visible deliverable on another codebase. Two containments make 
 
 Recorded in [ADR-0033](../adrs/0033-multi-user-control-plane.md). Retired by slice 3.
 
-### 3.4 The narrow P5 cut
+### 3.4 How the per-subject credential actually reaches the model
 
-The P5 spec's ordered steps are inflow → fallback removal → scrub. Slice 1 takes **only the `/turn`
-path**, all three steps:
+The first draft of this section said "pass the key as an explicit argument, and pi's per-session
+`apiKey` does the rest." Reading P5's merged §3.3 and the code it cites shows that is **not the
+mechanism available**, so it is corrected here.
 
-1. `buildConfig()` becomes `buildConfig(principal)`, taking `{ subject, anthropicAuthToken, anthropicBaseUrl }`
-   from the credential exchange (§5.3). The `process.env` reads for the credential are removed on this path.
-2. The three environment reads in §2.2 are deleted from the `/turn` code path, `||` fallbacks included.
-3. A test asserts the property (§9, test 1).
+`createAgentSession` (`run-turn.ts:499-504`) exposes **no seam** to pass a per-session key into the
+session's `ModelRegistry`. Pi resolves the request key **by provider name** —
+`authStorage.getApiKey('anthropic')` → `getEnvApiKey('anthropic')` → `process.env.ANTHROPIC_API_KEY`
+(documented at `run-turn.ts:150-155`) — so with that variable absent, `_getRequiredRequestAuth`
+throws `No API key found for "anthropic"` before any request is attempted.
 
-`leaf-job.ts` and `cli.ts` keep reading the environment. That is unchanged, and — importantly — the
-demo claims nothing about it. Extending the property to those paths belongs to **P5**, not to a later
-Z8 slice (§3.5).
+What _is_ per-session is the **model object**, rebuilt every turn at `run-turn.ts:497` by
+`applyModelGateway` (`:294`), which installs `Authorization: Bearer <token>` from
+`config.anthropicAuthToken` and prefers `config` over the environment at `:306`. So the credential
+path MU1 uses is:
 
-**Why the cut is at `/turn`:** it is the only path a logged-in user drives, so it is the only path where
-the claim "Alice's turn ran on Alice's key" is made. A property is worth more on one honest path than
-half-applied across four.
+```
+control plane ──exchange──▶ TurnConfig.anthropicAuthToken
+                              │
+                              ▼  applyModelGateway (per turn)
+                        model.headers.Authorization = Bearer <subject's token>
+                        ANTHROPIC_API_KEY = P5's inert sentinel   ← satisfies pi's existence check
+```
 
-### 3.5 Boundary with P5 (PR #228)
+Two consequences follow, and they are the reason §3.5 changed:
 
-P5's spec lands via [PR #228](https://github.com/rossoctl/serverless-harness/pull/228); its
-**implementation is another contributor's track, on a different timeline.** Z8 therefore does not
-treat P5 as a blocking dependency — slice 1 carries the `/turn` cut itself. Z8's cut is a strict
-**subset** of P5's step 2, so the two converge rather than conflict in substance.
+- **MU1 does not need to touch `run-turn.ts` at all.** `:306` already prefers `config` over the
+  environment. MU1's work is to make `config` carry the _right subject's_ token — which is
+  `server.ts` and the control plane, not the gateway function.
+- **Deleting the `:310-312` seed is not MU1's to do, and must not be done without P5's sentinel.**
+  Delete it alone and `ANTHROPIC_API_KEY` goes absent, so gateway mode breaks outright (P5 §3.3).
+  P5's step 3 replaces it with a fixed non-secret sentinel; MU1 consumes that, and duplicating it
+  would be both redundant and a merge conflict.
 
-They do, however, touch the same lines (`server.ts:66-73`, `run-turn.ts:306-313`), so the boundary is
-stated in terms of ownership rather than order:
+### 3.5 Composition with P5 — and what MU1 does before it lands
 
-| Path                                                                                                                                        | Owner          | Property                            |
-| ------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | ----------------------------------- |
-| `/turn` (and `buildConfig`'s signature)                                                                                                     | **Z8 slice 1** | per-request inflow; no env fallback |
-| Leaf `ScaledJob` (`leaf-job.ts`), CLI (`cli.ts`)                                                                                            | **P5**         | unchanged by Z8 slice 1             |
-| Reachability pins for the four inert globals (`stdoutTakeoverState`, `sessionResourceCleanups`, `fileMutationQueues`, `commandResultCache`) | **P5**         | out of scope for Z8 entirely        |
-| The scrub step                                                                                                                              | **P5**         | out of scope for Z8 entirely        |
+P5's design is **merged** ([ADR-0032](../adrs/0032-per-request-subject-no-ambient-credential.md), via
+[#228](https://github.com/rossoctl/serverless-harness/pull/228)); its **implementation** is a separate
+contributor's track on a different timeline. The two specs turn out to be complementary by
+construction, because P5 §3.2 step 1 reserved `Authorization` for precisely this spec:
 
-Whichever lands second rebases. If P5 lands first, Z8's step 2 is already done and Z8 consumes it
-(the `TurnConfig` plumbing is then the only remaining piece). If Z8 lands first, P5's remaining scope
-on the credential path is the leaf and CLI entry points plus the global pins. Neither ordering
-invalidates the other's design, which is why this is a note rather than a sequencing constraint.
+> `Authorization` is unused on inbound requests today … but its meaning there is "may this caller use
+> the harness" — and ADR-0011's lock-down implies caller auth is coming. Overloading one header with
+> _authorize the caller_ and _whose budget to spend upstream_ collides exactly when that lands.
 
-**Consequence for planning:** the Z8 implementation plan must not assume P5's fallback removal
-exists, and must not silently duplicate P5's leaf-path work. The test in §9.3 (test 1) is written
-against `/turn` specifically for this reason — it passes whether or not P5 has landed.
+So the header split is already decided, and MU1 adopts it unchanged:
+
+| Header                                  | Means                             | Owner          |
+| --------------------------------------- | --------------------------------- | -------------- |
+| `Authorization: Bearer <session token>` | _may this caller use the harness_ | **MU1** (§5.2) |
+| `X-SH-Subject`                          | _whose work this is_              | **P5**         |
+
+**MU1's contribution is making the subject trustworthy rather than asserted.** P5 reads
+`X-SH-Subject` from the inbound request, which is correct for a trusted orchestrator but is exactly
+the spoofable-header pattern [Z1](2026-06-26-identity-spine-design.md) §3.2 warns about once
+arbitrary users can call the API. Therefore:
+
+> **When a session token is present, the subject is `token.sub`, and any inbound `X-SH-Subject` is
+> ignored.** A request carrying both a session token and a conflicting `X-SH-Subject` is rejected
+> with `subject_conflict` (400) rather than resolved by precedence — a silent winner here is a
+> cross-tenant bug waiting to be written.
+
+The operator-driven and leaf paths keep P5's inbound-header behaviour; they are not user-facing.
+
+#### Ownership split
+
+| Concern                                                                                        | Owner                                     |
+| ---------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `Authorization` caller auth; subject derived from the token; per-subject credential resolution | **MU1**                                   |
+| `buildConfig(req)` signature and per-request subject inflow                                    | **P5** (MU1 extends it to read the token) |
+| Removing the `:306`/`:313` fallbacks and the `:310-312` seed                                   | **P5**                                    |
+| The startup sentinel + deleting `ANTHROPIC_OAUTH_TOKEN` / `ANTHROPIC_AUTH_TOKEN`               | **P5**                                    |
+| Reachability pins for the four inert globals                                                   | **P5**                                    |
+| Leaf `ScaledJob` and CLI paths                                                                 | **P5**                                    |
+
+#### If P5's implementation has not landed
+
+MU1 still ships, with a weaker but honestly-stated property. Because `:306` already prefers `config`,
+a subject's token reaches the model correctly today; what is missing without P5 is the _guarantee_
+that nothing ambient can substitute for it. So MU1 enforces fail-closed **by policy at two points it
+owns** — `POST /v1/sessions` refuses a subject with no resolvable credential, and the exchange refuses
+to return one — while the process-level guarantee waits on P5's step 3.
+
+The distinction matters and the spec will not blur it: with P5, a credential-less session **cannot**
+run on a neighbour's identity; without P5, it _does not_, because two checks say so. §8.1 records
+which of the two is in force, and §9.3 test 1 is written to assert the policy version today and
+tighten to the process version once the sentinel exists.
 
 ---
 
@@ -528,14 +576,14 @@ the harness wrote. `owner` lives only in `sh:cp:session:<sid>`, written only by 
 
 ### 8.1 What slice 1 guarantees
 
-| Layer                  | Property                                                          | Mechanism                                       |
-| ---------------------- | ----------------------------------------------------------------- | ----------------------------------------------- |
-| API                    | a user sees and deletes only their own sessions                   | `assertOwner`, owner zset, 404 on mismatch      |
-| Session drive          | a valid token cannot drive another session                        | `token.sid === body.sessionId`                  |
-| Token forgery          | the harness cannot mint a token                                   | Ed25519, harness holds the public key only      |
-| Inference credential   | a turn runs on its own subject's key or not at all                | per-request inflow + no env fallback on `/turn` |
-| Credential at rest     | a namespace secret read yields ciphertext; a relabel attack fails | envelope encryption, AAD = `subject\|name`      |
-| Credential enumeration | the serving path cannot list users                                | no `list` verb, separate namespace              |
+| Layer                  | Property                                                          | Mechanism                                                                                              |
+| ---------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| API                    | a user sees and deletes only their own sessions                   | `assertOwner`, owner zset, 404 on mismatch                                                             |
+| Session drive          | a valid token cannot drive another session                        | `token.sid === body.sessionId`                                                                         |
+| Token forgery          | the harness cannot mint a token                                   | Ed25519, harness holds the public key only                                                             |
+| Inference credential   | a turn runs on its own subject's key or not at all                | per-subject inflow; **enforced by policy** pre-P5, **by construction** once P5's sentinel lands (§3.5) |
+| Credential at rest     | a namespace secret read yields ciphertext; a relabel attack fails | envelope encryption, AAD = `subject\|name`                                                             |
+| Credential enumeration | the serving path cannot list users                                | no `list` verb, separate namespace                                                                     |
 
 **404, not 403, for another user's session.** A 403 is an existence oracle. Session ids are unguessable
 UUIDs so the leak is small, but 404 is the standard answer and the one we would otherwise have to
@@ -602,10 +650,15 @@ Reuse the injectable structural-`RedisLike` fake pattern from `leaf-result-store
 
 Three tests carry the design:
 
-1. **The P5 property.** With `ANTHROPIC_AUTH_TOKEN` **set in the environment**, a `/turn` for a subject
-   with no stored credential must fail `credential_required`. This proves the environment is not
-   consulted rather than asserting it. P5's own complaint was that this invariant was documented prose
-   with no test; this is that test.
+1. **The credential-isolation property, in two phases.** Today: with `ANTHROPIC_AUTH_TOKEN` **set in
+   the environment**, `POST /v1/sessions` for a subject with no stored credential must fail
+   `credential_required`, and the exchange must refuse to return one — so the ambient value is never
+   what a session runs on. Once P5's sentinel lands, tighten the same test to assert the process
+   version: `ANTHROPIC_API_KEY` equals the sentinel exactly and `ANTHROPIC_OAUTH_TOKEN` /
+   `ANTHROPIC_AUTH_TOKEN` are absent, so no identity is _reachable_ rather than merely unused. Written
+   in that order deliberately — the weaker assertion is true now and does not have to be deleted
+   later, and P5's own §5 makes clear that asserting the sentinel alone would stay green while an
+   OAuth token outranked it.
 2. **Route-table enumeration.** Enumerate every session-scoped route and assert each rejects a
    non-owner, so a sixth endpoint added without `assertOwner` fails CI instead of shipping.
 3. **Contract drift.** Assert the implemented route table matches `docs/api/openapi.yaml`. Without it,
@@ -623,11 +676,11 @@ Live smoke gated by env var per existing convention: `MULTIUSER_LIVE_SMOKE=1` �
 
 ## 10. Slices
 
-| Slice | Contents                                                                                                                                                                                                                                                                              |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1** | `packages/control-plane`; `github-oauth`; Ed25519 session token + `/internal/credentials` exchange; `/v1/sessions` CRUD + `/resources`; `/v1/credentials` (all kinds stored, `inference` delivered); narrow P5 cut on `/turn`; `docs/api/openapi.yaml`; `demo-multiuser.sh`; ADR-0033 |
-| **2** | Tenant-labelled pool partition (needs §11.1); `sandbox-egress` delivery for git operations; quotas and cost attribution; generic `oidc` provider; owned `/v1/schedules` and `/v1/runs`. The leaf/CLI credential paths are **P5's**, not this slice's (§3.5)                           |
-| **3** | Z3/Z5 injector-resolved credentials; retire the §3.3 divergence; Vault or ESO behind `CredentialStore`                                                                                                                                                                                |
+| Slice | Contents                                                                                                                                                                                                                                                                                          |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1** | `packages/control-plane`; `github-oauth`; Ed25519 session token + `/internal/credentials` exchange; `/v1/sessions` CRUD + `/resources`; `/v1/credentials` (all kinds stored, `inference` delivered); subject-from-token on `/turn` (§3.5); `docs/api/openapi.yaml`; `demo-multiuser.sh`; ADR-0033 |
+| **2** | Tenant-labelled pool partition (needs §11.1); `sandbox-egress` delivery for git operations; quotas and cost attribution; generic `oidc` provider; owned `/v1/schedules` and `/v1/runs`. The leaf/CLI credential paths are **P5's**, not this slice's (§3.5)                                       |
+| **3** | Z3/Z5 injector-resolved credentials; retire the §3.3 divergence; Vault or ESO behind `CredentialStore`                                                                                                                                                                                            |
 
 The demo lands in slice 1: two GitHub logins, two sessions, each user's list containing only their own,
 a 404 across tenants, a `/resources` projection, and — on the `/turn` path — a credential property that
@@ -659,7 +712,7 @@ holds with the deployment's own key present in the environment.
 - [Z3 Inference Injector](2026-06-26-inference-injector-design.md) — provider-key chokepoint
 - [Z5 Generalized Credentialed Egress](2026-06-19-m13-generalized-credentialed-egress-design.md) — sandbox forward proxy
 - [RC1 AuthBridge Egress Control Plane](2026-07-10-authbridge-egress-control-plane-poc-design.md) — placeholder swap
-- P5 Multi-Session Isolation — [PR #228](https://github.com/rossoctl/serverless-harness/pull/228), open against `main`, reserving ADR-0032; §2.2/§2.7 reuse its tracing, §3.5 sets the boundary. Issue #220 was closed in favour of new issues matching that PR, so #228 — not #220 — is the reference.
+- [P5 Multi-Session Isolation](2026-09-06-p5-session-isolation-design.md) + [ADR-0032](../adrs/0032-per-request-subject-no-ambient-credential.md) — design **merged** via [#228](https://github.com/rossoctl/serverless-harness/pull/228), implementation pending on a separate track. §2.2/§2.7 reuse its tracing; §3.4 corrects this spec's credential mechanism from it; §3.5 sets the composition. Issue #220 was closed in favour of new issues matching that PR, so #228 — not #220 — is the reference.
 - [ADR-0028](../adrs/0028-async-prompt-dispatch.md) — the prompt-leaf selector deferral in §2.6
 - [ADR-0033](../adrs/0033-multi-user-control-plane.md) — this spec's decision record
 

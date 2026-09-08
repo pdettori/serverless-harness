@@ -128,16 +128,15 @@ a TypeScript interface.
 Principle (parent §2): _no component influenced by model output ever holds a raw secret._ Secrets
 live only in identity-keyed egress points. Dependency-ordered:
 
-| ID     | Title                                                                                                                                                                                                                                                | Status                                      | Spec / source                                                                                                                                          | Alias                               |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
-| **Z1** | Identity spine — per-session SPIFFE bound to user; `CredentialInjector` interface; orchestrator + reconstruct-on-wake                                                                                                                                | **design ✅**                               | [`2026-06-26-identity-spine-design.md`](2026-06-26-identity-spine-design.md)                                                                           | parent M7 (reframed)                |
-| **Z2** | **Harness lock-down** — fail-closed redirection, secret-free container, default-deny egress, distroless, scoped RBAC; argues the harness needs **no** egress proxy                                                                                   | **design ✅**                               | [`2026-06-26-harness-lockdown-design.md`](2026-06-26-harness-lockdown-design.md)                                                                       | —                                   |
-| **Z3** | **Inference injector** — shared provider-key chokepoint; multi-provider table, `x-sh-provider` routing, strip-then-set, mTLS, streaming, audit-only                                                                                                  | **design ✅** · mechanism superseded by RC1 | [`2026-06-26-inference-injector-design.md`](2026-06-26-inference-injector-design.md)                                                                   | parent M8                           |
-| **Z4** | MCP code-mode in the sandbox (placeholder-swap; **supersedes** the parent's MCP _gateway_)                                                                                                                                                           | design ✅                                   | [`2026-06-18-m10-mcp-code-mode-design.md`](2026-06-18-m10-mcp-code-mode-design.md)                                                                     | M10 (spec); parent M10 (superseded) |
-| **Z5** | Generalized credentialed egress (sandbox forward proxy + baked CA; subsumes the parent's sandbox-credential milestone; generalizes Z4's mechanism)                                                                                                   | design ✅ · static slice implemented by RC1 | [`2026-06-19-m13-generalized-credentialed-egress-design.md`](2026-06-19-m13-generalized-credentialed-egress-design.md)                                 | M13; parent M9                      |
-| **Z6** | Subagents — first-class child sessions; fresh-isolated default + `SandboxPolicy`; CoW workspace seed; `mail`/`subagent_*` log types                                                                                                                  | design (no spec yet)                        | parent research doc §3.4, §M11                                                                                                                         | parent M11                          |
-| **Z7** | Validation — secret-leak red-team across all paths; multi-agent fan-out; blast-radius containment                                                                                                                                                    | design (no spec yet)                        | parent research doc §M12                                                                                                                               | parent M12                          |
-| **Z8** | **Multi-user control plane** — always-on trusted tier owning the authenticated `/v1` API, session-ownership index, per-user credential store, resource introspection; Ed25519 session token + per-turn credential exchange; narrow P5 cut on `/turn` | design (proposed)                           | [`2026-09-08-multi-user-control-plane-design.md`](2026-09-08-multi-user-control-plane-design.md); [ADR-0033](../adrs/0033-multi-user-control-plane.md) | —                                   |
+| ID     | Title                                                                                                                                                              | Status                                      | Spec / source                                                                                                          | Alias                               |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| **Z1** | Identity spine — per-session SPIFFE bound to user; `CredentialInjector` interface; orchestrator + reconstruct-on-wake                                              | **design ✅**                               | [`2026-06-26-identity-spine-design.md`](2026-06-26-identity-spine-design.md)                                           | parent M7 (reframed)                |
+| **Z2** | **Harness lock-down** — fail-closed redirection, secret-free container, default-deny egress, distroless, scoped RBAC; argues the harness needs **no** egress proxy | **design ✅**                               | [`2026-06-26-harness-lockdown-design.md`](2026-06-26-harness-lockdown-design.md)                                       | —                                   |
+| **Z3** | **Inference injector** — shared provider-key chokepoint; multi-provider table, `x-sh-provider` routing, strip-then-set, mTLS, streaming, audit-only                | **design ✅** · mechanism superseded by RC1 | [`2026-06-26-inference-injector-design.md`](2026-06-26-inference-injector-design.md)                                   | parent M8                           |
+| **Z4** | MCP code-mode in the sandbox (placeholder-swap; **supersedes** the parent's MCP _gateway_)                                                                         | design ✅                                   | [`2026-06-18-m10-mcp-code-mode-design.md`](2026-06-18-m10-mcp-code-mode-design.md)                                     | M10 (spec); parent M10 (superseded) |
+| **Z5** | Generalized credentialed egress (sandbox forward proxy + baked CA; subsumes the parent's sandbox-credential milestone; generalizes Z4's mechanism)                 | design ✅ · static slice implemented by RC1 | [`2026-06-19-m13-generalized-credentialed-egress-design.md`](2026-06-19-m13-generalized-credentialed-egress-design.md) | M13; parent M9                      |
+| **Z6** | Subagents — first-class child sessions; fresh-isolated default + `SandboxPolicy`; CoW workspace seed; `mail`/`subagent_*` log types                                | design (no spec yet)                        | parent research doc §3.4, §M11                                                                                         | parent M11                          |
+| **Z7** | Validation — secret-leak red-team across all paths; multi-agent fan-out; blast-radius containment                                                                  | design (no spec yet)                        | parent research doc §M12                                                                                               | parent M12                          |
 
 ### Dependencies (Phase 2)
 
@@ -149,12 +148,37 @@ live only in identity-keyed egress points. Dependency-ordered:
 - **Z2/Z3** are the **harness** side; **Z4/Z5** are the **sandbox** side. They share the spine (Z1)
   but are independent to build.
 - **Z6** composes on the same plane (each subagent = own identity/sandbox). **Z7** validates Z1–Z6.
-- **Z8** is the **user-facing half**: it delivers per-user identity and credentials without Z1's SPIRE
-  spine or Z3/Z5's injector, by holding both in a trusted control-plane tier — an
-  [ADR-0033](../adrs/0033-multi-user-control-plane.md) divergence from Z1 §2 that **Z3/Z5 retire**. It
-  is **adjacent to, not blocked on, P5** (per-request subject, no ambient credential —
-  [PR #228](https://github.com/rossoctl/serverless-harness/pull/228), a separate contributor's track
-  on a different timeline); Z8 §3.5 sets the ownership boundary on the shared files.
+
+---
+
+## Multi-User Service (`MU`-prefix)
+
+Turning the harness from a single-tenant deployment into a **multi-user service**: an authenticated
+API, sessions owned by the user who created them, and per-user credentials. Its own track rather than
+a Phase-2 `Z` id, because Phase 2 is the **zero-trust credential plane** — a security architecture —
+while this is a **product surface** with its own consumers and compatibility obligations. The two
+meet at the credential: `MU` needs per-user credentials today, and Phase 2 is how they eventually
+stop being held by anything model-influenced.
+
+| ID      | Title                                                                                                                                                                                                                                                | Status            | Spec / decision                                                                                                                                        |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **MU1** | **Multi-user control plane** — always-on trusted tier owning the authenticated `/v1` API, session-ownership index, per-user credential store, resource introspection; Ed25519 session token; per-turn credential exchange; composes with `P5` (§3.5) | design (proposed) | [`2026-09-08-multi-user-control-plane-design.md`](2026-09-08-multi-user-control-plane-design.md); [ADR-0033](../adrs/0033-multi-user-control-plane.md) |
+| **MU2** | Tenant-labelled sandbox pool partition; `sandbox-egress` credential delivery; quotas and cost attribution; generic OIDC; owned schedules and runs                                                                                                    | planned           | MU1 §10; gated on [#237](https://github.com/rossoctl/serverless-harness/issues/237)                                                                    |
+| **MU3** | Injector-resolved per-user credentials — retires MU1's ADR-0033 divergence                                                                                                                                                                           | planned           | MU1 §10; needs Z3/Z5 per-subject resolution in `kagenti-extensions`                                                                                    |
+
+### Dependencies (MU)
+
+- **MU1 composes with `P5`**, which is merged as a design
+  ([ADR-0032](../adrs/0032-per-request-subject-no-ambient-credential.md)) with implementation on a
+  separate contributor's track. P5 reserved `Authorization` for "may this caller use the harness" —
+  which is exactly MU1 — and carries _whose work it is_ in `X-SH-Subject`. MU1 supplies the tier that
+  makes that subject **trustworthy** rather than asserted. MU1 §3.5 records the split and what MU1
+  does if P5's implementation has not landed.
+- **MU1 diverges from Z1 §2** by holding identity and credentials in one tier
+  ([ADR-0033](../adrs/0033-multi-user-control-plane.md)); **Z3/Z5 retire that divergence** as MU3.
+- **MU2 is gated** on the deferred ADR-0028 decision in
+  [#237](https://github.com/rossoctl/serverless-harness/issues/237), which also affects the
+  non-multi-user `/runs` path.
 
 ---
 

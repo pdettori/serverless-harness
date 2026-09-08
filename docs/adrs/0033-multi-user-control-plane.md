@@ -5,11 +5,9 @@
 - **Deciders:** Serverless Harness team
 - **Spec:** [`../specs/2026-09-08-multi-user-control-plane-design.md`](../specs/2026-09-08-multi-user-control-plane-design.md)
 
-> ADR-0032 is reserved by the P5 session-isolation spec in
-> [PR #228](https://github.com/rossoctl/serverless-harness/pull/228), open against `main`; this ADR
-> takes 0033 to avoid a collision. P5's **implementation** is a separate contributor's track on a
-> different timeline, so this decision is deliberately not sequenced behind it — see the linked spec
-> §3.5 for the ownership boundary.
+> P5's session-isolation design took ADR-0032 and is now **merged**, so this is simply the next free
+> number. P5's **implementation** remains a separate contributor's track on a different timeline; the
+> linked spec §3.5 records how the two compose and what this decision delivers before P5 lands.
 
 ## Context
 
@@ -30,14 +28,16 @@ Three forces shape the answer:
   every user-visible deliverable on another codebase.
 - **The harness is the wrong place for either.** It processes untrusted model output, so it must not be
   able to mint identity, and per Z2/ADR-0011 it should hold no secret. An ambient credential there is
-  worse than untidy: the write-once-if-absent seed at `harness/src/run-turn.ts:310-311` makes session
+  worse than untidy: the write-once-if-absent seed at `harness/src/run-turn.ts:310-312` makes session
   A's token stick process-wide, so B..N authenticate **as A**.
 - **Something has to be demonstrable soon**, which rules out sequencing the full credential plane first.
 
 ## Decision
 
 We will introduce **`@sh/control-plane`**, an always-on Deployment that owns the authenticated `/v1`
-API, the session-ownership index, per-user credential storage, and resource introspection. It
+API, the session-ownership index, per-user credential storage, and resource introspection, as **MU1**
+in a new `MU` (multi-user service) track rather than as a Phase-2 `Z` id — Phase 2 is a security
+architecture, this is a product surface. It
 authenticates users (GitHub OAuth in slice 1), mints an **Ed25519** session token carrying subject and
 session id but **no secret**, and the data plane exchanges that token over mTLS for the subject's
 credential at the start of each turn.
@@ -72,10 +72,11 @@ The containments are the reason the cost is bounded:
 
 ## Consequences
 
-- Positive: a request's upstream identity is determined solely by that request, and on the `/turn` path
-  no identity is reachable from process-global state — a credential-less session fails closed instead of
-  borrowing its neighbour's. The property is pinned by a test that sets `ANTHROPIC_AUTH_TOKEN` in the
-  environment and asserts the turn still fails `credential_required`.
+- Positive: a request's upstream identity is determined solely by that request. Two enforcement points
+  the control plane owns — session creation and the credential exchange — refuse a subject with no
+  resolvable credential, so a credential-less session fails closed instead of borrowing its
+  neighbour's. Pinned by a test that sets `ANTHROPIC_AUTH_TOKEN` in the environment and asserts the
+  session is still refused.
 - Positive: the harness cannot forge identity. Ed25519 with a public-key-only verifier makes that
   structural rather than procedural.
 - Positive: the control plane stays off the data path — one small exchange per turn, and it never sees a
@@ -84,6 +85,9 @@ The containments are the reason the cost is bounded:
   Z1's explicit separation. Compromising the control plane compromises both.
 - Negative / accepted cost: the harness transiently holds a raw provider key in memory, which Z3 exists
   to eliminate.
+- Negative / accepted cost: until P5's startup sentinel lands, "no ambient identity" is enforced **by
+  policy** (two checks) rather than **by construction** (nothing reachable). The spec §3.5 refuses to
+  blur the two, and §9.3 test 1 asserts the policy form now and tightens later.
 - Negative / accepted cost: the operator-key fallback does not disappear, it relocates — behind
   `ALLOW_OPERATOR_FALLBACK` (default `false`), resolved by the trusted tier where it is attributable and
   logged rather than ambient in the harness.
@@ -94,9 +98,10 @@ The containments are the reason the cost is bounded:
   The tenant-labelled partition is blocked on the ADR-0028 deferral at `server.ts:308-320`, where a
   workload's pool selector is deliberately ignored for `kind: 'prompt'` leaves.
 - Follow-up owed: deliver `sandbox-egress` credentials via Z5 rather than storing them unconsumed, and
-  retire this divergence in slice 3. Extending the no-ambient-credential property from `/turn` to the
-  leaf `ScaledJob` and CLI paths is **P5's** track, not this one's — the linked spec §3.5 records the
-  ownership split, because both touch `run-turn.ts:306-313` and whichever lands second rebases.
+  retire this divergence as MU3. The environment fallbacks, the startup sentinel, and the leaf/CLI
+  paths are all **P5's**, so this decision deliberately touches no line of `run-turn.ts` — the linked
+  spec §3.4 explains why deleting the `:310-312` seed without P5's sentinel would break gateway mode
+  outright.
 
 ---
 
