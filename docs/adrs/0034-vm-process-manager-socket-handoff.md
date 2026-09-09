@@ -65,10 +65,12 @@ E8 prices warmth empirically instead of us assuming it. Sticky keys on an `X-SH-
 set by the sweep driver, not on the body's session id, because that id is read from the JSON body
 (`server.ts:93-101`) and `/turn` is matched on exact URL equality (`:564`) — parsing the body in the
 supervisor would put bytes on the accept path and undo the hand-off decision above. Hand-off also makes
-the affinity **connection-scoped**: the supervisor inspects a connection once and then holds nothing, so
-the key is the _first_ request's id and the sticky arm must run one connection per session. The
-consequence is that sticky is measurable but not adoptable without two client-contract additions — the
-header, and not multiplexing sessions over one connection — which the finding must state.
+routing **connection-scoped for every policy**: the supervisor inspects a connection once and then holds
+nothing, so sticky's key is the _first_ request's id, and least-in-flight buys load-aware _initial_
+placement rather than per-request balancing. E8 therefore runs **both** arms at the same
+connections-per-session and records it per rung, so the arms differ only in which worker gets chosen.
+The consequence for sticky is that it is measurable but not adoptable without two client-contract
+additions — the header, and not multiplexing sessions over one connection — which the finding must state.
 
 **We add exactly one platform seam** — `SH_SANDBOX_DISCOVERY=pods|records|both`, defaulting to today's
 behaviour — and explicitly **no `PlatformAdapter`**: each Kubernetes dependency is a different kind of

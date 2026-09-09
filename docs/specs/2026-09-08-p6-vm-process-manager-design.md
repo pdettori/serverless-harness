@@ -117,7 +117,7 @@ Each row's pair is internally consistent because N ≈ 1/duty; a pair that fails
 blended from two rows. **P6 provisions from E6/OCP**, for a reason the tree states rather than one we
 prefer: `EXPERIMENTS.md:65` records that E6's real-converge finding **supersedes "the earlier single-N
 figure (N ≈ 29–48:1), which used a trivial `marker.txt` leaf with no real converge"** — and E7's
-numerically identical 29–48:1 comes from a 13.9 s leaf wall against E6's ~6.1–7.1 s, i.e. a lighter
+numerically identical 29–48:1 comes from a 13.9 s leaf wall against E6/OCP's ~6.6–7.1 s, i.e. a lighter
 sandbox share of a longer turn. So E7 is the light-leaf end of the range and E6 the code-review end;
 within E6, OCP's EBS-backed `/workspace` makes the same ~2 git execs costlier (`:94`), which is why it
 is the conservative row. §5.4 pins one row for the driver and forbids mixing.
@@ -251,11 +251,19 @@ is a later experiment rather than a later redesign.
 ### 3.4 Routing is least-in-flight, behind a policy seam
 
 Workers report their **in-flight turn** count to the supervisor over IPC on change; the supervisor
-picks the least-loaded. Connection-level round-robin distributes badly the moment a driver reuses
-keep-alive connections, and least-in-flight needs no request parsing either — strictly better for the
-same cost. It deliberately mirrors `orderByLoad` (`harness/src/select-sandbox.ts:16`): the same
-least-loaded-under-a-cap discipline P2 established for the sandbox pool, applied one tier up. The
-same count feeds admission control (§3.5), so it pays for itself twice.
+picks the least-loaded. It deliberately mirrors `orderByLoad` (`harness/src/select-sandbox.ts:16`): the
+same least-loaded-under-a-cap discipline P2 established for the sandbox pool, applied one tier up. The
+same count feeds admission control (§3.5), so it pays for itself twice, and it needs no request parsing.
+
+**What least-in-flight buys, stated precisely, because hand-off constrains it too.** Every policy here
+decides **once per connection** — the derivation is in the sticky paragraph below, but it is a property
+of §3.2, not of sticky — so a later request on a kept-alive socket lands on the worker chosen for the
+_first_ one, however loaded it has since become. What least-in-flight buys is that each connection's
+**initial placement is load-aware** where round-robin's is merely positional: a pool of C sockets opened
+one at a time gets an even partition reflecting real load rather than arrival order. What it does not
+buy is immunity from reuse — its staleness grows with connection reuse and skews with turn-cost
+heterogeneity, since nothing rebalances a socket once given away. It is the better default at the same
+cost, not a per-request balancer.
 
 Routing sits behind a `RoutingPolicy` interface with two implementations: `leastInFlight` (default)
 and `stickyBySession` (sweep variant). Affinity is a **knob the experiment prices**, not a design
@@ -285,18 +293,31 @@ free. That would corrupt the cost side of the very knob this section says the ex
 from §3.2 rather than from a choice: the supervisor inspects a connection **once**, at accept time, and
 then gives the socket away, so it holds nothing afterwards. Every later request on that keep-alive
 connection reaches the worker the _first_ `X-SH-Session-Id` selected, and a second session id arriving
-on it is neither seen nor re-routable. The document already depends on this fact twice — the paragraph
-above argues against connection-level round-robin because "a driver reuses keep-alive connections", and
-§3.9's over-admission row is a second turn on an already-handed-off socket — so what was missing was
-sticky's dependence on it, not the fact.
+on it is neither seen nor re-routable. This is not a sticky-only property — it constrains the default
+too, which is what the paragraph above now states — and §3.9's over-admission row is the same fact
+again, a second turn on an already-handed-off socket. What was missing was sticky's _dependence_ on it,
+not the fact.
 
 That makes a driver requirement, not a caveat: **the sticky arm runs one connection per session** (a
 per-session agent, or `Connection: close`), because Node's `http.globalAgent` and `undici` both pool by
 default. A pooled driver would degenerate sticky toward whatever its pool does, so affinity hit-rate
 would measure the driver's connection reuse and the arm would price warmth at ~0 — reading as "affinity
-isn't worth it" with nothing in the data to separate that from a genuine null result. §5.2 therefore
-records connections-per-session per rung alongside the duty basis, and §7 asserts the semantics
-directly.
+isn't worth it" with nothing in the data to separate that from a genuine null result.
+
+**And the requirement binds both arms, not just sticky's**, which is the same discipline §5.3 states for
+E9 one tier down: vary one thing, pin the rest. One connection per session is cheap but not free —
+sticky would pay one accept plus hand-off per _session_ and hold an idle socket for each session's life,
+where a pooling default arm pays roughly one per peak-concurrency slot (≈200 accepts and 200 open
+sockets against ≈50 and ≈50, on a 200-session rung peaking at 50). Charging that to sticky alone is a
+smaller version of the body parse this section just rejected: an unmatched cost on the arm §2.4 already
+predicts has a **small** benefit, and a small benefit netted against a small unmatched cost can flip
+sign. So **both arms of a comparison run the same connections-per-session**, and the only difference
+between them is which worker gets chosen.
+
+Recording it on default rungs earns its keep independently: a default rung whose driver pooled heavily
+measured a **static load-aware partition**, not least-in-flight in motion, and without the field nothing
+in the record tells those apart afterwards. §5.2 therefore records connections-per-session on **every**
+rung, and §7 asserts the hand-off semantics directly.
 
 **The price, stated:** sticky is therefore **not adoptable as-is**, and the ask is larger than one
 header. A production client would have to send `X-SH-Session-Id` (or `/turn` would have to carry the id
@@ -517,10 +538,13 @@ Per rung, recorded for attribution rather than for the report:
 | **Spurious `429`s** (estimate high vs next `load`, §3.9)    | a knee read early, not a real ceiling   |
 
 Two run-record fields sit beside the metrics, because both are conditions a rung can silently violate:
-the **duty basis** the stub and provisioning came from (§2.3, §5.4), and — on sticky rungs —
-**connections per session**, which must be 1 (§3.4). A sticky rung whose driver pooled connections
-priced warmth at whatever its pool did rather than at what the policy does; recording the field is what
-makes that identifiable after the fact instead of indistinguishable from a null result.
+the **duty basis** the stub and provisioning came from (§2.3, §5.4), and **connections per session** —
+recorded on **every** rung, not only sticky ones, and required to match across the two arms of any
+comparison (§3.4). Each arm needs it for a different reason. A sticky rung whose driver pooled priced
+warmth at whatever the pool did rather than at what the policy does; a default rung whose driver pooled
+measured a static load-aware partition rather than least-in-flight in motion. Neither is recoverable
+after the fact without the field, and a mismatch between arms charges one policy for the other's
+connection budget.
 
 The event-loop-lag-versus-RSS pair is the point of the instrumentation, not decoration: it answers
 _what bound it_, which is what turns a density number into a provisioning rule. E6's value came from
