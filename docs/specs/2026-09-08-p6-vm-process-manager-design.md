@@ -94,17 +94,36 @@ remote-sandbox demo exercises with a laptop `docker run`.
 | pod `securityContext` | non-root, ro-rootfs, seccomp          | systemd directives; not claimed (§4.3) |
 | NetworkPolicy         | default-deny egress                   | no single-host equivalent; Z2/Z5 (§8)  |
 
-### 2.3 The sandbox tier is not the bottleneck, and we have the number
+### 2.3 The sandbox tier is not the bottleneck — and there are two numbers, not one
 
-E6/E7 measured per-sandbox duty at **2–8% of leaf wall-clock on both Kind and OCP**, giving
-**N ≈ 29–48 sessions per sandbox**, with one sandbox absorbing 16 concurrent leaves without
-saturating (`EXPERIMENTS.md:168`, `:120`). So this slice changes **nothing** below the worker line,
-and E6's ratio becomes the provisioning input for how many sandbox containers a VM run needs (§5.4).
+Both E6 and E7 found one sandbox absorbing the offered concurrency without saturating — E6 at C_max
+(`:96`, `:98`), E7 up to 16 concurrent leaves on both runtimes (`:120`, `:161`) — so this slice changes
+**nothing** below the worker line. But the duty figures they report are **two
+measurements of two workloads**, and the ratio they imply differs by ~2.4×. They must not be blended,
+because §5.4 makes duty drive stub calibration and the ratio drive sandbox provisioning — mixing the
+optimistic ratio with the pessimistic duty under-provisions the sandbox tier by exactly that factor.
 
-"Changes nothing" is not the same as "nothing to watch". Those numbers were measured on the **kubectl**
-path, which has a persistent fast channel the gRPC path lacks (§3.1a) — so they are the right
-provisioning input and an open question at P6's concurrency, which is why §5.2 instruments the sandbox
-tier rather than assuming E6 transfers.
+| Basis  | Workload                                | Duty (per-leaf)                   | Implied N         | Cite           |
+| ------ | --------------------------------------- | --------------------------------- | ----------------- | -------------- |
+| **E6** | real Archetype-A code review (L0/L1/L2) | **0.06–0.08**                     | **12–17:1** (OCP) | `:94`, `:96`   |
+|        | same, Kind                              | ~0.04–0.05 (derived from N)       | ~20–24:1          | `:62`, `:98`   |
+| **E7** | `E7_REFS` mixed-ref converge            | 0.021 Kind / 0.035 OCP (**2–4%**) | **29–48:1**       | `:161`, `:168` |
+
+The pairs are internally consistent because N ≈ 1/duty; a pair that fails that check has been blended
+from two rows. **P6 provisions from the E6 row**, for a reason the tree states rather than one we
+prefer: `EXPERIMENTS.md:65` records that E6's real-converge finding **supersedes "the earlier single-N
+figure (N ≈ 29–48:1), which used a trivial `marker.txt` leaf with no real converge"** — and E7's
+numerically identical 29–48:1 comes from a 13.9 s leaf wall against E6's ~6–7 s, i.e. a lighter
+sandbox share of a longer turn. So 29–48:1 is the light-leaf end of the range and 12–24:1 is the
+code-review end; provisioning from the latter is both the authoritative reading and the conservative
+direction. §5.4 pins one basis for the driver and forbids mixing.
+
+"Changes nothing" is not the same as "nothing to watch", and there are two open questions rather than
+one. Both bases were measured on the **kubectl** path, which has a persistent fast channel the gRPC
+path lacks (§3.1a); and E6's 6–8% appears both as per-leaf duty (`:94`) and as the pinned sandbox's
+busy fraction at C_max (`:96`), which are not the same quantity even where the range coincides. Both
+are why §5.2 instruments the sandbox tier and requires the driver to record its basis, rather than
+assuming E6 transfers.
 
 ### 2.4 Session rehydration is nearly free, which decides the routing question
 
@@ -134,7 +153,7 @@ flowchart TB
     SUP -.->|socket hand-off, then off the data path| W1
     SUP -.-> W2
     SUP -.-> Wn
-    W1["sh-worker 1 — NEW entry point<br/>S sessions multiplexed"]
+    W1["sh-worker 1 — NEW entry point<br/>S in-flight turns multiplexed"]
     W2[sh-worker 2]
     Wn[sh-worker W]
     W1 --> R[(redis-server<br/>sessions · streams · leases · presence)]
@@ -148,7 +167,7 @@ flowchart TB
 | Component       | New?               | Role                                                                      |
 | --------------- | ------------------ | ------------------------------------------------------------------------- |
 | `sh-supervisor` | **new**            | Binds the public port, owns worker lifecycle, routes, refuses when full   |
-| `sh-worker`     | **new entrypoint** | Long-lived Node process multiplexing S sessions; reuses `handler` as-is   |
+| `sh-worker`     | **new entrypoint** | Long-lived Node process multiplexing S in-flight turns; reuses `handler`  |
 | `redis-server`  | reused             | Unchanged — session log, streams, leases, sandbox presence                |
 | `sandbox-relay` | reused             | Unchanged Go binary; already a plain process, not a Kubernetes object     |
 | `remote-worker` | reused             | Unchanged Go worker in a container, registering into `sh:sandbox:records` |
@@ -156,8 +175,8 @@ flowchart TB
 The sandbox pool is **self-registering, not statically configured.** Presence is written on a live
 `Attach` stream and removed when it closes (`remote-worker/DESIGN.md:29-30`), so on a VM a
 `docker run` joins the pool and a stop leaves it — no manifest, no label query, no `kubectl`. What is
-fixed is the _count_: there is no autoscaler, and K comes from E6's 29–48:1 ratio via
-`KAGENTI_SANDBOX_CAP` (§5.4).
+fixed is the _count_: there is no autoscaler, and K comes from the provisioning ratio of the duty basis
+§5.4 pins (E6's, so 12–24:1), via `KAGENTI_SANDBOX_CAP`.
 
 ### 3.1a The relay stays — and what that costs, stated fully
 
@@ -173,7 +192,8 @@ That trade is worth stating with its real price, because it is larger than one l
 fast channel**: every `read`/`write`/`edit`/`ls`/`find` is a full `Exec` RPC ending in a fresh
 `bash -c`, rather than one nonce-framed line on a long-lived `bash`. This is pre-existing on the
 remote path, not introduced here — but file ops are the highest-frequency tool calls, so at W×S
-sessions the per-op process churn lands on K containers and could bind before the harness tier does.
+in-flight turns the per-op process churn lands on K containers and could bind before the harness tier
+does.
 
 **Two consequences, and they go to different places.** The measurement consequence is E9's, and it is
 handled by holding the tool path constant across both arms (§5.3) — the same discipline as holding the
@@ -202,8 +222,9 @@ Two mechanics, both documented Node behaviour rather than tricks:
 
 - The worker builds `createServer(handler)` and **never calls `listen()`**; on each received socket it
   does `server.emit('connection', socket)`.
-- Sticky mode (§3.4), which must read the session id, pre-reads only the request head and
-  `socket.unshift(head)` before emitting, so the worker's parser sees an intact request.
+- Sticky mode (§3.4), which must read a session id, pre-reads only the request **headers** and
+  `socket.unshift(head)` before emitting, so the worker's parser sees an intact request. It reads a
+  header and never the body — §3.4 explains why that constrains the sweep rather than the default.
 
 ### 3.3 The worker is a second entry point, not a rewrite
 
@@ -212,11 +233,11 @@ listener: `createServer(handler)`. The only change the Kubernetes path sees is `
 `export` — it is module-private at `:495`. `startServer()` is untouched, so **Knative behaviour is
 unchanged by construction rather than by testing**.
 
-**What multiplexing means here.** Node is single-threaded, so S concurrent sessions is S concurrent
-_awaits_, not S threads. §2.3's 2–8% sandbox duty and E6's LLM-latency finding say a session spends
-nearly all its wall-clock parked on I/O. What bounds S is memory per live session plus the CPU of the
-non-await slices — context assembly, tokenizing, JSON. **Which binds first is a finding of E8, not an
-input to this design**, and §5.2's instrumentation is chosen to answer it.
+**What multiplexing means here.** Node is single-threaded, so S concurrent in-flight turns is S
+concurrent _awaits_, not S threads. §2.3's measured sandbox duty and E6's LLM-latency finding say a turn
+spends nearly all its wall-clock parked on I/O. What bounds S is memory per in-flight turn plus the CPU
+of the non-await slices — context assembly, tokenizing, JSON. **Which binds first is a finding of E8,
+not an input to this design**, and §5.2's instrumentation is chosen to answer it.
 
 **Async leaves: one flag, round two.** The worker takes `--role=turn|leaf|both`; the queue-draining
 loop already exists in `leaf-job.ts`. Round one drives `/turn` only, because mixing latency-sensitive
@@ -225,7 +246,7 @@ is a later experiment rather than a later redesign.
 
 ### 3.4 Routing is least-in-flight, behind a policy seam
 
-Workers report their in-flight session count to the supervisor over IPC on change; the supervisor
+Workers report their **in-flight turn** count to the supervisor over IPC on change; the supervisor
 picks the least-loaded. Connection-level round-robin distributes badly the moment a driver reuses
 keep-alive connections, and least-in-flight needs no request parsing either — strictly better for the
 same cost. It deliberately mirrors `orderByLoad` (`harness/src/select-sandbox.ts:16`): the same
@@ -238,13 +259,32 @@ commitment — §2.4 says the session log is ~900 bytes while the config bundle 
 question is empirical and E8 can answer it instead of us guessing. The session→worker map is
 supervisor-local memory: single host, so no Redis and no rebalancing protocol.
 
+**Sticky's routing key is a request header, and that is a constraint, not a preference.** The session
+id is not in the request head today: `server.ts:93-101` reads it from the **parsed JSON body**
+(`JSON.parse(body)`, then `const { sessionId, prompt } = parsed`), and `/turn` is matched on method plus
+**exact URL equality** (`:564`, `req.method === 'POST' && req.url === '/turn'`), so no path segment or
+query string carries it either — and adding `?sid=` would not even route without touching that match.
+So `stickyBySession` reads **`X-SH-Session`**, which the E8 sweep driver sets, and which travels in the
+head exactly as `X-SH-Subject` already does (§3.6). The body contract is untouched, the stateless
+default reads nothing, and §3.9's `head?` row stays a genuinely head-sized read.
+
+The alternative — buffer and JSON-parse the body in the supervisor — is rejected for the reason §3.2
+exists: it puts request bytes and a parse on the accept path, reintroducing the confound structurally
+and turning sticky's supervisor cost into a term E8 would have to measure rather than one that is
+free. That would corrupt the cost side of the very knob this section says the experiment prices.
+
+**The price, stated:** sticky is therefore **not adoptable as-is** — a production client would have to
+start sending `X-SH-Session`, or `/turn` would have to carry the id in the head. E8 prices sticky's
+_benefit_ honestly; the header is the precondition that benefit is contingent on, and it belongs in the
+finding rather than in a footnote.
+
 ### 3.5 Admission control is where #55 lands
 
 With no Knative autoscaler, overload handling has nowhere else to live, and the supervisor is the one
-component that knows every worker's in-flight count. When all workers are at their session cap it
-returns **`429` with `Retry-After` before hand-off**. Before, not after: admitting a connection and
-then failing inside a worker would convert a clean back-pressure signal into a mid-turn error, and
-would also corrupt E8's rungs by counting admitted-but-doomed sessions.
+component that knows every worker's in-flight count. When all workers are at their in-flight-turn cap S
+(§3.8) it returns **`429` with `Retry-After` before hand-off**. Before, not after: admitting a
+connection and then failing inside a worker would convert a clean back-pressure signal into a mid-turn
+error, and would also corrupt E8's rungs by counting admitted-but-doomed turns.
 
 This is the session-level overload shift ADR-0032's follow-up defers to "the deployment-model slice"
 — realized here, on this substrate.
@@ -264,11 +304,11 @@ Two of P5 §4's pins get sharper here, and that track should know:
 
 - `output-guard.ts:91` calls `process.exit(1)`
   (`pi-fork/packages/coding-agent/src/core/output-guard.ts:91`, verified). P5 already calls this "a
-  fleet-wide outage triggered by one session's write error"; with W×S sessions per host it costs S
-  sessions per event. The supervisor's restart plus Redis resumability contains it (§6); P5's
+  fleet-wide outage triggered by one session's write error"; with W×S in-flight turns per host it costs
+  S of them per event. The supervisor's restart plus Redis resumability contains it (§6); P5's
   reachability pin is what prevents it.
-- `cwd` is process-wide across S sessions here too — P5 §4 calls it "the one item that could change
-  this slice's verdict", and that verdict now covers more sessions per process.
+- `cwd` is process-wide across the S turns a worker runs concurrently — P5 §4 calls it "the one item
+  that could change this slice's verdict", and that verdict now covers more turns per process.
 
 ### 3.7 Resolved, not left open: the supervisor is Node
 
@@ -284,15 +324,32 @@ Named here so an implementer does not invent names, and so §7's tests have some
 | Variable                       | Default            | Meaning                                                 |
 | ------------------------------ | ------------------ | ------------------------------------------------------- |
 | `SH_WORKERS`                   | `os.cpus().length` | W — worker processes in the pool                        |
-| `SH_SESSIONS_PER_WORKER`       | _required_         | S — per-worker soft cap; the admission threshold (§3.5) |
+| `SH_TURNS_PER_WORKER`          | _required_         | S — per-worker soft cap on **in-flight turns** (§3.5)   |
 | `SH_ROUTING_POLICY`            | `leastInFlight`    | `leastInFlight` \| `stickyBySession` (§3.4)             |
 | `SH_SANDBOX_DISCOVERY`         | see §4.2           | `pods` \| `records` \| `both`                           |
 | `SH_WORKER_RESTART_BACKOFF_MS` | `250`              | Base for exponential backoff on worker exit             |
 | `PORT`                         | `8080`             | Existing; the supervisor binds it instead of the server |
 
-`SH_SESSIONS_PER_WORKER` has **no default on purpose.** Every plausible default is either so low it
+**S counts in-flight turns, not sessions — and the name says so.** Under the stateless default (§3.4)
+no worker owns a session between turns: the session lives in Redis and its next turn may land anywhere,
+so concurrent in-flight turns is the only quantity a worker can report and the only one S can bound.
+This is §5.1's vocabulary applied to the configuration surface, and it is why the variable is not
+`SH_SESSIONS_PER_WORKER`. Under the `stickyBySession` sweep a worker additionally retains an affinity
+for sessions it has served, but S still bounds admission; resident session count is then a **separate**
+quantity E8 records, not a second meaning for S.
+
+`SH_TURNS_PER_WORKER` has **no default on purpose.** Every plausible default is either so low it
 hides the density the slice exists to find, or so high it invites the thrash E8 is meant to locate;
 and unlike the others its right value is an _output_ of E8. Failing to start is the honest behaviour.
+
+**On the `SH_` prefix for `SH_SANDBOX_DISCOVERY`** — stated as a decision, since it sits two rows above
+inherited `KAGENTI_SANDBOX_*` names. The split is: **`KAGENTI_SANDBOX_*` addresses the sandbox layer's
+own objects** (`KAGENTI_SANDBOX_POOL_SELECTOR` is a label selector, `select-sandbox.ts:75`;
+`KAGENTI_SANDBOX_CAP` is a lease cap, `run-leaf.ts:391`), while **`SH_*` is harness-owned config about
+which mechanism the harness uses.** Discovery-source selection is the second kind, and its sibling
+switch is already `SH_REMOTE_SANDBOX` — the very flag whose branch this seam gates, and the flag §4.2's
+default is defined in terms of. Keeping the two in one namespace is the point; renaming
+`SH_REMOTE_SANDBOX` for symmetry is not worth breaking deployed config over.
 
 Inherited unchanged, and not re-specified here: `REDIS_URL`, `SH_RELAY_ADDR`, `SH_REMOTE_SANDBOX`,
 `KAGENTI_SANDBOX_POOL_SELECTOR`, `KAGENTI_SANDBOX_CAP`, and the model-gateway variables. Role
@@ -303,21 +360,35 @@ selects an entry point's behaviour rather than tuning it.
 
 Small enough to state completely, which removes the main thing a fresh implementation would guess at.
 
-| Direction           | Message                 | When                                                 |
-| ------------------- | ----------------------- | ---------------------------------------------------- |
-| worker → supervisor | `ready { pid }`         | Once, after the handler server is constructed        |
-| worker → supervisor | `load { inFlight }`     | On every change to its in-flight session count       |
-| worker → supervisor | `draining`              | After receiving `drain`, before it stops accepting   |
-| supervisor → worker | socket handle + `head?` | Per admitted connection (`head` only in sticky mode) |
-| supervisor → worker | `drain`                 | On `SIGTERM`, before the shutdown deadline           |
+| Direction           | Message                 | When                                                |
+| ------------------- | ----------------------- | --------------------------------------------------- |
+| worker → supervisor | `ready { pid }`         | Once, after the handler server is constructed       |
+| worker → supervisor | `load { inFlight }`     | On every change to its in-flight **turn** count     |
+| worker → supervisor | `draining`              | After receiving `drain`, before it stops accepting  |
+| supervisor → worker | socket handle + `head?` | Per admitted connection (headers only, sticky mode) |
+| supervisor → worker | `drain`                 | On `SIGTERM`, before the shutdown deadline          |
 
 **The count has two holders, and the worker is the authority.** The supervisor increments optimistically
 on hand-off and reconciles on the next `load`, so its view can lag by **at most one IPC round trip per
-worker**. That bounded staleness means the supervisor may over-admit by up to W sessions across the
-pool at a burst edge. This is accepted rather than fixed: closing it would need a synchronous
-round-trip per connection, putting IPC latency on the accept path — the same mistake, in a different
-place, that §3.2 refuses. E8 records over-admission events so the bound is observed rather than
-assumed.
+worker**. This is accepted rather than fixed: closing it would need a synchronous round-trip per
+connection, putting IPC latency on the accept path — the same mistake, in a different place, that §3.2
+refuses.
+
+**The error has two directions, and the second one is the dangerous one for E8.** Naming them, because
+"lag" alone does not say what goes wrong:
+
+| Stale case                                                          | Supervisor estimate | Effect                                     |
+| ------------------------------------------------------------------- | ------------------- | ------------------------------------------ |
+| A second turn arrives on a **kept-alive socket** already handed off | too **low**         | **over**-admission, ≈1 per worker (W pool) |
+| A turn **finishes** before its `load` lands                         | too **high**        | **under**-admission: spurious `429`s       |
+
+Over-admission is bounded by how many in-flight changes a worker can make inside one round trip — one
+per worker at a burst edge — and is self-correcting on the next `load`. Under-admission is the one to
+worry about: a spurious `429` refuses offered concurrency the pool could have served, which
+**truncates E8's rungs and makes the knee read early with nothing in the data to distinguish it** from
+a real ceiling. So E8 records **both**: over-admission events, and every `429` with the supervisor's
+estimate at refusal against the next `load` from each worker, so a refusal that the pool could have
+absorbed is identifiable after the fact rather than invisible (§5.2).
 
 A worker that receives a socket **never refuses it.** Admission is the supervisor's job alone (§3.5);
 a worker that could also reject would make the `429` path depend on which side lost the race, and no
@@ -336,7 +407,7 @@ longer than it must.
 | 3   | Admission control and `429` (§3.5)                                     | All workers at cap → `429` + `Retry-After`, no hand-off attempted         |
 | 4   | systemd units and `setup-vm.sh` (§4.4)                                 | A clean VM reaches a served turn from the script alone                    |
 | 5   | Model stub with the tool-call profile (§5.4)                           | A stubbed turn reaches the sandbox; duty matches the configured rate      |
-| 6   | E8 driver and rungs (§5.2)                                             | A knee, plus the bound attribution (event loop vs RSS)                    |
+| 6   | E8 driver and rungs (§5.2); `stickyBySession` as a sweep arm (§3.4)    | A knee, plus the bound attribution (event loop vs RSS)                    |
 | 7   | E9 second arm on a cluster (§5.3)                                      | Both arms against the same stub **and the same gRPC transport**           |
 
 **Step 0 comes first** because until it lands, nothing runs off-cluster at all — it is the smallest
@@ -417,17 +488,19 @@ Per rung, recorded for attribution rather than for the report:
 | **Sandbox-container CPU**                                   | `bash -c` process churn on K containers |
 | Lease saturation (§6)                                       | an under-provisioned pool               |
 | Over-admission events (§3.9)                                | the IPC staleness bound                 |
+| **Spurious `429`s** (estimate high vs next `load`, §3.9)    | a knee read early, not a real ceiling   |
 
 The event-loop-lag-versus-RSS pair is the point of the instrumentation, not decoration: it answers
 _what bound it_, which is what turns a density number into a provisioning rule. E6's value came from
 exactly that move — its headline finding was a tier attribution, not a number (§1).
 
 The two sandbox-side metrics exist because §3.1a leaves a live hazard: with no persistent fast
-channel on the gRPC path, every file op spawns a process in a sandbox container, and at W×S sessions
-that churn concentrates on K containers. E7 validated mixed-ref converge correctness at **6**
-concurrent refs on one pod; E8's rungs go well past that, so whether the sandbox tier stays at E6's
-2–8% duty under this load is an open question. Without these two metrics a sandbox-bound run would be
-reported as a harness density limit — the precise error E6 caught in itself.
+channel on the gRPC path, every file op spawns a process in a sandbox container, and at W×S in-flight
+turns that churn concentrates on K containers. E7 validated mixed-ref converge correctness at **6**
+concurrent refs on one pod; E8's rungs go well past that, so whether the sandbox tier holds the duty of
+its pinned basis (§2.3) under this load is an open question — which is also why each run records which
+basis it used. Without these two metrics a sandbox-bound run would be reported as a harness density
+limit — the precise error E6 caught in itself.
 
 ### 5.3 E9 — deployment-tier comparison, with the model _and_ tool tiers held constant
 
@@ -458,9 +531,20 @@ Any future arm added to E9 inherits both pins.
 A small Anthropic-compatible SSE service with a configurable profile: time-to-first-token,
 inter-token delay, output length, **and a tool-call rate**. The tool-call rate is not optional — a
 stub that streams only text means no session ever reaches the sandbox, and E8's density number would
-silently exclude the entire hands tier. It is calibrated to E6's measured 2–8% sandbox duty (§2.3),
-which gives a defensible calibration source instead of a guessed constant. That same duty figure sets
-how many sandbox containers a run provisions, at E6's 29–48:1 ratio.
+silently exclude the entire hands tier. It is calibrated against a measured duty figure rather than a
+guessed constant.
+
+**One basis, both decisions.** The tool-call rate and the sandbox-container count come from the **same
+row of §2.3's table**, named in the run record. Default: the **E6 basis** — calibrate the stub to
+`duty = 0.06–0.08` and provision at `12–24:1` — because `EXPERIMENTS.md:65` supersedes the 29–48:1
+figure for real-converge work, and because over-provisioning the sandbox tier is the safe direction
+against §3.1a's process churn. E7's `duty = 0.021–0.035` / `29–48:1` is available as a lighter-workload
+sweep point, taken whole.
+
+Mixing rows is the failure this pins out: calibrating at E6's 8% duty while provisioning at E7's
+29–48:1 under-provisions the sandbox tier ~2.4× and produces exactly the sandbox-bound run §5.2's two
+saturation metrics exist to detect. The check is arithmetic, so the driver asserts it:
+`K ≥ ceil(W × S × duty)`, with `duty` and the ratio from one row (`N ≈ 1/duty`).
 
 It lives at `deploy/knative/model-stub/`, beside `echo-target/` and following its shape (Dockerfile
 plus one small Node service) — **not** under `deploy/vm/`, because both E9 arms must drive the same
@@ -479,7 +563,7 @@ and E2/E5 are already split between driver-local and consolidated homes.
 
 ### 5.7 How the claim will read
 
-> On a single VM, W workers × S multiplexed sessions sustained **N concurrent in-flight turns** with
+> On a single VM, W workers each admitting up to S in-flight turns sustained **N concurrent turns** with
 > p95 within 2× the single-session baseline, with the model tier modelled at profile X and the bound
 > observed at «event loop | memory». Against the same stub, the Knative pod-per-session arm sustained
 > M.
@@ -499,7 +583,9 @@ and E2/E5 are already split between driver-local and consolidated homes.
 ## 7. Testing & verification gate
 
 **Unit.** Least-in-flight ordering (mirroring the existing `orderByLoad` tests), the admission
-threshold, hand-off retry against a dead worker, restart backoff.
+threshold, hand-off retry against a dead worker, restart backoff, and `stickyBySession`'s header read —
+that it keys on `X-SH-Session`, reads **no** body bytes, and that `socket.unshift(head)` leaves the
+worker's parse of the full request intact (§3.4).
 
 **Integration.** An **SSE stream surviving socket hand-off** — the thing most likely to break subtly
 and silently, and therefore the load-bearing test of §3.2. And a worker killed mid-turn with the
@@ -516,7 +602,7 @@ and not a hope:
 
 **Inherited, not claimed.** P5's two-tenant interleaved test runs at the worker level. Round one does
 not claim isolation-at-density (§8), but it must not break it unknowingly, and the cheapest way to
-know is to run that test where W×S sessions actually share a process.
+know is to run that test where S turns of different subjects actually share a process.
 
 Homes: `packages/knative-server/test` and `harness/test`, both typechecked since #190. Tests need the
 `sh-test-redis` container on `:6379`.
@@ -581,7 +667,7 @@ ladder must include the single-session rung, which is also §5.2's W=1 baseline.
 `pnpm install` at the root.
 
 **Plans are not committed here.** `docs/plans/` is gitignored and ephemeral by house convention
-(`README.md:233`) — delete once coded.
+(`.gitignore:27-30`, and `docs/plans/README.md`) — delete once coded.
 
 **Commits.** `git commit -s` (DCO enforced in CI) and
 `Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>`.
@@ -594,8 +680,9 @@ ladder must include the single-session rung, which is also §5.2's W=1 baseline.
 - [P4](https://github.com/rossoctl/serverless-harness/issues/57) — Kata/VM/gVisor isolation, where
   the sandbox-boundary question already lives.
 - [P3.1](2026-07-03-e6-workload-parameterized-sandbox-load-design.md) ·
-  [`EXPERIMENTS.md`](../../deploy/knative/EXPERIMENTS.md) — E6/E7, the saturation machinery and the
-  2–8% duty / 29–48:1 ratio this design provisions from.
+  [`EXPERIMENTS.md`](../../deploy/knative/EXPERIMENTS.md) — E6/E7, the saturation machinery and the two
+  duty bases §2.3 keeps apart (E6's 6–8% / 12–24:1, which this design provisions from; E7's 2–4% /
+  29–48:1, superseded for real-converge work at `:65`).
 - [`docs/experiment-results.md`](../experiment-results.md) — E2's constant-6-entry rehydration, which
   decides §3.4.
 - [ST](2026-07-08-sandbox-transport-grpc-design.md) · [ADR-0024](../adrs/0024-sandbox-transport-remote-exec.md)

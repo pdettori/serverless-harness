@@ -23,10 +23,13 @@ Tracing the tree at `c12a97c` shows how little is actually Kubernetes-shaped. Th
 seam already has a gRPC path whose Go worker dials out and needs no inbound route; sandbox discovery,
 capacity leases, session state, the work queue and leaf results are all Redis; the HTTP surface is
 plain `node:http` with no Knative coupling anywhere in `src`; MU1 already put credentials behind a
-`CredentialStore`. Two further facts decide the shape: E6/E7 measured per-sandbox duty at **2–8%**
-(N ≈ 29–48 sessions per sandbox), so the sandbox tier is not the bottleneck and needs no change; and
-E2 measured session rehydration at a **constant 6 entries / ~900 bytes** regardless of session length,
-so warm in-process session state is worth far less than intuition suggests.
+`CredentialStore`. Two further facts decide the shape. First, the sandbox tier is not the bottleneck
+and needs no change: E6 measured per-leaf sandbox duty at **6–8%** on real code-review leaves
+(N ≈ 12–24:1, cluster-dependent), and E7 measured **2–4%** on mixed-ref converge leaves (N ≈ 29–48:1) —
+two workloads, two bases, deliberately not blended, since `EXPERIMENTS.md:65` supersedes the 29–48:1
+figure for real-converge work and the spec provisions from E6's row (spec §2.3, §5.4). Second, E2
+measured session rehydration at a **constant 6 entries / ~900 bytes** regardless of session length, so
+warm in-process session state is worth far less than intuition suggests.
 
 Exactly one code-level blocker exists: `harness/src/select-sandbox.ts:87` calls `listPoolPods`
 unconditionally, before the gRPC branch, and that shells out to `kubectl`. The gRPC presence path
@@ -35,7 +38,8 @@ therefore cannot run on a host without `kubectl` today, despite needing nothing 
 ## Decision
 
 We will run the harness on **one VM with no Kubernetes** as a `sh-supervisor` process owning a fixed
-pool of long-lived `sh-worker` processes, each multiplexing N Pi sessions, and we will **measure**
+pool of long-lived `sh-worker` processes, each multiplexing S concurrent in-flight turns over many
+addressable Pi sessions (the two axes the spec's §5.1 keeps apart), and we will **measure**
 what that sustains (E8 density/saturation, E9 deployment-tier comparison against the same model stub).
 This realizes the deployment-model slice that ADR-0032's follow-up defers, including
 [#55](https://github.com/rossoctl/serverless-harness/issues/55)'s shift of overload handling from
@@ -55,7 +59,12 @@ an `export`, so Knative behaviour is unchanged by construction rather than by te
 
 **Routing is least-in-flight behind a `RoutingPolicy` seam**, mirroring `orderByLoad` — P2's
 least-loaded-under-a-cap discipline applied one tier up. Sticky affinity is a **sweep variant**, so
-E8 prices warmth empirically instead of us assuming it.
+E8 prices warmth empirically instead of us assuming it. Sticky keys on an `X-SH-Session` **header** set
+by the sweep driver, not on the session id, because that id is read from the JSON body
+(`server.ts:93-101`) and `/turn` is matched on exact URL equality (`:564`) — parsing the body in the
+supervisor would put bytes on the accept path and undo the hand-off decision above. The consequence is
+that sticky is measurable but not adoptable without a client-contract addition, which the finding must
+state.
 
 **We add exactly one platform seam** — `SH_SANDBOX_DISCOVERY=pods|records|both`, defaulting to today's
 behaviour — and explicitly **no `PlatformAdapter`**: each Kubernetes dependency is a different kind of
