@@ -83,13 +83,14 @@ the `M`-numbered built harness (Phase 1) and the `Z`-numbered credential plane (
 | **P3.1** | **E6 workload-parameterized sandbox-load** — replace the trivial marker-check leaf with real Archetype-A code-review variants (L0/L1/L2); report N as a curve over per-leaf sandbox work (not one optimistic number); raise `max-scale`, warm baseline, multi-sample, sustained-decline `detectKnee`                  | **design ✅**                     | [`2026-07-03-e6-workload-parameterized-sandbox-load-design.md`](2026-07-03-e6-workload-parameterized-sandbox-load-design.md) (#62)                                     |
 | **P4**   | Kata/VM isolation + intra-pod cross-leaf hardening (infra-gated: bare-metal pool vs Kata peer-pods vs gVisor — no nested KVM on the m6i cluster); Kata-overhead delta on P3's baseline; conditional RWX revisit                                                                                                       | planned                           | #57                                                                                                                                                                    |
 | **P5**   | **Multi-session harness isolation** — N concurrent Pi sessions per process made provably isolated: per-request subject (`X-SH-Subject`) → inert placeholder, no ambient credential in server mode, fail-closed; the other four #220 globals **pinned by reachability tests, not refactored** (no `pi-fork` change)    | **design ✅**                     | [`2026-09-06-p5-session-isolation-design.md`](2026-09-06-p5-session-isolation-design.md) (#220); [ADR-0032](../adrs/0032-per-request-subject-no-ambient-credential.md) |
+| **P6**   | **VM process manager + session mux** — the deferred deployment-model slice, off Kubernetes: `sh-supervisor` hands accepted **sockets** to a pool of multiplexing `sh-worker` processes, never touching a response byte; #55 overload as admission control. Delivers **E8** density + **E9** deployment comparison     | **design (proposed)**             | [`2026-09-08-p6-vm-process-manager-design.md`](2026-09-08-p6-vm-process-manager-design.md); [ADR-0034](../adrs/0034-vm-process-manager-socket-handoff.md)              |
 
 > **Supersedes** the local un-pushed `docs/archetype-a-ocp-support` branch (NFS-RWX-for-harness):
 > after P1 the harness mounts nothing, so the harness never co-mounts `/work`. Reference only.
 
 > **P5 covers only the concurrency-safety half of #220.** The deployment-model change (KEDA
 > `ScaledJob` → elastic pod pool, the pod-count/activation numbers, and #55's overload shift from
-> pod-level to session-level) is a **separate slice**, unblocked by P5 but not part of it.
+> pod-level to session-level) is a **separate slice** — now **P6**, on a non-Kubernetes substrate.
 > End-to-end multi-tenancy additionally needs **per-subject resolution at the injector** — Z5's
 > deferred per-user / RFC 8693 half, in `kagenti-extensions`. P5 is the strict prerequisite for that
 > work (the injector cannot key on a subject the harness never sends) and claims no more.

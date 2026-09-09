@@ -44,6 +44,7 @@ spec). Chronological by the spec's date; numbers are permanent.
 | [0031](0031-promoted-memory-read-only.md)                 | Promoted memory travels read-only; discoveries return in the leaf result                        | Proposed    |
 | [0032](0032-per-request-subject-no-ambient-credential.md) | Multi-session isolation via per-request subject + no ambient credential, not a `SessionContext` | Proposed    |
 | [0033](0033-multi-user-control-plane.md)                  | An always-on control plane owns multi-user identity and credentials                             | Proposed    |
+| [0034](0034-vm-process-manager-socket-handoff.md)         | Density off Kubernetes via a socket-handing-off supervisor over a fixed worker pool             | Proposed    |
 
 ## What an ADR is (and isn't)
 
