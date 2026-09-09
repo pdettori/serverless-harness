@@ -42,8 +42,10 @@ Three properties are pursued, and only two are claimed:
 - **Not claimed: that the VMM cannot be escaped.** We claim the boundary moved from namespaces+seccomp
   to KVM, not that KVM is unbreakable. §9 keeps that out of scope deliberately.
 
-**The registry's stated blocker for P4 has expired.** `docs/specs/README.md:84` records P4 as
-"infra-gated: bare-metal pool vs Kata peer-pods vs gVisor — **no nested KVM on the m6i cluster**." Two
+**The registry's stated blocker for P4 has expired.** At `45a218d`, `docs/specs/README.md:84` **recorded**
+P4 as "infra-gated: bare-metal pool vs Kata peer-pods vs gVisor — **no nested KVM on the m6i cluster**" —
+pinned to that commit, and past tense, because **this slice rewrites that row**: after merge the same line
+asserts the gate is retired, so the quotation is checkable at `45a218d` rather than at `HEAD`. Two
 things retire that gate: AWS
 [enabled nested virtualization on virtual EC2 instances in February 2026](https://aws.amazon.com/about-aws/whats-new/2026/02/amazon-ec2-nested-virtualization-on-virtual/)
 (C8i / M8i / R8i, all commercial regions), and P6 establishes a non-Kubernetes VM substrate where a
@@ -229,8 +231,25 @@ it (§7.2's third decision rule). Nothing in this design forecloses it.
 ### 3.4 The one wire change
 
 `ExecRequest` gains `string workspace_key = 3`, populated by the harness from the lease's run id.
-Empty means "today's single shared workspace", so it is backward-compatible and `remote-worker`
-ignores it.
+Empty means "today's single shared workspace" **on the container path only**, which is what makes the
+field additive for `remote-worker` — it ignores it.
+
+**`microvm-worker` refuses an empty `workspace_key`** with a counted `ExecError`, and this is the posture
+the rest of §6 already takes ("never fall back to running commands on the host", "fail the unit at start"
+rather than degrade). On the VM path there is no correct workspace to choose, so there is nothing to fall
+back _to_, and an empty string would blind three separate safeguards at once: `WorkspaceRoot/<key>` (§4.4)
+would collapse to one directory for every run, the per-run pools of §4.3 would all draw from one pool
+whose mounted-workspace binding no longer distinguishes runs, and §6's "each VM carries its
+`workspace_key` and `Exec` asserts the popped VM matches" — the row marked _catastrophic bug_ — would pass
+trivially with every key equal. §8's cross-run-bleed gate cannot catch any of it, because it drives two
+keys that are non-empty by construction. Refusing is one sentence; the alternative is the leak of §2.3
+reached through the new door.
+
+**Consequence, stated rather than discovered at step 6: the `/turn` path cannot use the VM tier in this
+slice.** `run-turn.ts:57` resolves a single pod via `resolveSandboxConfig` and never leases, so it has no
+run id to populate the key with — §10's file table changes `run-leaf.ts` only. That is consistent with §7,
+whose experiments drive leaves, and it is recorded as out of scope in §9 rather than left as an empty key
+that would quietly mean "share one workspace".
 
 This is required for **correctness, not convenience.** Leases are keyed by run id
 (`sandbox-lease.ts:3`) and nothing on the wire carries it, so without this field `vmpool` has nothing
@@ -379,17 +398,28 @@ them, for the reason immediately below.
 
 **"Is the run finished?" is not answerable, and nothing here needs it answered.** A session can sit on a
 human gate or on user input indefinitely, and no timer distinguishes that from a run that is over. But
-reclamation does not turn on "finished" — it turns on **"has the dispatch exited?"**, which the harness
-computes exactly and, on the container path, **already acts on**:
+what the design needs is weaker: that reclaiming **early** must be harmless. It is — but not because the
+harness signals anything, and the two things it does do are both invisible to the worker:
 
-| Bracket | Mechanism                                                                               |
-| ------- | --------------------------------------------------------------------------------------- |
-| Entry   | `convergeWorkspace` on first use — idempotent, a no-op if the tree is already there     |
-| Exit    | `cleanupWorkspace` in a **`finally`** (`run-leaf.ts:665`, `:816`) — **every** exit path |
+| Bracket | Mechanism                                                                                              | Reaches the host dir? |
+| ------- | ------------------------------------------------------------------------------------------------------ | --------------------- |
+| Entry   | `convergeWorkspace` — idempotent, a no-op if the tree is there (`converge.ts:34`, `:38`)               | no                    |
+| Exit    | `cleanupWorkspace` — an **`Exec`** running `worktree remove` in the guest (`converge.ts:44-51`, `:76`) | **no**                |
 
-That `finally` is the whole answer, and it fires on a gate pause too: `realProduceVerdict` returns
-`paused` from inside the `try` whose `finally` removes the worktree. So **the workspace is a per-dispatch
-derivation, not durable state** — three facts make that safe rather than lossy:
+**Neither is host-side, so neither reclaims what `vmpool` allocated.** `cleanupWorkspace` is a command sent
+_through_ the sandbox, scoped to `/workspace/leaves/<runId>`; it never touches `/workspace` or
+`/workspace/repo`, and a guest cannot delete the host directory its own mount points at. The harness
+brackets its **worktree**; the **workspace** is bracketed by nothing the worker can observe. So on the VM
+path `WorkspaceIdle` is not a backstop — it is the **only** thing that ever deletes a workspace.
+
+Two further reasons that `finally` is not a signal, either of them sufficient: `vmpool` cannot tell it from
+any other `Exec` (marking it is precisely what §9's `Release` would add), and it is not even universal on
+the container path — `:816` sits under `if (converging)` (`run-leaf.ts:813`, `:727`), so a verdict leaf
+dispatched without `repoUrl`/`ref` never calls it, while `:665` hardcodes
+`KubectlTransport(selected.config)` and so aims at a **pod**, which a single VM host does not have.
+
+What the harness's behaviour _does_ establish is that **the workspace is a per-dispatch derivation, not
+durable state** — three facts, and they are what make early reclamation free:
 
 - The tree is a **detached worktree at a pinned commit** (`converge.ts:38`), so re-creating it yields the
   same bytes. A resumed verdict leaf re-converges to exactly what it had.
@@ -398,17 +428,20 @@ derivation, not durable state** — three facts make that safe rather than lossy
 - The one leaf kind that holds uncommitted edits — a **solve** leaf — has no gate path at all
   (`realProduceSolve`): it converges, edits, `captureWorkspaceDiff`, and cleans up within one dispatch.
 
-**So both thresholds are crash backstops, not lifecycle.** Nothing depends on either firing at the right
-moment; they exist for the dispatch that died without running its `finally`. Firing early costs a
-re-fetch, never data — which is what makes an aggressive `StandbyIdle` safe:
+**So the thresholds are the mechanism, not a backstop — and both are safe to fire.** Nothing recovers state
+they take; there is no state to take. Firing early costs a re-converge, never data:
 
-| Threshold       | Default | Reclaims                     | Cost of firing early                 | Cost of firing late           |
-| --------------- | ------- | ---------------------------- | ------------------------------------ | ----------------------------- |
-| `StandbyIdle`   | 90s     | the run's paused standby VMs | one cold acquire on resume, ~25ms    | pinned RAM — the §7.3 term    |
-| `WorkspaceIdle` | 2h      | the workspace directory      | a re-converge (fetch + worktree add) | leaked disk, bounded by quota |
+| Threshold       | Default | Reclaims                     | Cost of firing early                 | Cost of firing late               |
+| --------------- | ------- | ---------------------------- | ------------------------------------ | --------------------------------- |
+| `StandbyIdle`   | 90s     | the run's paused standby VMs | one cold acquire on resume, ~25ms    | pinned RAM — the §7.3 term        |
+| `WorkspaceIdle` | 30m     | the workspace directory      | a re-converge (fetch + worktree add) | retained disk — see §4.5's caveat |
 
-Two thresholds rather than one because RAM is urgent and disk is not, **not** because one is
-unrecoverable. Neither is.
+Two thresholds rather than one because RAM is urgent and disk is not. **`WorkspaceIdle` is 30m rather than
+the 2h an earlier draft of this section assumed**, because it is the sole deletion path and §4.5 makes each
+retained workspace hold a **full repo fetch**: at 2h the disk high-water mark is every repo fetched in two
+hours, and §2.4's per-workspace quota bounds each one without bounding the sum. The number properly follows
+from §4.5's resolution — a host-shared repo mount leaves only a cheap worktree per run and the pressure
+mostly goes away; a per-run clone does not — so 30m is the interim value, and §4.5 owns the final one.
 
 **The tier above supplies the discipline but not the trigger.** `sandbox-lease.ts:15-17` notes that "a
 dead leaf's member ages past its expiry and is swept by the next acquire", and that works there because
@@ -419,37 +452,51 @@ two-trigger sweep. A crashed run's workspace then ages out exactly as a dead lea
 
 **The accumulating case is the last `Exec` of every run, not a rare leak.** Every `Exec` schedules a
 replenishment, so an unconditional refill hands D fresh standbys to a run at the exact moment it stops
-issuing work, and they sit paused until the sweep. At D=2, a 5-minute threshold and 100 runs finishing
-inside that window, that is 200 paused VMs — **≈50 GiB at 256 MiB guests**, which is §7.3's dominant term
-spent entirely on VMs that will never serve a command. A per-run pool bounds the total (`MaxRuns × D`,
-gated by `MaxCommittedBytes`), so this is not unbounded growth; it is the density number being quietly
-halved. Two more settings bound it:
+issuing work, and they sit paused until the sweep. Two figures, because they price different things:
+
+| Window                          | Runs finishing in it | Paused VMs (D=2) | At 256 MiB guests |
+| ------------------------------- | -------------------- | ---------------- | ----------------- |
+| 5 min — what a naive TTL costs  | ~100                 | 200              | **≈50 GiB**       |
+| 90s — `StandbyIdle` as set here | ~30                  | 60               | **≈15 GiB**       |
+
+The first prices the decision, the second the residual. Both are §7.3's dominant term spent on VMs that
+will never serve a command; a per-run pool bounds the total (`MaxRuns × D`, gated by
+`MaxCommittedBytes`), so this is not unbounded growth — it is the density number being quietly halved.
+Two settings bound it further, and one honest limit remains:
 
 1. **`ReplenishDelay` (200ms)** — wait before refilling a popped slot. A run's next `Exec` is separated
    by a model round trip of hundreds of ms (§3.2), so the refill still completes well before it arrives;
    the back-to-back case D=2 exists for (`operations.ts:78-79`, read + write with no model between) is
-   served from the D−1 standbys still `Ready`. A run that has finished never triggers a refill at all.
-   This is the setting that turns the systematic case back into a bounded one, and it is why
-   `StandbyIdle` can be aggressive without making cold acquires common.
+   served from the D−1 standbys still `Ready`.
 2. **`MaxReclaimsPerScan` (8)** — reclaiming a host's worth of idle standbys is a `munmap` storm on the
    cores the hot path needs, so the sweep is rate-limited and convergence is a slope, not a stall (§6).
+
+**`ReplenishDelay` cannot take the residual to zero, and the reason is the cleanup `Exec` above.** A
+dispatch's _last_ wire event is `cleanupWorkspace`, arriving milliseconds after the last real `Exec`, and
+`vmpool` cannot tell it apart from work: it pops a standby, refreshes the run's idle clock, and schedules a
+refill that fires 200ms later with the run already over. So the delay shortens no window here — it only
+helps where a run genuinely stops mid-stream. The residual is what the table above shows, and **only a
+terminal signal removes it**, which is §9's `Release`. That is the honest case for taking `Release` into
+this slice rather than a nice-to-have.
 
 A gated run resuming therefore pays one cold acquire, which means **cold acquires must be attributed by
 cause** (§7.3) — otherwise a gate-heavy or checkpoint-heavy workload reads as replenishment falling
 behind when nothing is behind.
 
-**Explicit release would turn both thresholds into pure crash backstops. It is deferred, not rejected.**
-A `Release{workspace_key}` variant on the **existing** `ServerFrame` oneof, sent from the same `finally`
-that already calls `cleanupWorkspace`, would collapse both idle windows to milliseconds — with
-`KubectlTransport` treating it as a no-op and `remote-worker` ignoring it exactly as it ignores
-`workspace_key`. It needs **no** terminal-vs-`paused` distinction, precisely because the harness already
-treats the workspace as per-dispatch: a resumed key re-converges. That is what makes it a small change
-rather than a new lifecycle concept.
+**Explicit release is what removes the residual, and it would be the first thing the worker can act on.**
+A `Release{workspace_key}` variant on the **existing** `ServerFrame` oneof, emitted from the same
+`finally` that calls `cleanupWorkspace` — not by that call, which never leaves the guest — would collapse
+both idle windows to milliseconds, with `KubectlTransport` treating it as a no-op and `remote-worker`
+ignoring it exactly as it ignores `workspace_key`. It needs **no** terminal-vs-`paused` distinction,
+precisely because the workspace is per-dispatch: a resumed key re-converges. It would also have to cover
+the `if (converging)` and hardcoded-`KubectlTransport` gaps noted above, which is a harness fix, not a
+protocol one.
 
-Out of this slice because it is a **second** wire change, and §3.4's "the one wire change" is load-bearing
-for the claim that the harness is otherwise untouched. `Pool.Reclaim` (§4.1) is already the entry point it
-would call, so adding it later changes no structure and no state machine. §9 records the condition that
-pulls it in.
+Held out of this slice because it is a **second** wire change and §3.4's "the one wire change" is
+load-bearing for the claim that the harness is otherwise untouched. `Pool.Reclaim` (§4.1) is already the
+entry point it would call, so adding it later changes no structure and no state machine. §9 records the
+condition that pulls it in — and the residual arithmetic above plus §4.5's retained fetches are that
+condition being partly met already.
 
 ### 4.5 The repo cache the per-run workspace would defeat — an owed decision
 
@@ -485,6 +532,13 @@ Three shapes, undecided here because the choice wants E10's numbers:
 
 Whichever is taken, the per-run workspace must stop being the only mount, and **§7.5 must measure converge
 separately from `Exec` latency** or the cost hides inside the rungs.
+
+**This choice sets `WorkspaceIdle`, so the two decisions are one.** §4.4 makes that threshold the sole
+deletion path, so every retained workspace holds whatever this section leaves in it: under option 1 a
+worktree, cheap enough that the threshold barely matters; under 2 or 3 a full object store per run, where
+the disk high-water mark is `(runs per WorkspaceIdle) × (repo size)` and 30m is already generous. Resolve
+§4.5 first and the number follows; resolve it the other way and `Release` (§9) stops being optional,
+because a timer measured in tens of minutes is the wrong instrument for gigabytes per run.
 
 ## 5. Guest image and golden snapshot
 
@@ -567,29 +621,30 @@ better than today, where PR #225 needed a cache with reclaim-on-last-release.
 
 ## 6. Failure modes
 
-| Failure                                             | Handling                                                                                                                                                                                                                                                                                                          |
-| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Worker crash leaks VMs**                          | Per-VM cgroup under a systemd slice the unit owns; systemd kills the control group. On start, sweep the slice for orphans from a previous incarnation. Jailer `--cgroup` args must agree (§5.3). The #1 practical failure                                                                                         |
-| **Host memory exhausted**                           | See below — the OOM killer must never arbitrate                                                                                                                                                                                                                                                                   |
-| **Workspace leak**                                  | Primary teardown is the harness's own `finally` (`run-leaf.ts:665`, `:816`), which runs on every dispatch exit; `WorkspaceIdle` plus the start-of-day sweep are the backstop for a dispatch that died before reaching it, triggered per §4.2. **Per-workspace disk quota**, which §2.4 makes the integrator's job |
-| **Cold repo cache per run**                         | §4.5: the shared repo at `/workspace/repo` sits inside a per-run mount, so every run pays a full fetch — seconds, and easily misread in E11 as replenishment lag. An owed decision, plus §7.5's requirement to time converge separately                                                                           |
-| **Idle standbys accumulate**                        | The systematic case, not a leak: an unconditional refill gives every finishing run D standbys it will never use (§4.4). `ReplenishDelay` suppresses that refill, `StandbyIdle` ages out the remainder, the ticker converges an idle host. Reported as **idle standby residency** (§7.1)                           |
-| **Reclaim storm**                                   | Bulk `munmap` of many paused standbys contends with the hot path. `MaxReclaimsPerScan` bounds each sweep; E10 rung 4 prices paused and bulk teardown separately from in-flight                                                                                                                                    |
-| **Cold-acquire storm**                              | Standbys exhausted → every `Exec` pays full restore (~25ms) but stays correct. Counted, never queued unboundedly. Attributed by cause, so a gate-resumed run (§4.4) is not read as replenishment lag                                                                                                              |
-| **Replenishment failure** (spawn fails, OOM)        | `ExecError`, exponential backoff per run pool. Never a hang                                                                                                                                                                                                                                                       |
-| **Golden snapshot fails CRC**                       | The VMM terminates. Treat as **fatal for the host**: close the `Attach` stream — which removes presence via the existing mechanism (`DESIGN.md:29-30`) — and refuse, rather than degrade to zero standbys and blame latency on load                                                                               |
-| **KVM unavailable at startup**                      | Wrong EC2 family, or nested virt not enabled. Given the C8i/M8i/R8i constraint this is the most likely operational failure. Fail the unit at start with an explicit message; **never fall back to running commands on the host**                                                                                  |
-| **`Attach` stream drops mid-`Exec`**                | Destroy that run's in-flight VMs immediately rather than waiting for `StandbyIdle`, or a flapping relay leaks VMs at the flap rate. The **workspace stays** — a relay flap is not a finished run                                                                                                                  |
-| **`Abort` for an already-destroyed VM**             | No-op, idempotent. The `req_id` LRU covers redelivery; abort-after-teardown must not error                                                                                                                                                                                                                        |
-| **Guest agent wedged**                              | `timeout_s` → kill the VM. Not special-cased, because teardown is the same path as success (§4.1)                                                                                                                                                                                                                 |
-| **vsock packet loss**                               | Documented and expected (§2.4). Framed request/response with an explicit exit code; short response → counted `ExecError` (§5.4)                                                                                                                                                                                   |
-| **Output cap trip**                                 | Honour `DEFAULT_OUTPUT_CAP`; `truncated: true`, `exitCode: null`. Prefer capping at source in the guest (§4.1)                                                                                                                                                                                                    |
-| **Write lost across teardown**                      | Firecracker arm only: mandatory `sync` before kill, gated by §8's durability test. **Does not exist on the virtio-fs arm** (§4.3)                                                                                                                                                                                 |
-| **Malicious symlink or `..` in the workspace**      | virtio-fs arm: `virtiofsd` resolves guest paths **on the host**, so its own sandboxing is the boundary — configured and verified, never assumed (§3.5). Firecracker arm: resolution is in-guest against a block device, so the hazard does not exist — a genuine point in Firecracker's favour                    |
-| **A VM serves two `Exec`s, or the wrong workspace** | The handle never escapes `vmpool`; each VM carries its `workspace_key` and `Exec` asserts the popped VM matches. Cheap assertion, catastrophic bug                                                                                                                                                                |
-| **Kernel limits mistaken for a density ceiling**    | `RLIMIT_MEMLOCK`, `vm.max_map_count`, `nofile`, `TasksMax`/`pid_max`. These fail at 500 VMs after working at 20, indistinguishably from a real ceiling. Raise and **record per run** (§7.5)                                                                                                                       |
-| **Nested-virt vs metal divergence**                 | Record the substrate in every run record, mirroring P6 §5.2's requirement to record which basis a run used                                                                                                                                                                                                        |
-| **Snapshot/host mismatch**                          | Pinned hash (§5.5) **plus a startup probe that actually restores one VM** and fails the unit if it cannot. Fail at start, not on a user's first request                                                                                                                                                           |
+| Failure                                             | Handling                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Worker crash leaks VMs**                          | Per-VM cgroup under a systemd slice the unit owns; systemd kills the control group. On start, sweep the slice for orphans from a previous incarnation. Jailer `--cgroup` args must agree (§5.3). The #1 practical failure                                                                                    |
+| **Host memory exhausted**                           | See below — the OOM killer must never arbitrate                                                                                                                                                                                                                                                              |
+| **Workspace leak**                                  | `WorkspaceIdle` plus the start-of-day sweep are the **only** deletion path, triggered per §4.2 — the harness's own `finally` is an in-guest `Exec` that cannot reach the host directory (§4.4). **Per-workspace disk quota**, which §2.4 makes the integrator's job, bounds each workspace but not their sum |
+| **Cleanup `Exec` looks like work**                  | `cleanupWorkspace` is a run's last wire event and is indistinguishable from work: it pops a standby, refreshes the idle clock and triggers a refill for a run that is over (§4.4). Bounded by `StandbyIdle`, removed only by §9's `Release`                                                                  |
+| **Cold repo cache per run**                         | §4.5: the shared repo at `/workspace/repo` sits inside a per-run mount, so every run pays a full fetch — seconds, and easily misread in E11 as replenishment lag. An owed decision, plus §7.5's requirement to time converge separately                                                                      |
+| **Idle standbys accumulate**                        | The systematic case, not a leak: an unconditional refill gives every finishing run D standbys it will never use (§4.4). `ReplenishDelay` suppresses that refill, `StandbyIdle` ages out the remainder, the ticker converges an idle host. Reported as **idle standby residency** (§7.1)                      |
+| **Reclaim storm**                                   | Bulk `munmap` of many paused standbys contends with the hot path. `MaxReclaimsPerScan` bounds each sweep; E10 rung 4 prices paused and bulk teardown separately from in-flight                                                                                                                               |
+| **Cold-acquire storm**                              | Standbys exhausted → every `Exec` pays full restore (~25ms) but stays correct. Counted, never queued unboundedly. Attributed by cause, so a gate-resumed run (§4.4) is not read as replenishment lag                                                                                                         |
+| **Replenishment failure** (spawn fails, OOM)        | `ExecError`, exponential backoff per run pool. Never a hang                                                                                                                                                                                                                                                  |
+| **Golden snapshot fails CRC**                       | The VMM terminates. Treat as **fatal for the host**: close the `Attach` stream — which removes presence via the existing mechanism (`DESIGN.md:29-30`) — and refuse, rather than degrade to zero standbys and blame latency on load                                                                          |
+| **KVM unavailable at startup**                      | Wrong EC2 family, or nested virt not enabled. Given the C8i/M8i/R8i constraint this is the most likely operational failure. Fail the unit at start with an explicit message; **never fall back to running commands on the host**                                                                             |
+| **`Attach` stream drops mid-`Exec`**                | Destroy that run's in-flight VMs immediately rather than waiting for `StandbyIdle`, or a flapping relay leaks VMs at the flap rate. The **workspace stays** — a relay flap is not a finished run                                                                                                             |
+| **`Abort` for an already-destroyed VM**             | No-op, idempotent. The `req_id` LRU covers redelivery; abort-after-teardown must not error                                                                                                                                                                                                                   |
+| **Guest agent wedged**                              | `timeout_s` → kill the VM. Not special-cased, because teardown is the same path as success (§4.1)                                                                                                                                                                                                            |
+| **vsock packet loss**                               | Documented and expected (§2.4). Framed request/response with an explicit exit code; short response → counted `ExecError` (§5.4)                                                                                                                                                                              |
+| **Output cap trip**                                 | Honour `DEFAULT_OUTPUT_CAP`; `truncated: true`, `exitCode: null`. Prefer capping at source in the guest (§4.1)                                                                                                                                                                                               |
+| **Write lost across teardown**                      | Firecracker arm only: mandatory `sync` before kill, gated by §8's durability test. **Does not exist on the virtio-fs arm** (§4.3)                                                                                                                                                                            |
+| **Malicious symlink or `..` in the workspace**      | virtio-fs arm: `virtiofsd` resolves guest paths **on the host**, so its own sandboxing is the boundary — configured and verified, never assumed (§3.5). Firecracker arm: resolution is in-guest against a block device, so the hazard does not exist — a genuine point in Firecracker's favour               |
+| **A VM serves two `Exec`s, or the wrong workspace** | The handle never escapes `vmpool`; each VM carries its `workspace_key` and `Exec` asserts the popped VM matches. Cheap assertion, catastrophic bug                                                                                                                                                           |
+| **Kernel limits mistaken for a density ceiling**    | `RLIMIT_MEMLOCK`, `vm.max_map_count`, `nofile`, `TasksMax`/`pid_max`. These fail at 500 VMs after working at 20, indistinguishably from a real ceiling. Raise and **record per run** (§7.5)                                                                                                                  |
+| **Nested-virt vs metal divergence**                 | Record the substrate in every run record, mirroring P6 §5.2's requirement to record which basis a run used                                                                                                                                                                                                   |
+| **Snapshot/host mismatch**                          | Pinned hash (§5.5) **plus a startup probe that actually restores one VM** and fails the unit if it cannot. Fail at start, not on a user's first request                                                                                                                                                      |
 
 **Memory exhaustion, in full, because the naive behaviour is bad.** `vmtouch -dl` **mlocks** the memory
 files, so the largest consumer is the one thing the kernel cannot reclaim. Swap is **off** — swapping
@@ -654,14 +709,29 @@ Cross-cut by **VMM** (Cloud Hypervisor + virtio-fs; Firecracker + block **with m
 §4.3) and **substrate** (nested C8i, `*.metal`). Reported **as a floor**, per P6 §5.2's discipline — no
 contention, no concurrency, so the real number can only be worse.
 
+**Which number governs the middle band, decided now rather than after a rung produces 8ms.** The thesis
+commits to `<15ms` and prediction 2 commits to "within 2× of the container baseline", and those two can
+disagree about the same result: at rung 1's illustrative 4ms baseline they predict ~8ms, which satisfies
+the target and fails the proceed threshold. **In the middle band the ratio governs**, because 15ms is an
+absolute borrowed from the tool-call budget while the ratio is what the tier can actually be held to — a
+1ms baseline would make 8ms an 8× regression that no absolute target would catch. `≥ 15ms` stays a hard
+stop regardless of ratio, since past it the budget is gone whatever the container costs.
+
+**Nested fires no stop rule.** It exists for iteration; metal is authoritative, which is what the
+substrate cross-cut already implies. A nested result below the proceed thresholds is encouraging and a
+nested result above them schedules a metal run — it never, by itself, stops the design or mandates the
+split. Stating that is what closes the nested half of the gap, rather than inventing two more thresholds
+for a substrate whose numbers we would not act on.
+
 **Decision rules, written before the data, with per-substrate thresholds** because nested virt taxes
 exactly the VM-exit-heavy work restore consists of:
 
-| Result                                                                                              | Action                                                                                                      |
-| --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Warm hot path **< 5ms metal / < 8ms nested** and replenishment CPU **< 25ms metal / < 40ms nested** | Proceed as designed. The VMM is then chosen on the correctness/security axis of §4.3, which cuts both ways  |
-| Warm hot path **≥ 15ms on metal**                                                                   | The design fails on its own terms. Stop and reconsider per-session resident VMs (§9's rejected alternative) |
-| Replenishment CPU **> 50ms metal**                                                                  | The split becomes **mandatory**, not a fallback — the one-line branch on `Exec.streaming` (§3.3)            |
+| Result                                                                                              | Action                                                                                                                                                                                                                       |
+| --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Warm hot path **< 5ms metal / < 8ms nested** and replenishment CPU **< 25ms metal / < 40ms nested** | Proceed as designed. The VMM is then chosen on the correctness/security axis of §4.3, which cuts both ways                                                                                                                   |
+| Warm hot path **[5, 15) ms metal**, or replenishment CPU **[25, 50] ms metal**                      | **Proceed, re-priced against the container baseline instead of against 15ms**, with the §3.3 split pre-authorised if the ratio exceeds 2×. See the paragraph below — this is the band the spec's own example numbers land in |
+| Warm hot path **≥ 15ms on metal**                                                                   | The design fails on its own terms. Stop and reconsider per-session resident VMs (§9's rejected alternative)                                                                                                                  |
+| Replenishment CPU **> 50ms metal**                                                                  | The split becomes **mandatory**, not a fallback — the one-line branch on `Exec.streaming` (§3.3)                                                                                                                             |
 
 ### 7.3 E11 — density and the replenishment ceiling
 
@@ -717,7 +787,12 @@ detector. Its contract: it takes `LadderPoint { c, throughput, p95Ms }` and **th
 
 ### 7.4 Falsifiable predictions
 
-Recorded up front, house style (`experiments/test/predictions.test.ts`):
+Recorded up front. **This spec introduces the practice rather than following one** — no spec on `main`
+records predictions before its numbers, and `experiments/test/predictions.test.ts` is the SWE-bench
+`predictions.jsonl` shape test, a name collision and not a precedent. To make the commitment binding
+rather than reinterpretable once results arrive, the four below are written to
+**`deploy/microvm/predictions.json` before the first rung**, with a test asserting the file is unchanged
+after results land (§10's file table). A prediction that can be edited to fit the data is a hypothesis.
 
 1. Replenishment binds on **process/memory count before CPU**.
 2. The warm hot path lands **within 2× of the container baseline**, because both pay the relay hop and
@@ -783,6 +858,7 @@ the rest for the next tick.
 | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Write durability**              | A file written in `Exec` N is intact in `Exec` N+1. **Both VMM arms** — this is the gate that catches a missing `sync`                                                                                                                                                           |
 | **No cross-run bleed**            | Two interleaved `workspace_key`s; neither sees the other's files. _The_ property this slice exists for                                                                                                                                                                           |
+| **Empty key is refused**          | An `Exec` carrying `workspace_key: ""` gets a counted `ExecError` from `microvm-worker` and runs nothing (§3.4). The complement of the container-arm pin below — without it, the bleed gate above tests a property that pin explicitly permits violating                         |
 | **No VM reuse**                   | The `workspace_key` assertion holds under concurrency                                                                                                                                                                                                                            |
 | **Snapshot holds no secrets**     | §5.2's invariant: scan the memory file for token patterns; assert no credential env in the guest                                                                                                                                                                                 |
 | **Leak-free teardown**            | After N `Exec`s **across R completed runs**, VM process count returns to baseline within `StandbyIdle + ReclaimScanInterval` and workspace count within `WorkspaceIdle + ReclaimScanInterval` — bounds, because at test timescales "eventually" is indistinguishable from a leak |
@@ -794,10 +870,10 @@ the rest for the next tick.
 **Two regression pins for the container path**, because "we did not break the existing sandbox" must be
 a fact and not a hope:
 
-| Pin                                       | Asserts                                                                                                                                     |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `remote-worker` untouched                 | Its test suite passes unchanged; `microvm-worker` is a separate binary, so the container arm cannot regress                                 |
-| `workspace_key` empty ⇒ today's behaviour | The new proto field is additive; an old harness against a new worker, and a new harness against `remote-worker`, both behave exactly as now |
+| Pin                                                                | Asserts                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `remote-worker` untouched                                          | Its test suite passes unchanged; `microvm-worker` is a separate binary, so the container arm cannot regress                                                                                                                                                                                       |
+| `workspace_key` empty ⇒ today's behaviour **on the container arm** | The new proto field is additive: a new harness against `remote-worker`, and an old harness against `remote-worker`, both behave exactly as now. Deliberately **not** extended to `microvm-worker` — see the gate below, since "as now" there would mean one shared workspace for every run (§3.4) |
 
 **A live gate, not a third experiment.** A small real-model run on the microVM path (E6's L1 workload,
 c ≤ 6) proving the path is genuine end to end, gated `MV_LIVE=1` after the `E6_LIVE=1` convention. It
@@ -821,6 +897,10 @@ KVM-requiring tests gated by an env var and skipped by default so `make test` st
   bound the RAM cost. Pulled in when E11 shows **idle standby residency** (§7.1) is a material fraction of
   resident memory with both in force, or when prediction 5 fails. `Pool.Reclaim` is already its call site,
   so the deferral costs no rework.
+- **The `/turn` path on the microVM tier.** It never leases (`run-turn.ts:57`), so it has no run id to
+  populate `workspace_key` with, and §3.4 refuses an empty one on the VM path rather than letting it mean
+  "share one workspace". Interactive sessions therefore stay on the container tier this slice; giving
+  `/turn` a request-scoped key is the same plumbing MU2 owes it for pool selection.
 - **Multi-host placement, discovery or rebalancing.** Single host, vertical only — same boundary P6 §8
   draws, for the same reason.
 - **gVisor and Kata arms.** P4's registry row lists them; this slice takes the KVM/microVM arm only.
@@ -860,6 +940,7 @@ Confirming them is E10's **first** task, not its last.
 | `remote-worker/cmd/vmpoolctl/main.go`              | **New** CLI — drives E10 with no relay (§3.1)                                          |
 | `remote-worker/internal/guestagent/`               | **New** — the in-guest static binary (framed vsock protocol, parked `bash`, §5.4)      |
 | `deploy/microvm/`                                  | **New** — snapshot build script, systemd units, E10/E11 drivers, `EXPERIMENTS.md`      |
+| `deploy/microvm/predictions.json`                  | **New** — §7.4's four predictions, written before the first rung, pinned by a test     |
 | `docs/experiment-results.md`                       | Pointer to `deploy/microvm/EXPERIMENTS.md` (§7.6)                                      |
 | `docs/specs/README.md`                             | P4 row: `planned` → this design                                                        |
 
@@ -885,9 +966,12 @@ files you changed over a repo-wide run.
 `pnpm install` at the root. `make typecheck` is `pnpm -r typecheck`. Tests needing Redis want the
 `sh-test-redis` container on `:6379`.
 
-**Git remotes here.** An HTTPS proxy MITMs GitHub with a private CA, so every `git` network command
-needs `-c http.sslCAInfo=/Users/paolo/.cortex/ca/ca.crt`, and `gh`'s GraphQL-backed subcommands fail
-outright — use `curl --cacert … -H "Authorization: Bearer $(gh auth token)"` against `api.github.com`.
+**Git remotes here.** An HTTPS proxy MITMs GitHub with a private CA, so every `git` network command needs
+the CA. Set it once — `git config --global http.sslCAInfo "$HOME/.cortex/ca/ca.crt"` — rather than passing
+`-c http.sslCAInfo=…` on each command; that also fixes `gh`'s HTTPS calls, leaving only its
+GraphQL-backed subcommands failing outright — for those use
+`curl --cacert "$HOME/.cortex/ca/ca.crt" -H "Authorization: Bearer $(gh auth token)"` against
+`api.github.com`.
 `upstream` (kagenti) and `rossoctl` are the same repository after an org rename.
 
 **Experiment rig.** E10/E11 need a host with `/dev/kvm`: a nested-virt EC2 **C8i/M8i/R8i** instance for

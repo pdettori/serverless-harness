@@ -14,8 +14,9 @@ seccomp. [P4](https://github.com/rossoctl/serverless-harness/issues/57) has alwa
 changes this, and [P6](../specs/2026-09-08-p6-vm-process-manager-design.md) §8 explicitly defers
 Firecracker/gVisor/Kata to it.
 
-**P4's own stated blocker has expired.** `docs/specs/README.md:84` records it as "infra-gated … **no
-nested KVM on the m6i cluster**." AWS
+**P4's own stated blocker has expired.** At `45a218d`, `docs/specs/README.md:84` **recorded** it as
+"infra-gated … **no nested KVM on the m6i cluster**" — pinned, because the slice this ADR records rewrites
+that row. AWS
 [enabled nested virtualization on virtual EC2 instances in February 2026](https://aws.amazon.com/about-aws/whats-new/2026/02/amazon-ec2-nested-virtualization-on-virtual/)
 (C8i/M8i/R8i, all commercial regions), and P6 establishes a non-Kubernetes VM substrate where a
 bare-metal host needs no cluster. So the gate is now a cheap nested instance for iteration plus a
@@ -135,21 +136,29 @@ cannot be escaped.
 - Negative / accepted cost: **D standby VMs per active run** are held for the run's whole duration,
   including the gaps where it is parked on the model — D × 2 processes on Cloud Hypervisor, D × 1 on
   Firecracker — **plus a tail after the run's last `Exec`**, since the worker never sees lease release and
-  reclamation is therefore driven by idle thresholds. Bounded rather than hoped away (spec §4.4): a
-  `ReplenishDelay` so a finishing run does not mint standbys it will never use, and a sweep triggered on
-  every `Exec` **and** on a ticker — because the run needing reclamation is the one issuing no requests, so
-  the tier-above "swept by the next acquire" discipline supplies the shape but not the trigger.
-- Negative / accepted cost: **two idle thresholds, not one** — `StandbyIdle` (90s) drops paused VMs while
-  `WorkspaceIdle` (2h) removes the tree. Both are crash backstops rather than lifecycle: "is the run
-  finished?" is unanswerable when a session may sit on a human gate indefinitely, but reclamation does not
-  need it. The harness already brackets a workspace per dispatch — converge on entry, `cleanupWorkspace` in
-  a `finally` on every exit (`run-leaf.ts:665`, `:816`) — and the tree is a detached worktree at a pinned
-  commit, so re-deriving it is free of consequence. Making that `finally` explicit on the wire would reduce
-  both thresholds to pure crash handling; deferred as a second wire change with a stated trigger (spec §9).
+  reclamation is therefore driven by idle thresholds, swept on every `Exec` **and** on a ticker — because
+  the run needing reclamation is the one issuing no requests, so the tier-above "swept by the next acquire"
+  discipline supplies the shape but not the trigger. `ReplenishDelay` narrows the tail but cannot close it:
+  a dispatch's last wire event is `cleanupWorkspace`, which `vmpool` cannot distinguish from work, so it
+  pops a standby and triggers a refill for a run that is over (spec §4.4). ~15 GiB at the stated defaults.
+- Negative / accepted cost: **two idle thresholds, not one** — `StandbyIdle` (90s) drops paused VMs,
+  `WorkspaceIdle` (30m, interim) removes the workspace. They are the **mechanism**, not a backstop: "is the
+  run finished?" is unanswerable when a session may sit on a human gate indefinitely, and the harness's own
+  `cleanupWorkspace` is an in-guest `Exec` that cannot reach the host directory, so nothing else ever
+  deletes one. Safe to fire early nonetheless, because the tree is a detached worktree at a pinned commit
+  and continuity lives in the Redis session log — re-deriving costs a fetch, never data. A `Release` frame
+  would remove both the standby tail and the retained trees; deferred as a second wire change with a stated
+  trigger (spec §9).
 - Follow-up owed, found while specifying the above: **the per-run workspace defeats converge's repo
   cache.** `/workspace/repo` is shared across leaves on a pooled pod today; inside a per-run mount every run
   pays a full fetch. Three candidate shapes and the requirement to time converge separately are recorded in
-  spec §4.5 — undecided, because the choice wants E10's numbers.
+  spec §4.5 — undecided, because the choice wants E10's numbers, and it also sets `WorkspaceIdle`, since
+  retained workspaces hold whatever that choice leaves in them.
+- Negative / accepted cost: **`microvm-worker` refuses an empty `workspace_key`** (spec §3.4), so the
+  additive-field compatibility pin covers the container arm only. Without the refusal, one empty string
+  would collapse every run into one workspace directory and one standby pool while the cross-run-bleed test
+  still passed. Consequence: **`/turn` cannot use the VM tier this slice** — it never leases, so it has no
+  run id to send.
 - Negative / accepted cost: **one golden snapshot per sandbox image**, each `mlock`ed by `vmtouch -dl`,
   so the warm image set is bounded by `Σ(memfile)` in RAM rather than by VM count.
 - Negative / accepted cost: we knowingly resume one snapshot many times, which Firecracker documents as
