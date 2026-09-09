@@ -40,7 +40,8 @@ API, the session-ownership index, per-user credential storage, and resource intr
 in a new `MU` (multi-user service) track rather than as a Phase-2 `Z` id — Phase 2 is a security
 architecture, this is a product surface. It
 authenticates users (GitHub OAuth in slice 1), mints an **Ed25519** session token carrying subject and
-session id but **no secret**, and the data plane exchanges that token over mTLS for the subject's
+session id but **no secret**, and the data plane exchanges that token — over a shared-secret-authenticated
+internal hop, reusing the `SH_RELAY_TOKEN` pattern already in the tree — for the subject's
 credential at the start of each turn.
 
 We accept, and contain, a **divergence from Z1 §2**: that table gives the orchestrator "Holds secrets?
@@ -99,6 +100,15 @@ The containments are the reason the cost is bounded:
   logged rather than ambient in the harness.
 - Negative / accepted cost: revoking a user at the identity provider does not stop their scheduled runs,
   because the stored credential — not an OIDC grant — is what authorizes background egress.
+- Negative / accepted cost: auth on the data plane ships behind **`SH_REQUIRE_AUTH`, default `false`**,
+  because 14 existing `deploy/knative/` scripts call `/turn` and `/runs` unauthenticated. A deployment
+  that does not set the flag keeps today's behaviour and makes none of the isolation claims. A
+  present-but-invalid token fails in either mode — the flag governs whether auth is _required_, never
+  whether it is _enforced_. Flipping the default and updating those callers is MU2.
+- Negative / accepted cost: the internal exchange is authenticated by a shared token, so any code able
+  to run in the harness pod can call it. Bounded by the exchange returning only the subject named in a
+  **signed** token the harness cannot mint; Z1's per-session SVIDs replace it with a per-session
+  caller identity, which a shared secret cannot express.
 - Follow-up owed: slice 1 ships a **shared** sandbox pool, so two users' leaves can land on the same
   pod; isolation holds at the API, session store, and inference credential only, and the demo says so.
   The tenant-labelled partition is blocked on the ADR-0028 deferral at `server.ts:308-320`, where a
