@@ -70,6 +70,26 @@ Preview everything without applying: add `--dry-run` (prints the rendered manife
 Environment: `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`+`ANTHROPIC_BASE_URL`;
 `SH_MODEL`, `SH_MODEL_CUSTOM`; `KNATIVE_VERSION`, `KEDA_VERSION`.
 
+## Image tags: `:latest` vs. pinned releases
+
+The `:latest` default tracks whatever `build.yaml` last pushed from `main` — fine for
+day-to-day dev, but don't rely on it to install a specific release. Two traps:
+
+- **Tag-name mismatch**: pushing git tag `v0.3.0` publishes image tag `0.3.0` (no `v`
+  prefix) — `docker/metadata-action`'s `semver` pattern strips it.
+- **Stale Revisions**: every manifest here sets `imagePullPolicy: IfNotPresent`. Knative
+  only cuts a new Revision when the rendered manifest text changes, so if you stay on
+  `:latest` and only the underlying digest changes, `kubectl apply` sees no diff, no new
+  Revision is created, and nodes can keep serving the previously cached image.
+
+To install a specific release, pass the versioned tag explicitly instead of relying on
+the default:
+
+```bash
+--image ghcr.io/rossoctl/serverless-harness:0.3.0 \
+--sandbox-image ghcr.io/rossoctl/serverless-harness-sandbox:0.3.0
+```
+
 ## Building the images
 
 Unlike Kind, this script takes **prebuilt** images — build and push them yourself,

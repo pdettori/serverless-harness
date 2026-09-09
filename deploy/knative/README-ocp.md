@@ -88,6 +88,12 @@ are kustomize patches, not forked YAMLs.
 -h, --help               Show help
 ```
 
+> **Pinning a release:** `:latest` tracks `main`, not any specific tag — to install a
+> specific release, pass the versioned image tag explicitly (e.g. `:0.3.0`) via `--image`/
+> `--sandbox-image` rather than relying on `:latest`. See
+> [README-k8s.md](README-k8s.md#image-tags-latest-vs-pinned-releases) for why `:latest` +
+> `imagePullPolicy: IfNotPresent` can leave you on a stale image.
+
 The script is **idempotent** — safe to re-run; it skips operators/CRs that already exist.
 
 ## Choosing the model
