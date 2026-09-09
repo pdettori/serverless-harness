@@ -140,12 +140,16 @@ cannot be escaped.
   every `Exec` **and** on a ticker — because the run needing reclamation is the one issuing no requests, so
   the tier-above "swept by the next acquire" discipline supplies the shape but not the trigger.
 - Negative / accepted cost: **two idle thresholds, not one** — `StandbyIdle` (90s) drops paused VMs while
-  `WorkspaceIdle` (2h) deletes the tree. A single TTL cannot serve both: a resumed gate presents the same
-  `workspace_key` (`run-leaf.ts:76`), so an aggressive one would delete a parked run's uncommitted work —
-  for a solve leaf, the candidate patch — while a conservative one pins D VMs per finished run for hours.
-  Making lease release explicit on the wire would reduce both to crash backstops, and is the only signal
-  that can distinguish "finished" from "parked at a gate"; deferred as a second wire change with a stated
-  trigger (spec §9).
+  `WorkspaceIdle` (2h) removes the tree. Both are crash backstops rather than lifecycle: "is the run
+  finished?" is unanswerable when a session may sit on a human gate indefinitely, but reclamation does not
+  need it. The harness already brackets a workspace per dispatch — converge on entry, `cleanupWorkspace` in
+  a `finally` on every exit (`run-leaf.ts:665`, `:816`) — and the tree is a detached worktree at a pinned
+  commit, so re-deriving it is free of consequence. Making that `finally` explicit on the wire would reduce
+  both thresholds to pure crash handling; deferred as a second wire change with a stated trigger (spec §9).
+- Follow-up owed, found while specifying the above: **the per-run workspace defeats converge's repo
+  cache.** `/workspace/repo` is shared across leaves on a pooled pod today; inside a per-run mount every run
+  pays a full fetch. Three candidate shapes and the requirement to time converge separately are recorded in
+  spec §4.5 — undecided, because the choice wants E10's numbers.
 - Negative / accepted cost: **one golden snapshot per sandbox image**, each `mlock`ed by `vmtouch -dl`,
   so the warm image set is bounded by `Σ(memfile)` in RAM rather than by VM count.
 - Negative / accepted cost: we knowingly resume one snapshot many times, which Firecracker documents as
