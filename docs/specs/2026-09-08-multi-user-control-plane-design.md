@@ -67,7 +67,8 @@ on properties the process cannot violate rather than on care.
 
 ## 2. Current state — verified, with citations
 
-Traced in the tree at `b533d87`, not inferred.
+Traced in the tree at `b533d87`, not inferred; re-verified at `1deacac` after P5 merged, which
+changed no code and so shifted no line number.
 
 ### 2.1 There is no principal anywhere
 
@@ -148,7 +149,7 @@ flowchart TB
     CP[control-plane<br/>Deployment, always on<br/>auth · ownership · credentials · introspection]
     CP -->|2. session token Ed25519| U
     U -->|3. POST /turn + token, SSE direct| K[Knative Service<br/>scale-to-zero]
-    K -->|4. exchange token for credential, mTLS| CP
+    K -->|4. exchange token for credential, shared token| CP
     CP --> S[(K8s Secrets<br/>sh-credentials ns)]
     CP --> R[(Redis<br/>sh:cp:* index)]
     CP -->|read| A[K8s API<br/>pods]
@@ -371,7 +372,7 @@ version break on `/turn` would run two migrations at once against live orchestra
 | `POST\|GET\|DELETE /v1/schedules` | 2     | owner recorded at creation (§5.5)                                                                        |
 | `POST /v1/runs`                   | 2     | user-owned async dispatch                                                                                |
 | `GET /healthz`, `/readyz`         | 1     |                                                                                                          |
-| `POST /internal/credentials`      | 1     | mTLS, data plane only — §5.3                                                                             |
+| `POST /internal/credentials`      | 1     | data plane only, `SH_EXCHANGE_TOKEN` — §5.3.1                                                            |
 
 ### 4.3 Data plane (existing Knative Service)
 
@@ -384,6 +385,32 @@ version break on `/turn` would run two migrations at once against live orchestra
 
 `POST /turn` enforces exactly one rule: **`token.sid === body.sessionId`**. It performs no ownership
 lookup — it holds no ownership data and should not.
+
+#### 4.3.1 Rollout: `SH_REQUIRE_AUTH`, default off
+
+"Requires a session token" cannot mean "always", because **14 scripts in `deploy/knative/` call
+`/turn` or `/runs` with no auth today** — including `setup-kind.sh`, `setup-ocp.sh`, `smoke.sh`,
+`leaf-smoke.sh`, `leaf-async-smoke.sh`, `leaf-gate-smoke.sh`, `turn-stream-smoke.sh`, `lib.sh`,
+`e6-saturation.sh`, and both demos. Making the token mandatory in one step breaks every smoke path
+and both demos simultaneously, which is the kind of change that gets reverted rather than fixed.
+
+So the data plane reads **`SH_REQUIRE_AUTH`**, defaulting to **`false`**:
+
+| `SH_REQUIRE_AUTH` | No token                                      | Valid token                         | Invalid/expired token               |
+| ----------------- | --------------------------------------------- | ----------------------------------- | ----------------------------------- |
+| `false` (default) | proceeds exactly as today, ambient credential | subject + credential from the token | **401** — never silently downgraded |
+| `true`            | **401** `token_required`                      | subject + credential from the token | **401**                             |
+
+Two properties this table is shaped to guarantee:
+
+- **A present-but-bad token always fails**, in either mode. The flag governs whether auth is
+  _required_, never whether it is _enforced_ — "unauthenticated is allowed here" and "this bad token
+  is close enough" are different statements, and only the first is a deployment choice.
+- **The multi-user demo runs with `SH_REQUIRE_AUTH=true`**, so the property being demonstrated is the
+  real one, not the permissive default.
+
+Existing scripts are untouched by MU1. Flipping the default to `true` — and updating those 14 callers
+to obtain a token — is **MU2**, once the control plane is deployed by default rather than opt-in.
 
 ---
 
@@ -405,6 +432,32 @@ Behind an `IdentityProvider` seam:
 Rejected for slice 1: running Dex with a GitHub connector and writing only the generic verifier.
 Cleaner long-term, but it adds a second new deployable to the demo path to defer code needed anyway.
 
+#### 5.1.1 What the demo needs before it can run
+
+`demo-multiuser.sh` is a shell script, so it cannot complete a browser redirect. GitHub's **OAuth
+device flow** is the right fit and is what MU1 implements:
+
+```
+POST https://github.com/login/device/code        → { device_code, user_code, verification_uri }
+   operator visits github.com/login/device, enters the code as Alice, then as Bob
+POST https://github.com/login/oauth/access_token → poll until authorized
+```
+
+Prerequisites, which are **manual, one-time, and outside any script**:
+
+- A registered GitHub **OAuth app** with **device flow enabled** (it is off by default).
+- `SH_GITHUB_CLIENT_ID` set on the control plane. **No client secret is needed** — the device flow
+  treats the app as a public client, which is also why this is safe to run from a script that a
+  developer reads.
+- Two GitHub accounts, to be Alice and Bob. The demo cannot fabricate two subjects, because the whole
+  point is that the subject is attested by GitHub rather than asserted by the caller.
+
+The browser **authorization-code** flow — which does need a client secret and a registered redirect
+URI — is only required by a web UI, and is therefore **MU2**, alongside the generic `oidc` provider.
+
+The demo script must skip with a clear message, not fail, when `SH_GITHUB_CLIENT_ID` is unset, in the
+style of the existing env-gated live smokes.
+
 ### 5.2 The session token
 
 A JWT signed with **Ed25519**; the private key is a control-plane Secret, and the data plane receives
@@ -421,9 +474,24 @@ tenant, scope=["turn:write"], exp=+5min, jti
 
 **No credential travels in the token.** It is a capability naming a subject and a session.
 
+**Key distribution and rotation.** The JWT header carries a **`kid`**, and the data plane reads
+`SH_SESSION_TOKEN_PUBLIC_KEYS` — a comma-separated list of `<kid>:<base64 Ed25519 public key>`. A
+public key is not a secret, so this is plain configuration on the Knative Service, not a Secret mount.
+
+Accepting a _list_ is what makes rotation possible without a flag day: publish the new key alongside
+the old, roll the Service, switch the control plane to signing with the new `kid`, then drop the old
+entry. Tokens minted before the switch keep verifying for their five-minute lifetime.
+
+Deliberately **not** a JWKS endpoint on the control plane. Fetching keys at verify time would put a
+control-plane round trip on the critical path of every turn and undo §9.2's property that an
+identity-provider or control-plane outage does not break running work — verification stays local
+arithmetic. The cost is that rotation is a config roll rather than automatic, which for a key that
+rotates on the order of months is the right trade.
+
 ### 5.3 The credential exchange
 
-At turn start the data plane exchanges the presented token for that subject's credential, over mTLS:
+At turn start the data plane exchanges the presented token for that subject's credential (authenticated
+per §5.3.1):
 
 ```
 harness ──POST /internal/credentials { token } ──▶ control plane
@@ -435,6 +503,31 @@ credential's `endpoint`, else the deployment default, else the exchange refuses 
 `endpoint_unresolved` (§6.2) — it is never returned undefined, because `run-turn.ts:313` would then
 fall through to the environment and, failing that, send the subject's token to the default endpoint
 with no `baseUrl` override.
+
+#### 5.3.1 How the harness authenticates to the exchange
+
+`/internal/credentials` hands out real credentials, so it must not be callable by anything that can
+merely reach the control plane's Service.
+
+**MU1 reuses the pattern this repo already runs**: a shared bearer token from a Secret, fail-closed on
+mismatch — exactly how the relay and remote worker authenticate to each other today
+(`SH_RELAY_TOKEN` from the `sh-relay-token` Secret, `relay-deployment.yaml:45`,
+`worker-deployment.yaml:35-43`). Here it is `SH_EXCHANGE_TOKEN`, mounted into both the control plane
+and the Knative Service from one Secret; a request without it, or with the wrong value, gets **401**
+and is not logged with the presented value.
+
+Earlier drafts of this spec said "mTLS" in three places without saying where certificates come from.
+On kind or on OCP without SPIRE that is a non-trivial build — cert issuance, rotation, and trust
+distribution — for a hop that has exactly two participants, both operator-deployed, inside one
+cluster. A shared token gets the same property (only the harness can call the exchange) at a fraction
+of the cost, and it is a pattern already in the tree with a working precedent.
+
+**mTLS remains the target, and Z1 is what makes it cheap.** Once per-session SPIFFE identities exist,
+the exchange authorizes on the peer's SVID instead of a shared secret, and gains what a shared token
+cannot give: the _caller_ is identified per session rather than per deployment. Until then, this hop's
+weakness is that any code running in the harness pod can call the exchange — which is already true of
+anything the harness can reach, and is why the exchange returns only the credential for the subject
+named by a **signed** token it cannot mint (§5.2), not an arbitrary one.
 
 If the credential rode inside the token, a client-visible bearer string would contain a provider key —
 landing in browser storage, proxy logs, and shell history. This keeps it server-side and matches the
@@ -660,6 +753,12 @@ the harness wrote. `owner` lives only in `sh:cp:session:<sid>`, written only by 
 
 ### 8.1 What slice 1 guarantees
 
+Everything in this table assumes **`SH_REQUIRE_AUTH=true`** (§4.3.1), which is what the demo runs and
+what a multi-user deployment sets. Under the permissive default the control-plane routes are unchanged
+— they always require a token — but the _Session drive_ row does not hold on `/turn`, because a request
+with no token has no `sid` to bind against. A deployment that wants the guarantees below sets the flag;
+one that has not enabled multi-user keeps today's behaviour and makes no claim.
+
 | Layer                  | Property                                                          | Mechanism                                                                                              |
 | ---------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | API                    | a user sees and deletes only their own sessions                   | `assertOwner`, owner zset, 404 on mismatch                                                             |
@@ -727,7 +826,9 @@ already in `server.ts`.
 
 | Condition                                                 | Code                             | Status                       |
 | --------------------------------------------------------- | -------------------------------- | ---------------------------- |
-| Missing, invalid, or expired token                        | `token_invalid`, `token_expired` | 401                          |
+| Missing token while `SH_REQUIRE_AUTH=true`                | `token_required`                 | 401                          |
+| Invalid or expired token (either mode)                    | `token_invalid`, `token_expired` | 401                          |
+| Exchange called without `SH_EXCHANGE_TOKEN`               | `unauthorized`                   | 401                          |
 | Non-owner on a session route                              | `session_not_found`              | 404                          |
 | Non-admin passing `?owner=`                               | `forbidden`                      | 403                          |
 | Owner has no inference credential                         | `credential_required`            | 400                          |
@@ -787,11 +888,11 @@ Live smoke gated by env var per existing convention: `MULTIUSER_LIVE_SMOKE=1` �
 
 ## 10. Slices
 
-| Slice       | Contents                                                                                                                                                                                                                                                                                          |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1** (MU1) | `packages/control-plane`; `github-oauth`; Ed25519 session token + `/internal/credentials` exchange; `/v1/sessions` CRUD + `/resources`; `/v1/credentials` (all kinds stored, `inference` delivered); subject-from-token on `/turn` (§3.5); `docs/api/openapi.yaml`; `demo-multiuser.sh`; ADR-0033 |
-| **2** (MU2) | Tenant-labelled pool partition (needs §11.1); `sandbox-egress` delivery for git operations; quotas and cost attribution; generic `oidc` provider; owned `/v1/schedules` and `/v1/runs`. The leaf/CLI credential paths are **P5's**, not this slice's (§3.5)                                       |
-| **3** (MU3) | Z3/Z5 injector-resolved credentials; retire the §3.3 and §3.6 divergences by deleting direct mode; Vault or ESO behind `CredentialStore`                                                                                                                                                          |
+| Slice       | Contents                                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1** (MU1) | `packages/control-plane`; `github-oauth`; Ed25519 session token + `/internal/credentials` exchange; `/v1/sessions` CRUD + `/resources`; `/v1/credentials` (all kinds stored, `inference` delivered); subject-from-token on `/turn` behind `SH_REQUIRE_AUTH` (§4.3.1); GitHub device flow (§5.1.1); `SH_EXCHANGE_TOKEN` on the exchange (§5.3.1); `docs/api/openapi.yaml`; `demo-multiuser.sh`; ADR-0033 |
+| **2** (MU2) | Flip `SH_REQUIRE_AUTH` to `true` by default and update the 14 existing callers (§4.3.1); browser authorization-code flow for a web UI (§5.1.1); tenant-labelled pool partition (§8.2); `sandbox-egress` delivery for git operations; quotas and cost attribution; generic `oidc` provider; owned `/v1/schedules` and `/v1/runs`. The leaf/CLI credential paths are **P5's**, not this slice's (§3.5)    |
+| **3** (MU3) | Z3/Z5 injector-resolved credentials; retire the §3.3 and §3.6 divergences by deleting direct mode; Vault or ESO behind `CredentialStore`                                                                                                                                                                                                                                                                |
 
 The demo lands in slice 1: two GitHub logins, two sessions, each user's list containing only their own,
 a 404 across tenants, a `/resources` projection, and — on the `/turn` path — a credential property that
