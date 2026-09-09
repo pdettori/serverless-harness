@@ -24,10 +24,12 @@ seam already has a gRPC path whose Go worker dials out and needs no inbound rout
 capacity leases, session state, the work queue and leaf results are all Redis; the HTTP surface is
 plain `node:http` with no Knative coupling anywhere in `src`; MU1 already put credentials behind a
 `CredentialStore`. Two further facts decide the shape. First, the sandbox tier is not the bottleneck
-and needs no change: E6 measured per-leaf sandbox duty at **6–8%** on real code-review leaves
-(N ≈ 12–24:1, cluster-dependent), and E7 measured **2–4%** on mixed-ref converge leaves (N ≈ 29–48:1) —
-two workloads, two bases, deliberately not blended, since `EXPERIMENTS.md:65` supersedes the 29–48:1
-figure for real-converge work and the spec provisions from E6's row (spec §2.3, §5.4). Second, E2
+and needs no change: on real code-review leaves E6 measured per-leaf sandbox duty at **0.061–0.079** on
+OCP (N ≈ 12.6–16.5) and **0.042–0.051** on Kind (N ≈ 19.7–24.0), while E7 measured **0.021/0.035** on
+mixed-ref converge leaves (N ≈ 28.6–47.6). Three rows, deliberately never blended — a basis is a row,
+not an experiment, since each `(duty, N)` pair only holds within one — and the spec provisions from
+**E6/OCP**, the conservative row, since `EXPERIMENTS.md:65` supersedes the 29–48:1 figure for
+real-converge work (spec §2.3, §5.4). Second, E2
 measured session rehydration at a **constant 6 entries / ~900 bytes** regardless of session length, so
 warm in-process session state is worth far less than intuition suggests.
 
@@ -59,12 +61,14 @@ an `export`, so Knative behaviour is unchanged by construction rather than by te
 
 **Routing is least-in-flight behind a `RoutingPolicy` seam**, mirroring `orderByLoad` — P2's
 least-loaded-under-a-cap discipline applied one tier up. Sticky affinity is a **sweep variant**, so
-E8 prices warmth empirically instead of us assuming it. Sticky keys on an `X-SH-Session` **header** set
-by the sweep driver, not on the session id, because that id is read from the JSON body
+E8 prices warmth empirically instead of us assuming it. Sticky keys on an `X-SH-Session-Id` **header**
+set by the sweep driver, not on the body's session id, because that id is read from the JSON body
 (`server.ts:93-101`) and `/turn` is matched on exact URL equality (`:564`) — parsing the body in the
-supervisor would put bytes on the accept path and undo the hand-off decision above. The consequence is
-that sticky is measurable but not adoptable without a client-contract addition, which the finding must
-state.
+supervisor would put bytes on the accept path and undo the hand-off decision above. Hand-off also makes
+the affinity **connection-scoped**: the supervisor inspects a connection once and then holds nothing, so
+the key is the _first_ request's id and the sticky arm must run one connection per session. The
+consequence is that sticky is measurable but not adoptable without two client-contract additions — the
+header, and not multiplexing sessions over one connection — which the finding must state.
 
 **We add exactly one platform seam** — `SH_SANDBOX_DISCOVERY=pods|records|both`, defaulting to today's
 behaviour — and explicitly **no `PlatformAdapter`**: each Kubernetes dependency is a different kind of

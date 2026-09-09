@@ -94,32 +94,36 @@ remote-sandbox demo exercises with a laptop `docker run`.
 | pod `securityContext` | non-root, ro-rootfs, seccomp          | systemd directives; not claimed (§4.3) |
 | NetworkPolicy         | default-deny egress                   | no single-host equivalent; Z2/Z5 (§8)  |
 
-### 2.3 The sandbox tier is not the bottleneck — and there are two numbers, not one
+### 2.3 The sandbox tier is not the bottleneck — and there are three rows, not one number
 
 Both E6 and E7 found one sandbox absorbing the offered concurrency without saturating — E6 at C_max
 (`:96`, `:98`), E7 up to 16 concurrent leaves on both runtimes (`:120`, `:161`) — so this slice changes
-**nothing** below the worker line. But the duty figures they report are **two
-measurements of two workloads**, and the ratio they imply differs by ~2.4×. They must not be blended,
-because §5.4 makes duty drive stub calibration and the ratio drive sandbox provisioning — mixing the
-optimistic ratio with the pessimistic duty under-provisions the sandbox tier by exactly that factor.
+**nothing** below the worker line. But the duty figures they report are **separate measurements of
+different workloads on different clusters**, and the ratios they imply span ~3.8× end to end. They must
+not be blended, because §5.4 makes duty drive stub calibration and the ratio drive sandbox
+provisioning — pairing an optimistic ratio with a pessimistic duty under-provisions the sandbox tier by
+whatever the mismatch is (up to 2.4× across experiments, 1.9× across E6's two clusters alone).
 
-| Basis  | Workload                                | Duty (per-leaf)                   | Implied N         | Cite           |
-| ------ | --------------------------------------- | --------------------------------- | ----------------- | -------------- |
-| **E6** | real Archetype-A code review (L0/L1/L2) | **0.06–0.08**                     | **12–17:1** (OCP) | `:94`, `:96`   |
-|        | same, Kind                              | ~0.04–0.05 (derived from N)       | ~20–24:1          | `:62`, `:98`   |
-| **E7** | `E7_REFS` mixed-ref converge            | 0.021 Kind / 0.035 OCP (**2–4%**) | **29–48:1**       | `:161`, `:168` |
+A **basis is a row, not an experiment** — the cluster splits E6 as surely as the workload splits E6 from
+E7, so all three rows are named separately and each is taken whole:
 
-The pairs are internally consistent because N ≈ 1/duty; a pair that fails that check has been blended
-from two rows. **P6 provisions from the E6 row**, for a reason the tree states rather than one we
+| Basis       | Workload                                | Duty (per-leaf) | Implied N     | Cite           |
+| ----------- | --------------------------------------- | --------------- | ------------- | -------------- |
+| **E6/OCP**  | real Archetype-A code review (L0/L1/L2) | **0.061–0.079** | **12.6–16.5** | `:88-94`       |
+| **E6/Kind** | same                                    | 0.042–0.051     | 19.7–24.0     | `:76-80`       |
+| **E7**      | `E7_REFS` mixed-ref converge            | 0.021 / 0.035   | 28.6–47.6     | `:121`, `:161` |
+
+Each row's pair is internally consistent because N ≈ 1/duty; a pair that fails that check has been
+blended from two rows. **P6 provisions from E6/OCP**, for a reason the tree states rather than one we
 prefer: `EXPERIMENTS.md:65` records that E6's real-converge finding **supersedes "the earlier single-N
 figure (N ≈ 29–48:1), which used a trivial `marker.txt` leaf with no real converge"** — and E7's
-numerically identical 29–48:1 comes from a 13.9 s leaf wall against E6's ~6–7 s, i.e. a lighter
-sandbox share of a longer turn. So 29–48:1 is the light-leaf end of the range and 12–24:1 is the
-code-review end; provisioning from the latter is both the authoritative reading and the conservative
-direction. §5.4 pins one basis for the driver and forbids mixing.
+numerically identical 29–48:1 comes from a 13.9 s leaf wall against E6's ~6.1–7.1 s, i.e. a lighter
+sandbox share of a longer turn. So E7 is the light-leaf end of the range and E6 the code-review end;
+within E6, OCP's EBS-backed `/workspace` makes the same ~2 git execs costlier (`:94`), which is why it
+is the conservative row. §5.4 pins one row for the driver and forbids mixing.
 
 "Changes nothing" is not the same as "nothing to watch", and there are two open questions rather than
-one. Both bases were measured on the **kubectl** path, which has a persistent fast channel the gRPC
+one. Every row was measured on the **kubectl** path, which has a persistent fast channel the gRPC
 path lacks (§3.1a); and E6's 6–8% appears both as per-leaf duty (`:94`) and as the pinned sandbox's
 busy fraction at C_max (`:96`), which are not the same quantity even where the range coincides. Both
 are why §5.2 instruments the sandbox tier and requires the driver to record its basis, rather than
@@ -175,8 +179,8 @@ flowchart TB
 The sandbox pool is **self-registering, not statically configured.** Presence is written on a live
 `Attach` stream and removed when it closes (`remote-worker/DESIGN.md:29-30`), so on a VM a
 `docker run` joins the pool and a stop leaves it — no manifest, no label query, no `kubectl`. What is
-fixed is the _count_: there is no autoscaler, and K comes from the provisioning ratio of the duty basis
-§5.4 pins (E6's, so 12–24:1), via `KAGENTI_SANDBOX_CAP`.
+fixed is the _count_: there is no autoscaler, and K comes from the provisioning ratio of the row §5.4
+pins (E6/OCP, so 12.6–16.5), via `KAGENTI_SANDBOX_CAP`.
 
 ### 3.1a The relay stays — and what that costs, stated fully
 
@@ -264,19 +268,41 @@ id is not in the request head today: `server.ts:93-101` reads it from the **pars
 (`JSON.parse(body)`, then `const { sessionId, prompt } = parsed`), and `/turn` is matched on method plus
 **exact URL equality** (`:564`, `req.method === 'POST' && req.url === '/turn'`), so no path segment or
 query string carries it either — and adding `?sid=` would not even route without touching that match.
-So `stickyBySession` reads **`X-SH-Session`**, which the E8 sweep driver sets, and which travels in the
-head exactly as `X-SH-Subject` already does (§3.6). The body contract is untouched, the stateless
-default reads nothing, and §3.9's `head?` row stays a genuinely head-sized read.
+So `stickyBySession` reads **`X-SH-Session-Id`**, which the E8 sweep driver sets, and which travels in
+the head exactly as `X-SH-Subject` already does (§3.6). The name is `-Id` deliberately: MU1's header
+table (§3.5, owner §5.2) claims `Authorization: Bearer <session token>` for _may this caller use the
+harness_, so a bare `X-SH-Session` would put a credential and a resumable-state identifier under one
+word — and the credential is the meaning an implementer meets first, since it is the header that gates
+the request. The body contract is untouched, the stateless default reads nothing, and §3.9's `head?` row
+stays a genuinely head-sized read.
 
 The alternative — buffer and JSON-parse the body in the supervisor — is rejected for the reason §3.2
 exists: it puts request bytes and a parse on the accept path, reintroducing the confound structurally
 and turning sticky's supervisor cost into a term E8 would have to measure rather than one that is
 free. That would corrupt the cost side of the very knob this section says the experiment prices.
 
-**The price, stated:** sticky is therefore **not adoptable as-is** — a production client would have to
-start sending `X-SH-Session`, or `/turn` would have to carry the id in the head. E8 prices sticky's
-_benefit_ honestly; the header is the precondition that benefit is contingent on, and it belongs in the
-finding rather than in a footnote.
+**Sticky affinity is connection-scoped, keyed by the first request on the connection.** This follows
+from §3.2 rather than from a choice: the supervisor inspects a connection **once**, at accept time, and
+then gives the socket away, so it holds nothing afterwards. Every later request on that keep-alive
+connection reaches the worker the _first_ `X-SH-Session-Id` selected, and a second session id arriving
+on it is neither seen nor re-routable. The document already depends on this fact twice — the paragraph
+above argues against connection-level round-robin because "a driver reuses keep-alive connections", and
+§3.9's over-admission row is a second turn on an already-handed-off socket — so what was missing was
+sticky's dependence on it, not the fact.
+
+That makes a driver requirement, not a caveat: **the sticky arm runs one connection per session** (a
+per-session agent, or `Connection: close`), because Node's `http.globalAgent` and `undici` both pool by
+default. A pooled driver would degenerate sticky toward whatever its pool does, so affinity hit-rate
+would measure the driver's connection reuse and the arm would price warmth at ~0 — reading as "affinity
+isn't worth it" with nothing in the data to separate that from a genuine null result. §5.2 therefore
+records connections-per-session per rung alongside the duty basis, and §7 asserts the semantics
+directly.
+
+**The price, stated:** sticky is therefore **not adoptable as-is**, and the ask is larger than one
+header. A production client would have to send `X-SH-Session-Id` (or `/turn` would have to carry the id
+in the head) **and** not multiplex sessions over one connection. E8 prices sticky's _benefit_ honestly;
+those two are the preconditions that benefit is contingent on, and they belong in the finding rather
+than in a footnote.
 
 ### 3.5 Admission control is where #55 lands
 
@@ -490,6 +516,12 @@ Per rung, recorded for attribution rather than for the report:
 | Over-admission events (§3.9)                                | the IPC staleness bound                 |
 | **Spurious `429`s** (estimate high vs next `load`, §3.9)    | a knee read early, not a real ceiling   |
 
+Two run-record fields sit beside the metrics, because both are conditions a rung can silently violate:
+the **duty basis** the stub and provisioning came from (§2.3, §5.4), and — on sticky rungs —
+**connections per session**, which must be 1 (§3.4). A sticky rung whose driver pooled connections
+priced warmth at whatever its pool did rather than at what the policy does; recording the field is what
+makes that identifiable after the fact instead of indistinguishable from a null result.
+
 The event-loop-lag-versus-RSS pair is the point of the instrumentation, not decoration: it answers
 _what bound it_, which is what turns a density number into a provisioning rule. E6's value came from
 exactly that move — its headline finding was a tier attribution, not a number (§1).
@@ -534,17 +566,23 @@ stub that streams only text means no session ever reaches the sandbox, and E8's 
 silently exclude the entire hands tier. It is calibrated against a measured duty figure rather than a
 guessed constant.
 
-**One basis, both decisions.** The tool-call rate and the sandbox-container count come from the **same
-row of §2.3's table**, named in the run record. Default: the **E6 basis** — calibrate the stub to
-`duty = 0.06–0.08` and provision at `12–24:1` — because `EXPERIMENTS.md:65` supersedes the 29–48:1
-figure for real-converge work, and because over-provisioning the sandbox tier is the safe direction
-against §3.1a's process churn. E7's `duty = 0.021–0.035` / `29–48:1` is available as a lighter-workload
-sweep point, taken whole.
+**One basis, both decisions — and "basis" means a row, not an experiment.** The tool-call rate and the
+sandbox-container count come from the **same row of §2.3's table**, named in the run record. Default:
+**E6/OCP** — calibrate the stub to `duty = 0.061–0.079` and provision at `12.6–16.5` — because
+`EXPERIMENTS.md:65` supersedes the 29–48:1 figure for real-converge work, and because it is the
+conservative row, which is the direction §3.1a's process churn argues for. E6/Kind
+(`0.042–0.051` / `19.7–24.0`) and E7 (`0.021`/`0.035` / `28.6–47.6`) are available as further sweep
+points, each taken whole.
 
-Mixing rows is the failure this pins out: calibrating at E6's 8% duty while provisioning at E7's
-29–48:1 under-provisions the sandbox tier ~2.4× and produces exactly the sandbox-bound run §5.2's two
-saturation metrics exist to detect. The check is arithmetic, so the driver asserts it:
-`K ≥ ceil(W × S × duty)`, with `duty` and the ratio from one row (`N ≈ 1/duty`).
+Naming the experiment rather than the row is itself the bug this pins out, and at ~1.9× it is the same
+kind as the 2.4× the section was written to kill: E6's duty range is OCP's while its ratio range spans
+both clusters, so a pairing of `0.06–0.08` with `12–24:1` fails §2.3's own `N ≈ 1/duty` check —
+`1/0.06 = 16.7`, not 24. It would also fail the assertion below, since provisioning at 24:1 gives
+`K = ceil(W × S / 24)` while the guard demands `ceil(W × S / 12.5)`. The guard catching the prose is
+the right direction for that error, but the prose is what was wrong.
+
+The check is arithmetic, so the driver asserts it: `K ≥ ceil(W × S × duty)`, with `duty` and the ratio
+from one row (`N ≈ 1/duty`).
 
 It lives at `deploy/knative/model-stub/`, beside `echo-target/` and following its shape (Dockerfile
 plus one small Node service) — **not** under `deploy/vm/`, because both E9 arms must drive the same
@@ -584,8 +622,11 @@ and E2/E5 are already split between driver-local and consolidated homes.
 
 **Unit.** Least-in-flight ordering (mirroring the existing `orderByLoad` tests), the admission
 threshold, hand-off retry against a dead worker, restart backoff, and `stickyBySession`'s header read —
-that it keys on `X-SH-Session`, reads **no** body bytes, and that `socket.unshift(head)` leaves the
-worker's parse of the full request intact (§3.4).
+that it keys on `X-SH-Session-Id`, reads **no** body bytes, that `socket.unshift(head)` leaves the
+worker's parse of the full request intact, and that a **second request on the same socket is not
+re-routed** even when it carries a different id (§3.4). That last assertion pins connection-scoped
+affinity as deliberate rather than accidental, which is what stops a later reader from "fixing" it into
+a body parse.
 
 **Integration.** An **SSE stream surviving socket hand-off** — the thing most likely to break subtly
 and silently, and therefore the load-bearing test of §3.2. And a worker killed mid-turn with the
@@ -680,9 +721,10 @@ ladder must include the single-session rung, which is also §5.2's W=1 baseline.
 - [P4](https://github.com/rossoctl/serverless-harness/issues/57) — Kata/VM/gVisor isolation, where
   the sandbox-boundary question already lives.
 - [P3.1](2026-07-03-e6-workload-parameterized-sandbox-load-design.md) ·
-  [`EXPERIMENTS.md`](../../deploy/knative/EXPERIMENTS.md) — E6/E7, the saturation machinery and the two
-  duty bases §2.3 keeps apart (E6's 6–8% / 12–24:1, which this design provisions from; E7's 2–4% /
-  29–48:1, superseded for real-converge work at `:65`).
+  [`EXPERIMENTS.md`](../../deploy/knative/EXPERIMENTS.md) — E6/E7, the saturation machinery and the three
+  duty rows §2.3 keeps apart (E6/OCP's `0.061–0.079` / `12.6–16.5`, which this design provisions from;
+  E6/Kind's `0.042–0.051` / `19.7–24.0`; E7's `0.021`/`0.035` / `28.6–47.6`, superseded for
+  real-converge work at `:65`).
 - [`docs/experiment-results.md`](../experiment-results.md) — E2's constant-6-entry rehydration, which
   decides §3.4.
 - [ST](2026-07-08-sandbox-transport-grpc-design.md) · [ADR-0024](../adrs/0024-sandbox-transport-remote-exec.md)
