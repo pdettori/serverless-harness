@@ -134,7 +134,18 @@ cannot be escaped.
   compromise there is host-level.
 - Negative / accepted cost: **D standby VMs per active run** are held for the run's whole duration,
   including the gaps where it is parked on the model — D × 2 processes on Cloud Hypervisor, D × 1 on
-  Firecracker.
+  Firecracker — **plus a tail after the run's last `Exec`**, since the worker never sees lease release and
+  reclamation is therefore driven by idle thresholds. Bounded rather than hoped away (spec §4.4): a
+  `ReplenishDelay` so a finishing run does not mint standbys it will never use, and a sweep triggered on
+  every `Exec` **and** on a ticker — because the run needing reclamation is the one issuing no requests, so
+  the tier-above "swept by the next acquire" discipline supplies the shape but not the trigger.
+- Negative / accepted cost: **two idle thresholds, not one** — `StandbyIdle` (90s) drops paused VMs while
+  `WorkspaceIdle` (2h) deletes the tree. A single TTL cannot serve both: a resumed gate presents the same
+  `workspace_key` (`run-leaf.ts:76`), so an aggressive one would delete a parked run's uncommitted work —
+  for a solve leaf, the candidate patch — while a conservative one pins D VMs per finished run for hours.
+  Making lease release explicit on the wire would reduce both to crash backstops, and is the only signal
+  that can distinguish "finished" from "parked at a gate"; deferred as a second wire change with a stated
+  trigger (spec §9).
 - Negative / accepted cost: **one golden snapshot per sandbox image**, each `mlock`ed by `vmtouch -dl`,
   so the warm image set is bounded by `Σ(memfile)` in RAM rather than by VM count.
 - Negative / accepted cost: we knowingly resume one snapshot many times, which Firecracker documents as
