@@ -110,6 +110,12 @@ Environment variables:
 | `FORCE_BUILD`     | `false`                                      | Force a local build (same as `--build`)                       |
 | `KEDA_VERSION`    | `v2.14.0`                                    | KEDA version                                                  |
 
+> **Pinning a release:** `:latest` tracks `main`, not any specific tag — to install a
+> specific release, pass the versioned image tag explicitly (e.g. `:0.3.0`) via `--image`/
+> `SH_IMAGE` rather than relying on `:latest`. See
+> [README-k8s.md](README-k8s.md#image-tags-latest-vs-pinned-releases) for why `:latest` +
+> `imagePullPolicy: IfNotPresent` can leave you on a stale image.
+
 ## Choosing the model
 
 The harness model is set via the `SH_MODEL` environment variable in
