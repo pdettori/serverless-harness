@@ -101,6 +101,11 @@ E6/E7 measured per-sandbox duty at **2–8% of leaf wall-clock on both Kind and 
 saturating (`EXPERIMENTS.md:168`, `:120`). So this slice changes **nothing** below the worker line,
 and E6's ratio becomes the provisioning input for how many sandbox containers a VM run needs (§5.4).
 
+"Changes nothing" is not the same as "nothing to watch". Those numbers were measured on the **kubectl**
+path, which has a persistent fast channel the gRPC path lacks (§3.1a) — so they are the right
+provisioning input and an open question at P6's concurrency, which is why §5.2 instruments the sandbox
+tier rather than assuming E6 transfers.
+
 ### 2.4 Session rehydration is nearly free, which decides the routing question
 
 E2 measured `openFromCheckpoint` reading a **constant 6 entries / ~900 bytes** independent of session
@@ -147,6 +152,38 @@ flowchart TB
 | `redis-server`  | reused             | Unchanged — session log, streams, leases, sandbox presence                |
 | `sandbox-relay` | reused             | Unchanged Go binary; already a plain process, not a Kubernetes object     |
 | `remote-worker` | reused             | Unchanged Go worker in a container, registering into `sh:sandbox:records` |
+
+The sandbox pool is **self-registering, not statically configured.** Presence is written on a live
+`Attach` stream and removed when it closes (`remote-worker/DESIGN.md:29-30`), so on a VM a
+`docker run` joins the pool and a stop leaves it — no manifest, no label query, no `kubectl`. What is
+fixed is the _count_: there is no autoscaler, and K comes from E6's 29–48:1 ratio via
+`KAGENTI_SANDBOX_CAP` (§5.4).
+
+### 3.1a The relay stays — and what that costs, stated fully
+
+Dialing the sandbox container directly on loopback would save a hop, so keeping the relay needs a
+reason. The reason is that a direct path is a **fourth `SandboxTransport`**, which owes an entry in
+the shared conformance battery with its own declared truncation mechanism
+(`transport.ts:57-73`). The relay is a static binary already built and already exercised by
+`relay-leaf-smoke.sh`.
+
+That trade is worth stating with its real price, because it is larger than one loopback hop.
+`extension.ts:38` and `:49-51` show `opts.transport` overriding **both** transport tiers, and
+`run-leaf.ts:786` passes exactly that for a leased gRPC record. So the gRPC path **has no persistent
+fast channel**: every `read`/`write`/`edit`/`ls`/`find` is a full `Exec` RPC ending in a fresh
+`bash -c`, rather than one nonce-framed line on a long-lived `bash`. This is pre-existing on the
+remote path, not introduced here — but file ops are the highest-frequency tool calls, so at W×S
+sessions the per-op process churn lands on K containers and could bind before the harness tier does.
+
+**Two consequences, and they go to different places.** The measurement consequence is E9's, and it is
+handled by holding the tool path constant across both arms (§5.3) — the same discipline as holding the
+model tier constant. The optimization consequence is **not P6's**: `persistent-exec.ts` is
+kubectl-specific only in the binary name (`:84`) and `buildPersistentKubectlArgs` (`:12`), while
+framing, cap-at-source and fallback are transport-agnostic and already declare `producer-side-cap`, so
+a container-exec variant is a parameterized argv rather than a new protocol. It would lift **both**
+substrates, which is precisely why it belongs to the `ST` track and not to a slice whose job is to
+measure the deployment tier — tracked as
+[#245](https://github.com/rossoctl/serverless-harness/issues/245), and listed in §8.
 
 ### 3.2 The supervisor hands off sockets; it does not proxy bytes
 
@@ -300,7 +337,7 @@ longer than it must.
 | 4   | systemd units and `setup-vm.sh` (§4.4)                                 | A clean VM reaches a served turn from the script alone                    |
 | 5   | Model stub with the tool-call profile (§5.4)                           | A stubbed turn reaches the sandbox; duty matches the configured rate      |
 | 6   | E8 driver and rungs (§5.2)                                             | A knee, plus the bound attribution (event loop vs RSS)                    |
-| 7   | E9 second arm on a cluster (§5.3)                                      | Both arms against the same stub                                           |
+| 7   | E9 second arm on a cluster (§5.3)                                      | Both arms against the same stub **and the same gRPC transport**           |
 
 **Step 0 comes first** because until it lands, nothing runs off-cluster at all — it is the smallest
 change and the one that unblocks every manual VM run during steps 1–4.
@@ -364,28 +401,57 @@ which is why the vocabulary is fixed before the driver exists.
 
 ### 5.2 E8 — VM density and saturation
 
-Sweep the W×S surface across rungs of offered concurrency. Per rung: throughput (turns/s), p50/p95,
-RSS per worker, **event-loop lag p99 per worker** (`perf_hooks.monitorEventLoopDelay`), Redis ops/s,
-and lease saturation (§5.4). Knee detection **reuses E6's sustained-decline `detectKnee`** with
-`degradeX=2` against a warm C=1 baseline, and reports the knee **as a floor, not a ceiling**, per
-E6's discipline (`EXPERIMENTS.md:120`). W=1 is the single-process rung, so "one process would be
-simpler" becomes a data point rather than an argument.
+Sweep the W×S surface across rungs of offered concurrency. Knee detection **reuses E6's
+sustained-decline `detectKnee`** with `degradeX=2` against a warm C=1 baseline, and reports the knee
+**as a floor, not a ceiling**, per E6's discipline (`EXPERIMENTS.md:120`). W=1 is the single-process
+rung, so "one process would be simpler" becomes a data point rather than an argument.
+
+Per rung, recorded for attribution rather than for the report:
+
+| Metric                                                      | Attributes a knee to                    |
+| ----------------------------------------------------------- | --------------------------------------- |
+| Throughput (turns/s), p50/p95                               | the rung itself                         |
+| **Event-loop lag p99 per worker** (`monitorEventLoopDelay`) | worker CPU / mux saturation             |
+| RSS per worker                                              | memory per live session                 |
+| **Per-file-op latency** (§3.1a)                             | the relay round trip                    |
+| **Sandbox-container CPU**                                   | `bash -c` process churn on K containers |
+| Lease saturation (§6)                                       | an under-provisioned pool               |
+| Over-admission events (§3.9)                                | the IPC staleness bound                 |
 
 The event-loop-lag-versus-RSS pair is the point of the instrumentation, not decoration: it answers
 _what bound it_, which is what turns a density number into a provisioning rule. E6's value came from
 exactly that move — its headline finding was a tier attribution, not a number (§1).
 
-### 5.3 E9 — deployment-tier comparison, model tier held constant
+The two sandbox-side metrics exist because §3.1a leaves a live hazard: with no persistent fast
+channel on the gRPC path, every file op spawns a process in a sandbox container, and at W×S sessions
+that churn concentrates on K containers. E7 validated mixed-ref converge correctness at **6**
+concurrent refs on one pod; E8's rungs go well past that, so whether the sandbox tier stays at E6's
+2–8% duty under this load is an open question. Without these two metrics a sandbox-bound run would be
+reported as a harness density limit — the precise error E6 caught in itself.
+
+### 5.3 E9 — deployment-tier comparison, with the model _and_ tool tiers held constant
 
 Two arms, same host class and same workload: the VM supervisor+mux, and Knative one-session-per-pod —
 which is what the cluster path is today, since P5 §1 records that "the harness runs one session per
 process". This isolates what the deployment tier costs, and it **uses** the Kubernetes work rather
 than discarding it.
 
-One honesty constraint governs E9: **E6's existing numbers were taken against a real model and are
-not comparable to stub-driven ones.** The Knative arm must be re-run against the same stub. That is
-cheap — `ANTHROPIC_BASE_URL` on the ksvc — and E6's driver already manipulates and restores ksvc env
+Isolating one tier means pinning every other, and E9 has **two** such constraints, not one.
+
+**The model tier.** E6's existing numbers were taken against a real model and are **not comparable to
+stub-driven ones**, so the Knative arm must be re-run against the same stub. Cheap —
+`ANTHROPIC_BASE_URL` on the ksvc — and E6's driver already manipulates and restores ksvc env
 (`restore_ksvc_env` on its `EXIT` trap).
+
+**The tool tier — and this one is easy to get wrong.** Left to their defaults the two arms would not
+match: the Knative arm resolves pods and gets `persistentExecInPod`'s fast channel, while the VM arm
+runs over gRPC and has none (§3.1a). The comparison would then charge the deployment tier for a
+transport difference, **biased against the VM**. So **both arms run the relay + gRPC transport.** The
+cluster can already do this — `SH_REMOTE_SANDBOX=1` against the in-cluster relay, which
+`relay-leaf-smoke.sh` exercises — so it costs configuration, not code.
+
+Stated as the invariant a reviewer should check: _E9 varies the deployment tier and nothing else._
+Any future arm added to E9 inherits both pins.
 
 ### 5.4 The model stub, and the requirement that is easy to miss
 
@@ -471,6 +537,12 @@ Homes: `packages/knative-server/test` and `harness/test`, both typechecked since
 - **The MU1 control plane on the VM.** E8/E9 need no auth, no ownership index, no `/resources`.
 - **Async leaf and cron on the VM** beyond the `--role` flag existing (§3.3).
 - **A `PlatformAdapter` abstraction** (§4.1).
+- **A persistent fast channel for the gRPC transport** (§3.1a, [#245](https://github.com/rossoctl/serverless-harness/issues/245)). Real and worth doing — file ops are
+  the highest-frequency tool calls and currently cost a round trip plus a process each on that path —
+  but it lifts **both** substrates equally, so folding it into P6 would improve the VM arm and the
+  Knative arm at once while adding transport surface to a slice that exists to measure the deployment
+  tier. Owned by the `ST` track; E9's constant-tool-path pin (§5.3) is what makes P6 correct without
+  it, and §5.2's two sandbox-side metrics are what tell us how much it is worth.
 - **Sticky affinity as the default** — a sweep variant, so the experiment prices warmth (§3.4).
 - **Any `pi-fork` change.** As with P5, none is needed.
 
@@ -531,6 +603,9 @@ ladder must include the single-session rung, which is also §5.2's W=1 baseline.
   worker-dialed relay that make the sandbox tier substrate-neutral.
 - [P2](2026-07-02-p2-shared-sandbox-pool-design.md) — Redis leases and least-loaded selection, reused
   one tier up.
+- [#245](https://github.com/rossoctl/serverless-harness/issues/245) — the gRPC transport's missing
+  persistent fast channel (§3.1a). Deferred to `ST` because it lifts both substrates; §5.3's
+  constant-tool-path pin is what keeps E9 valid without it.
 - [MU1](2026-09-08-multi-user-control-plane-design.md) — `CredentialStore` seam; its control plane is
   out of scope here.
 - [#55](https://github.com/rossoctl/serverless-harness/issues/55) — overload handling, realized as
