@@ -254,7 +254,12 @@ export function makeRuntimeReporter(
       await ready;
       await index?.putRuntime(sessionId, fields);
     } catch {
-      /* display-only data; a turn must never fail because this did */
+      // A transient failure (e.g. a Redis restart mid-rollout) must not permanently disable this
+      // reporter for the rest of the process's life: clear the memoised state so the NEXT call
+      // retries from scratch, rather than forever awaiting an already-rejected `ready` (fix round 1,
+      // Important 2). Display-only data, so the turn itself must never fail because this did.
+      ready = undefined;
+      index = undefined;
     }
   };
 }

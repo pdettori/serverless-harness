@@ -1,7 +1,13 @@
 import { generateKeyPairSync } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CpError } from '@sh/control-plane';
 import { keyIdFor, makeSigner, publicKeyToBase64 } from '@sh/control-plane';
+
+// Fix round 1, Important 2: lets the retry test control connect() success/failure per attempt
+// without a live Redis. Nothing else in this file touches Redis (sharedRuntimeReporter's own test
+// only compares closure identity; it never invokes a reporter), so mocking the whole module is safe.
+vi.mock('redis', () => ({ createClient: vi.fn() }));
+import { createClient } from 'redis';
 import {
   makeRuntimeReporter,
   resolveTurnAuth,
@@ -473,5 +479,37 @@ describe('makeRuntimeReporter', () => {
     const a = turnAuthDepsFromEnv({ REDIS_URL: 'redis://127.0.0.1:6379' });
     const b = turnAuthDepsFromEnv({ REDIS_URL: 'redis://127.0.0.1:6379' });
     expect(a.reportRuntime).toBe(b.reportRuntime);
+  });
+
+  it('retries after a transient connect failure, rather than permanently no-op-ing forever (fix round 1, Important 2)', async () => {
+    // A shared, process-lifetime reporter (sharedRuntimeReporter) turned a per-request transient
+    // failure into a permanent one unless the catch clears its memoised `ready`/`index` on error.
+    // Each attempt gets its own fresh client (as the real code does), so `attempt` lives outside the
+    // factory to observe both.
+    let attempt = 0;
+    const hSet = vi.fn(async () => undefined);
+    vi.mocked(createClient).mockImplementation(
+      () =>
+        ({
+          connect: vi.fn(async () => {
+            attempt += 1;
+            if (attempt === 1) throw new Error('ECONNREFUSED');
+          }),
+          hSet,
+        }) as unknown as ReturnType<typeof createClient>,
+    );
+
+    const reporter = makeRuntimeReporter('redis://127.0.0.1:6379');
+
+    // First call: connect() rejects. Must resolve (display-only data must never fail a turn) and
+    // must not write.
+    await expect(reporter('sid-1', { harnessPod: 'p' })).resolves.toBeUndefined();
+    expect(hSet).not.toHaveBeenCalled();
+
+    // Second call: connect() succeeds this time. If the first failure's `ready`/`index` were left in
+    // place instead of cleared, this call would still no-op forever.
+    await reporter('sid-1', { harnessPod: 'p' });
+    expect(attempt).toBe(2);
+    expect(hSet).toHaveBeenCalledTimes(1);
   });
 });

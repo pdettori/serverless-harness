@@ -51,6 +51,32 @@ function post(
   });
 }
 
+/**
+ * Like post(), but for the SSE branch: the body is `event: ...\ndata: ...\n\n` frames, not JSON,
+ * so this returns the raw text instead of attempting JSON.parse (fix round 1, Important 1).
+ */
+function postRaw(
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      new URL(path, base),
+      { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers } },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString() });
+        });
+      },
+    );
+    req.on('error', reject);
+    req.end(JSON.stringify(body));
+  });
+}
+
 beforeEach(async () => {
   for (const k of [
     'SH_REQUIRE_AUTH',
@@ -128,6 +154,23 @@ describe('POST /turn with a token', () => {
     // binds createIfAbsent:false today -- so every MU1 session would fail its first turn (plan gap #1).
     await post('/turn', { sessionId: 'sid-1', prompt: 'hi' }, { Authorization: `Bearer ${token}` });
     expect(vi.mocked(executeTurn).mock.calls[0]![0]!.createIfAbsent).toBe(true);
+  });
+
+  it('the SSE branch converts too: binds createIfAbsent:true, tags the credential, drops the ambient token', async () => {
+    // Fix round 1, Important 1: resolveTurnAuth runs once before the wantsStream split, so no bypass
+    // exists (P5 §3.2), but until this test that branch was verified only by inspection.
+    process.env.ANTHROPIC_AUTH_TOKEN = 'sk-deployment-ambient'; // notsecret
+    const res = await postRaw(
+      '/turn',
+      { sessionId: 'sid-1', prompt: 'hi' },
+      { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
+    );
+    expect(res.status).toBe(200);
+    expect(vi.mocked(executeTurn)).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(executeTurn).mock.calls[0]![0]!;
+    expect(call.createIfAbsent).toBe(true);
+    expect(call.config!.upstreamCredential).toEqual({ mode: 'direct', value: 'sk-alice' }); // notsecret
+    expect(call.config!.anthropicAuthToken).toBeUndefined();
   });
 
   it('400s a session_mismatch', async () => {
@@ -210,6 +253,19 @@ describe('POST /turn without a token', () => {
     expect(res.status).toBe(401);
     expect(res.json).toMatchObject({ error: 'token_required' });
     expect(vi.mocked(runTurn)).not.toHaveBeenCalled();
+  });
+
+  it('the SSE branch still binds createIfAbsent:false, unchanged, with no token', async () => {
+    // Companion to the authenticated-SSE test above: proves the conversion did not flip the
+    // unauthenticated SSE branch's 404-on-missing-session contract along with it.
+    const res = await postRaw(
+      '/turn',
+      { sessionId: 'sid-1', prompt: 'hi' },
+      { Accept: 'text/event-stream' },
+    );
+    expect(res.status).toBe(200);
+    expect(vi.mocked(executeTurn)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(executeTurn).mock.calls[0]![0]!.createIfAbsent).toBe(false);
   });
 });
 
