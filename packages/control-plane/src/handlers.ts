@@ -111,6 +111,39 @@ async function turnInFlight(sessionId: string, deps: CpDeps): Promise<boolean> {
   return started > 0 && started > ended;
 }
 
+/**
+ * Audit a CREDENTIAL route without letting the audit's own failure change the caller's status.
+ *
+ * Spec §9.2 promises "Redis down => session routes 503, while /v1/credentials stays up, because §7.1
+ * put them in different stores". The credential store is Kubernetes Secrets and knows nothing about
+ * Redis -- but `index.audit()` is a Redis write, and `OwnershipIndex.guard` turns any transport
+ * failure into `redis_unavailable` (503). Awaiting it after a successful Secret patch therefore
+ * reported 503 for a write that HAD happened: the status lied, and a user could not repair their
+ * credential during a Redis outage. Availability of the repair path is worth more than the audit
+ * record, so the audit is what gives way.
+ *
+ * Deliberately NOT applied to `audit` globally, and never to the session routes: their 503 is correct
+ * and spec-mandated, because those routes' own state lives in the very Redis that is down.
+ *
+ * The swallow is loud. An audit gap must be discoverable, so it logs the route and the credential
+ * NAME -- never the value, which this function is never given in the first place.
+ */
+async function auditBestEffort(
+  deps: CpDeps,
+  route: string,
+  name: string,
+  entry: Parameters<OwnershipIndex['audit']>[0],
+): Promise<void> {
+  try {
+    await deps.index.audit(entry);
+  } catch (err) {
+    console.error(
+      `[control-plane] audit write failed for ${route} credential=${name}: ` +
+        `${(err as Error).message} -- the credential write itself SUCCEEDED`,
+    );
+  }
+}
+
 /** Public view of a session record. `turns` comes from the display-only runtime hash. */
 async function sessionView(rec: SessionRecord, deps: CpDeps) {
   const runtime = await deps.index.getRuntime(rec.sessionId);
@@ -296,7 +329,11 @@ export const HANDLERS: Record<string, Handler> = {
     const name = validateCredentialName(ctx.params.name ?? '');
     const cred = parseCredentialBody(name, ctx.body);
     await deps.credentials.put(p.sub, cred);
-    await deps.index.audit({ subject: p.sub, credential: name, decision: 'credential_written' });
+    await auditBestEffort(deps, 'putCredential', name, {
+      subject: p.sub,
+      credential: name,
+      decision: 'credential_written',
+    });
     return { status: 204, body: undefined };
   },
 
@@ -325,7 +362,11 @@ export const HANDLERS: Record<string, Handler> = {
     const p = requirePrincipal(ctx);
     const name = validateCredentialName(ctx.params.name ?? '');
     await deps.credentials.delete(p.sub, name);
-    await deps.index.audit({ subject: p.sub, credential: name, decision: 'credential_deleted' });
+    await auditBestEffort(deps, 'deleteCredential', name, {
+      subject: p.sub,
+      credential: name,
+      decision: 'credential_deleted',
+    });
     // 204 whether or not it existed: a 404 here would be an existence oracle over credential names.
     return { status: 204, body: undefined };
   },

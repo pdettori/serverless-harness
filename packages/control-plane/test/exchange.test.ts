@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { CpError } from '../src/errors.js';
 import { checkExchangeAuth, exchangeCredential, placeholderFor } from '../src/exchange.js';
 import { HANDLERS, type CpDeps } from '../src/handlers.js';
+import { OwnershipIndex, type CpRedisLike } from '../src/ownership.js';
 import { makeDeps, ctx, alice, codeOf, seedCredential } from './helpers/deps.js';
 
 /** Create a session through the real handler and return its session token. */
@@ -303,22 +304,100 @@ describe('readyz', () => {
   it('503s when Redis is down, while /v1/credentials stays up', async () => {
     // Spec §9.2: Redis down => session routes 503, credentials keep working, because §7.1 put them in
     // different stores.
-    const down = makeDeps({
-      index: {
-        ...makeDeps().index,
-        getRuntime: async () => {
-          throw new Error('ECONNREFUSED');
-        },
-        get: async () => {
-          throw new Error('ECONNREFUSED');
-        },
-      } as never,
-    });
+    const down = redisDown();
     expect(await codeOf(() => HANDLERS.readyz!(ctx(), down))).toBe('redis_unavailable');
     await expect(HANDLERS.listCredentials!(ctx({ principal: alice }), down)).resolves.toMatchObject(
       {
         status: 200,
       },
     );
+  });
+});
+
+/**
+ * A CpDeps holding a REAL OwnershipIndex over a Redis client whose every command rejects, which is
+ * what an outage actually looks like. Overriding the index's own methods instead -- as this suite used
+ * to -- bypasses `OwnershipIndex.guard`, so the failures arrive as plain Errors and nothing ever
+ * exercises the `redis_unavailable` mapping that §9.2's promise rests on. `xAdd` (the audit stream) is
+ * down like everything else, on purpose: leaving it working is what let §9.2 look satisfied while
+ * `putCredential` returned 503 in a real outage.
+ */
+function redisDown() {
+  const boom = async (): Promise<never> => {
+    throw new Error('ECONNREFUSED');
+  };
+  const dead = new Proxy({} as CpRedisLike, { get: () => boom });
+  return makeDeps({ index: new OwnershipIndex(dead) });
+}
+
+describe('spec §9.2: the credential routes survive a Redis outage, the session routes do not', () => {
+  // The write routes are the whole point of the promise: a user must be able to REPAIR a broken
+  // credential while Redis is down. Both patch a Kubernetes Secret and then audit, and the audit is a
+  // Redis write -- so before the best-effort catch in handlers.ts the Secret was written and the caller
+  // was told 503, which is a status that lies about what happened. The old test exercised only
+  // listCredentials, the one credential route that touches no Redis at all, so it could not fail here.
+  let down: ReturnType<typeof redisDown>;
+  let logged: string[];
+  let restoreErr: typeof console.error;
+
+  beforeEach(() => {
+    down = redisDown();
+    logged = [];
+    restoreErr = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args.join(' '));
+  });
+  afterEach(() => {
+    console.error = restoreErr;
+  });
+
+  it('putCredential still succeeds, and says so out loud that the audit was lost', async () => {
+    await expect(
+      HANDLERS.putCredential!(
+        ctx({
+          principal: alice,
+          params: { name: 'my-anthropic' },
+          body: {
+            kind: 'bearer',
+            consumer: 'inference',
+            destination: { hosts: ['litellm.internal'] },
+            endpoint: 'https://litellm.internal/v1',
+            secret: { token: 'sk-repair' }, // notsecret
+          },
+        }),
+        down,
+      ),
+    ).resolves.toMatchObject({ status: 204 });
+    // The Secret really was written -- the 204 is not a lie in the other direction either.
+    expect((await down.credentials.list('github:1234')).map((d) => d.name)).toContain(
+      'my-anthropic',
+    );
+    // The audit gap is discoverable, and the stored VALUE never reaches the log.
+    expect(logged.join('\n')).toContain('putCredential');
+    expect(logged.join('\n')).toContain('my-anthropic');
+    expect(logged.join('\n')).not.toContain('sk-repair'); // notsecret
+  });
+
+  it('deleteCredential still succeeds', async () => {
+    await seedCredential(down);
+    await expect(
+      HANDLERS.deleteCredential!(ctx({ principal: alice, params: { name: 'my-anthropic' } }), down),
+    ).resolves.toMatchObject({ status: 204 });
+    expect(await down.credentials.list('github:1234')).toEqual([]);
+    expect(logged.join('\n')).toContain('deleteCredential');
+  });
+
+  it('but a SESSION route still 503s in the same outage — that half is spec-mandated', async () => {
+    // The credential routes' availability must not have been bought by making `audit` best-effort
+    // globally: a session route's own state lives in the Redis that is down, so 503 is the honest
+    // answer there and this asserts it is still what happens.
+    await seedCredential(down); // else createSession 400s on credential_required before Redis
+    expect(
+      await codeOf(() => HANDLERS.createSession!(ctx({ principal: alice, body: {} }), down)),
+    ).toBe('redis_unavailable');
+    expect(
+      await codeOf(() =>
+        HANDLERS.getSession!(ctx({ principal: alice, params: { id: 'sid-fixed' } }), down),
+      ),
+    ).toBe('redis_unavailable');
   });
 });
