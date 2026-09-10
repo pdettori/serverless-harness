@@ -43,7 +43,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv): CpConfig {
     operatorInferenceToken: env.SH_OPERATOR_INFERENCE_TOKEN || undefined,
     // Exactly 'true'. A typo must not silently switch on a fallback that lets one subject spend the
     // operator's key (spec §6.4 defaults it off).
-    allowOperatorFallback: env.ALLOW_OPERATOR_FALLBACK === 'true',
+    allowOperatorFallback: env.SH_ALLOW_OPERATOR_FALLBACK === 'true',
     injectorConfigured: env.SH_INJECTOR_CONFIGURED === 'true',
     sandboxNamespace: env.SH_SANDBOX_NAMESPACE || 'default',
   };

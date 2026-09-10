@@ -37,9 +37,18 @@
 # the device flow treats the app as a public client.
 #
 # Applying this file on its own does NOT give you a running control plane: the three Secrets above and a
-# non-empty SH_GITHUB_CLIENT_ID are all validated at startup, so until they exist the Deployment stays in
-# CrashLoopBackOff with the missing name in the container log. Fail-at-startup is the intended posture
-# (spec §3.5) -- check `kubectl logs deploy/sh-control-plane` before suspecting the cluster.
+# non-empty SH_GITHUB_CLIENT_ID are all validated at startup. Fail-at-startup is the intended posture
+# (spec §3.5), but it fails in TWO different ways and only one of them writes a log:
+#
+#   * A MISSING SECRET (sh-session-token-key or sh-credential-kek -- both non-optional refs) is caught by
+#     the kubelet before the container is created, so the pod sits in CreateContainerConfigError and
+#     there is NO container log at all. Use `kubectl describe pod -l app=sh-control-plane -n default`;
+#     the event names the missing Secret.
+#   * An EMPTY SH_GITHUB_CLIENT_ID (or an absent SH_EXCHANGE_TOKEN, whose ref is optional) starts the
+#     container, which then exits on main.ts's `required()` guard -- so CrashLoopBackOff, and
+#     `kubectl logs deploy/sh-control-plane` does name the variable.
+#
+# `kubectl describe pod` covers both; reach for it first.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -186,7 +195,7 @@ spec:
               value: ''
             # Default false (spec §6.4): a deployment does not silently let one subject spend the
             # operator's key. When true, SH_OPERATOR_INFERENCE_TOKEN must also be set.
-            - name: ALLOW_OPERATOR_FALLBACK
+            - name: SH_ALLOW_OPERATOR_FALLBACK
               value: 'false'
             - name: SH_SESSION_TOKEN_PRIVATE_KEY
               valueFrom:
@@ -203,6 +212,11 @@ spec:
                 secretKeyRef:
                   name: sh-exchange-token
                   key: SH_EXCHANGE_TOKEN
+                  # optional:true for symmetry with the data-plane side (service.yaml). The exchange is
+                  # fail-closed in code -- an absent value rejects every call rather than opening one --
+                  # so a non-optional ref buys no safety and costs the operator the diagnosis: the
+                  # kubelet refuses to create the container at all, so there is no container log to read.
+                  optional: true
           ports:
             - containerPort: 8080
           readinessProbe:

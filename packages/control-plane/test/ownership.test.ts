@@ -77,6 +77,11 @@ describe('create and get', () => {
       zRem: async () => down(),
       del: async () => down(),
       xAdd: async () => down(),
+      // zRange too, or listByOwner -- the ONLY user-facing list path -- is missing from the seven entry
+      // points this exercises, and a 500 there would break /v1/sessions during an outage while every
+      // other route correctly said 503.
+      zRange: async () => down(),
+      zScore: async () => down(),
     });
     const unavailable = { code: 'redis_unavailable' };
     await expect(broken.get('sid-1')).rejects.toMatchObject(unavailable);
@@ -90,6 +95,7 @@ describe('create and get', () => {
     await expect(broken.audit({ subject: 'github:1', decision: 'x' })).rejects.toMatchObject(
       unavailable,
     );
+    await expect(broken.listByOwner('github:1234')).rejects.toMatchObject(unavailable);
   });
 
   it('returns null when the hash exists but has no owner', async () => {
@@ -167,6 +173,45 @@ describe('listByOwner', () => {
 
   it('returns an empty page for an owner with nothing', async () => {
     expect(await index.listByOwner('github:0')).toEqual({ sessions: [], nextCursor: null });
+  });
+
+  it('takes nextCursor from the tail ZSET MEMBER, so a ghost at a page tail is not re-visited', async () => {
+    // The cursor used to come from the last SURVIVING record, which is not the same thing: with the
+    // tail member's hash gone, that record's createdAt is a HIGHER score than the tail's, so the next
+    // page's exclusive `(score` bound lands above the ghost and re-reads it -- and everything between
+    // it and that record -- on every subsequent page.
+    const f = fakeRedis();
+    const idx = new OwnershipIndex(f.redis);
+    for (let i = 1; i <= 4; i++) {
+      await idx.create(rec({ sessionId: `s${i}`, createdAt: 1000 + i }));
+    }
+    await f.redis.del([sessionKey('s3')]); // s3 is the tail of a limit-2 page (s4, s3)
+    const first = await idx.listByOwner('github:1234', { limit: 2 });
+    expect(first.sessions.map((x) => x.sessionId)).toEqual(['s4']); // the ghost is filtered out
+    // 1003 is s3's own score, read off the zset -- NOT s4's 1004, which would re-visit s3.
+    expect(first.nextCursor).toBe(1003);
+    const second = await idx.listByOwner('github:1234', { limit: 2, cursor: first.nextCursor! });
+    expect(second.sessions.map((x) => x.sessionId)).toEqual(['s2', 's1']);
+    // The whole walk visits each real session exactly once and terminates.
+    expect(second.nextCursor).toBe(1001);
+    const third = await idx.listByOwner('github:1234', { limit: 2, cursor: second.nextCursor! });
+    expect(third).toEqual({ sessions: [], nextCursor: null });
+  });
+
+  it('keeps paging when an ENTIRE page is ghosts, instead of truncating the walk', async () => {
+    // With no surviving record on the page there was no cursor to take, so nextCursor went null and
+    // the caller never saw the real sessions further down the zset.
+    const f = fakeRedis();
+    const idx = new OwnershipIndex(f.redis);
+    for (let i = 1; i <= 4; i++) {
+      await idx.create(rec({ sessionId: `s${i}`, createdAt: 1000 + i }));
+    }
+    await f.redis.del([sessionKey('s4'), sessionKey('s3')]);
+    const first = await idx.listByOwner('github:1234', { limit: 2 });
+    expect(first.sessions).toEqual([]);
+    expect(first.nextCursor).toBe(1003);
+    const second = await idx.listByOwner('github:1234', { limit: 2, cursor: first.nextCursor! });
+    expect(second.sessions.map((x) => x.sessionId)).toEqual(['s2', 's1']);
   });
 });
 

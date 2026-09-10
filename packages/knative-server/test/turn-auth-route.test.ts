@@ -195,7 +195,11 @@ describe('POST /turn with a token', () => {
     expect(res.json).toMatchObject({ error: 'subject_conflict' });
   });
 
-  it('401s an invalid token even with SH_REQUIRE_AUTH unset', async () => {
+  it('401s token_INVALID (not token_required) for a bad token with SH_REQUIRE_AUTH unset', async () => {
+    // Status alone cannot tell the two 401s apart, and they mean opposite things to a client: with the
+    // flag off, `token_required` would be wrong -- no token is needed -- while a PRESENT-but-bad token
+    // must still be refused (spec §4.3.1). Asserting only 401 left that distinction untested, so the
+    // sibling below asserting `token_required` under the flag was the only one pinning a code at all.
     const res = await post(
       '/turn',
       { sessionId: 'sid-1', prompt: 'hi' },
@@ -204,6 +208,8 @@ describe('POST /turn with a token', () => {
       },
     );
     expect(res.status).toBe(401);
+    expect(res.json).toMatchObject({ error: 'token_invalid' });
+    expect(vi.mocked(runTurn)).not.toHaveBeenCalled();
   });
 
   it('503s when the control plane refuses, and does not run the turn', async () => {

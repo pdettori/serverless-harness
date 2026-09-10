@@ -349,11 +349,26 @@ describe('GET and DELETE /v1/sessions/{id}, POST .../token', () => {
     ).toBe(204);
   });
 
-  it('sets the tombstone before it deletes, so no new turn can start', async () => {
-    await d.index.putRuntime('sid-fixed', { turnStartedAt: String(NOW_MS) });
-    await HANDLERS.deleteSession!(ctx({ principal: alice, params: { id: 'sid-fixed' } }), d);
-    // A 202 leaves the tombstone set and the index gone; the sweeper reaps what the turn writes.
-    expect(await d.index.get('sid-fixed')).toBeNull();
+  it('sets the tombstone BEFORE it deletes, so no new turn can start', async () => {
+    // Final state is identical under either ordering -- the hash is gone either way -- so asserting it
+    // proved nothing about the order. fakeRedis records an ordered `ops` array; use it. The order is
+    // the property: tombstone-then-delete closes the window in which an in-flight turn could start a
+    // new one, and delete-then-tombstone leaves it open.
+    const f = fakeRedis();
+    const d2 = makeDeps({ index: new OwnershipIndex(f.redis) });
+    await seedCredential(d2);
+    await HANDLERS.createSession!(ctx({ principal: alice, body: {} }), d2);
+    await d2.index.putRuntime('sid-fixed', { turnStartedAt: String(NOW_MS) });
+    const before = f.ops.length;
+    await HANDLERS.deleteSession!(ctx({ principal: alice, params: { id: 'sid-fixed' } }), d2);
+    const ops = f.ops.slice(before);
+    const firstHSet = ops.findIndex((o) => o.startsWith('hSet '));
+    const firstDel = ops.findIndex((o) => o.startsWith('del '));
+    expect(firstHSet, `no tombstone write in ${ops.join(' -> ')}`).toBeGreaterThanOrEqual(0);
+    expect(firstDel, `no delete in ${ops.join(' -> ')}`).toBeGreaterThanOrEqual(0);
+    expect(firstHSet, ops.join(' -> ')).toBeLessThan(firstDel);
+    // ...and the delete really did happen, so the ordering assertion is not standing alone.
+    expect(await d2.index.get('sid-fixed')).toBeNull();
   });
 
   it('404s every session route for a non-owner', async () => {

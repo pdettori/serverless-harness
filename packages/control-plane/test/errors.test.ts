@@ -1,53 +1,57 @@
 import { describe, expect, it } from 'vitest';
-import { CpError, statusFor, writeError, type CpErrorCode } from '../src/errors.js';
+import { CP_ERROR_CODES, CpError, statusFor, writeError, type CpErrorCode } from '../src/errors.js';
 
-// Every code spec §9.1 names, plus the four this plan adds (gaps #7, #8): the list is written out
-// rather than derived from the STATUS map, so deleting a mapping fails here instead of shrinking
-// the thing under test along with the test.
-const ALL_CODES: CpErrorCode[] = [
-  'invalid_json',
-  'invalid_request',
-  'token_required',
-  'token_invalid',
-  'token_expired',
-  'subject_conflict',
-  'unauthorized',
-  'forbidden',
-  'session_not_found',
-  'session_mismatch',
-  'credential_required',
-  'credential_ambiguous',
-  'credential_not_found',
-  'credential_unavailable',
-  'endpoint_unresolved',
-  'authorization_pending',
-  'redis_unavailable',
-  'internal_error',
-];
+/**
+ * The expected status for EVERY code, transcribed independently of the STATUS map in errors.ts.
+ *
+ * Two properties, and they need each other. The KEYS are checked against CP_ERROR_CODES rather than
+ * hand-listed, so adding a code without deciding its status fails here instead of passing silently --
+ * which is what the old partial hand-list allowed: it asserted exact statuses for most codes and left
+ * credential_not_found, invalid_json, invalid_request and internal_error to a `>= 400` loop that four
+ * different wrong answers would satisfy. The VALUES stay written out rather than derived from STATUS,
+ * because a test that reads its expectation from the thing under test shrinks along with it.
+ */
+const EXPECTED: Record<CpErrorCode, number> = {
+  invalid_json: 400,
+  invalid_request: 400,
+  token_required: 401,
+  token_invalid: 401,
+  token_expired: 401,
+  subject_conflict: 400,
+  unauthorized: 401,
+  forbidden: 403,
+  // 404, not 403, for another user's session: a 403 is an existence oracle (spec §8.1).
+  session_not_found: 404,
+  session_mismatch: 400,
+  credential_required: 400,
+  credential_ambiguous: 400,
+  credential_not_found: 404,
+  credential_unavailable: 503,
+  endpoint_unresolved: 400,
+  // 428 Precondition Required: a polling client tells "not yet" from "denied" without a body read.
+  authorization_pending: 428,
+  redis_unavailable: 503,
+  internal_error: 500,
+};
 
 describe('statusFor', () => {
-  it('maps every code to an HTTP status', () => {
-    for (const code of ALL_CODES) {
-      expect(statusFor(code), code).toBeGreaterThanOrEqual(400);
+  it('maps EVERY code in CP_ERROR_CODES to the exact status spec §9.1 fixes', () => {
+    for (const code of CP_ERROR_CODES) {
+      expect(EXPECTED[code], `${code} has no expected status in this test`).toBeDefined();
+      expect(statusFor(code), code).toBe(EXPECTED[code]);
     }
   });
 
-  it('uses the statuses spec §9.1 fixes', () => {
-    expect(statusFor('token_required')).toBe(401);
-    expect(statusFor('token_invalid')).toBe(401);
-    expect(statusFor('token_expired')).toBe(401);
-    expect(statusFor('unauthorized')).toBe(401);
-    expect(statusFor('forbidden')).toBe(403);
-    // 404, not 403, for another user's session: a 403 is an existence oracle (spec §8.1).
-    expect(statusFor('session_not_found')).toBe(404);
-    expect(statusFor('session_mismatch')).toBe(400);
-    expect(statusFor('subject_conflict')).toBe(400);
-    expect(statusFor('credential_required')).toBe(400);
-    expect(statusFor('credential_ambiguous')).toBe(400);
-    expect(statusFor('endpoint_unresolved')).toBe(400);
-    expect(statusFor('credential_unavailable')).toBe(503);
-    expect(statusFor('redis_unavailable')).toBe(503);
-    expect(statusFor('authorization_pending')).toBe(428);
+  it('has an expectation for every code and no code left over on either side', () => {
+    // Catches the other direction too: a code deleted from CP_ERROR_CODES but still expected here.
+    expect([...CP_ERROR_CODES].sort()).toEqual(Object.keys(EXPECTED).sort());
+  });
+
+  it('never answers with a non-error status', () => {
+    for (const code of CP_ERROR_CODES) {
+      expect(statusFor(code), code).toBeGreaterThanOrEqual(400);
+      expect(statusFor(code), code).toBeLessThan(600);
+    }
   });
 });
 

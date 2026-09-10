@@ -44,6 +44,21 @@ describe('resolveSandbox', () => {
     ).toEqual({ podName: 'sandbox-1-0', phase: 'Running', tenant: 'github:1234' });
   });
 
+  it('defaults the phase to unknown when the selector reply carries no tab', async () => {
+    // resolveSandbox splits the selector reply on '\t'. A reply with only a name -- a custom-columns
+    // template that lost a column, or a single-field output -- leaves phase '' and it must read as
+    // 'unknown' rather than as an empty string a client would render as a blank status.
+    const run: RunKubectl = async () => 'sandbox-1-0';
+    expect(
+      await resolveSandbox(
+        { sandboxSelector: 'sh.kagenti.io/sandbox-pool=default' },
+        'default',
+        run,
+        'github:1234',
+      ),
+    ).toEqual({ podName: 'sandbox-1-0', phase: 'unknown', tenant: 'github:1234' });
+  });
+
   it('reports unknown when the harness reported neither', async () => {
     let called = false;
     const run: RunKubectl = async () => {

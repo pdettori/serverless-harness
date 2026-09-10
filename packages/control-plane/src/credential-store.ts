@@ -106,6 +106,16 @@ export function registerKind(kind: string, spec: KindSpec): void {
   KINDS.set(kind, spec);
 }
 
+/**
+ * The counterpart to `registerKind`. A registry that can only grow cannot be restored, so a test that
+ * registers a kind leaks it into every later test in the same file -- which is exactly what happened
+ * with `sigv4`. Returns whether the kind was present, so a caller can tell "removed" from "was never
+ * there" rather than guessing.
+ */
+export function unregisterKind(kind: string): boolean {
+  return KINDS.delete(kind);
+}
+
 export function kindSpec(kind: string): KindSpec {
   const spec = KINDS.get(kind);
   if (!spec) {
@@ -119,6 +129,15 @@ export function kindSpec(kind: string): KindSpec {
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * Mirrors `isRecord`: the shape check and the type it proves live in one place, so the caller assigns
+ * `body.binding` to a CredentialBinding with no cast at all. What stood here was
+ * `body.binding as unknown as CredentialBinding` after an equivalent inline check -- correct, but a
+ * double cast silently outlives the check it was paired with if either one is later edited.
+ */
+const isCredentialBinding = (v: unknown): v is CredentialBinding =>
+  isRecord(v) && typeof v.header === 'string' && typeof v.format === 'string';
 
 // A `function` declaration, not a `const` arrow: TS's never-return control-flow narrowing (the
 // reason `if (typeof x !== 'string') invalid(...)` lets `x` be used as `string` right after) is
@@ -139,7 +158,7 @@ function validateHost(h: unknown): string {
 
 export function parseCredentialBody(name: string, body: unknown): StoredCredential {
   validateCredentialName(name);
-  if (!isRecord(body)) return invalid('credential body must be a JSON object');
+  if (!isRecord(body)) invalid('credential body must be a JSON object');
 
   const kind = typeof body.kind === 'string' ? body.kind : invalid('kind is required');
   const spec = kindSpec(kind);
@@ -169,14 +188,8 @@ export function parseCredentialBody(name: string, body: unknown): StoredCredenti
 
   let binding = spec.defaultBinding;
   if (body.binding !== undefined) {
-    if (
-      !isRecord(body.binding) ||
-      typeof body.binding.header !== 'string' ||
-      typeof body.binding.format !== 'string'
-    ) {
-      invalid('binding must be { header, format }');
-    }
-    binding = body.binding as unknown as CredentialBinding;
+    if (!isCredentialBinding(body.binding)) invalid('binding must be { header, format }');
+    binding = body.binding;
   }
 
   // `endpoint` is meaningful ONLY for inference. Accepting it elsewhere would create a second,
@@ -189,7 +202,8 @@ export function parseCredentialBody(name: string, body: unknown): StoredCredenti
     try {
       parsed = new URL(body.endpoint);
     } catch {
-      return invalid('endpoint must be an absolute URL, e.g. https://litellm.internal/v1');
+      // `invalid` is declared `: never`, so no `return` here or above -- one call style throughout.
+      invalid('endpoint must be an absolute URL, e.g. https://litellm.internal/v1');
     }
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
       invalid('endpoint must be http(s)');

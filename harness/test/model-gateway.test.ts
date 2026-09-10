@@ -101,9 +101,9 @@ describe('applyModelGateway', () => {
       // so the harness must send it through UNCHANGED rather than treating it as a real token.
       const m = applyModelGateway(baseModel, {
         anthropicBaseUrl: 'https://gw.example/v1',
-        upstreamCredential: { mode: 'placeholder', value: 'sh-placeholder-github:1234' },
+        upstreamCredential: { mode: 'placeholder', value: 'sh-placeholder-github:1234' }, // notsecret
       }) as any;
-      expect(m.headers.Authorization).toBe('Bearer sh-placeholder-github:1234');
+      expect(m.headers.Authorization).toBe('Bearer sh-placeholder-github:1234'); // notsecret
     });
 
     it('falls back to the existing chain when no upstream credential is supplied', () => {

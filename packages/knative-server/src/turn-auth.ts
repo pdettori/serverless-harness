@@ -216,11 +216,6 @@ export function runtimeFieldsForTurn(
 }
 
 /**
- * Best-effort writer for the runtime hash. Lazily connects, swallows every failure, and never blocks a
- * turn: this data is display-only, so losing it must cost nothing. A rejected promise here would
- * otherwise become an unhandled rejection in the middle of a stream.
- */
-/**
  * One reporter per Redis URL, for the whole process.
  *
  * `turnAuthDepsFromEnv` is called PER REQUEST (so an env change takes effect without a restart), and
@@ -245,6 +240,11 @@ export function sharedRuntimeReporter(
   return reporter;
 }
 
+/**
+ * Best-effort writer for the runtime hash. Lazily connects, swallows every failure, and never blocks a
+ * turn: this data is display-only, so losing it must cost nothing. A rejected promise here would
+ * otherwise become an unhandled rejection in the middle of a stream.
+ */
 export function makeRuntimeReporter(
   redisUrl: string | undefined,
 ): (sessionId: string, fields: Record<string, string>) => Promise<void> {

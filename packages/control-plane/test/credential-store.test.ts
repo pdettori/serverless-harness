@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CpError } from '../src/errors.js';
 import {
   CREDENTIAL_NAME_RE,
@@ -6,6 +6,7 @@ import {
   kindSpec,
   parseCredentialBody,
   registerKind,
+  unregisterKind,
   resolveInferenceName,
   validateCredentialName,
   type CredentialDescriptor,
@@ -69,6 +70,16 @@ describe('credential names', () => {
 });
 
 describe('the kind registry', () => {
+  // registerKind mutates a MODULE-level map, so without this every test after the sigv4 one below runs
+  // against a registry the file itself widened -- including "rejects an unregistered kind", which would
+  // then be asserting about a registry state no deployment has.
+  const BUILTIN = ['bearer', 'basic', 'api-key', 'oauth2-token'];
+  afterEach(() => {
+    unregisterKind('sigv4');
+    // The built-ins must still be there: this restores the ADDED kind, it does not reset the map.
+    for (const k of BUILTIN) expect(() => kindSpec(k), k).not.toThrow();
+  });
+
   it('knows the slice-1 kinds', () => {
     for (const kind of ['bearer', 'basic', 'api-key', 'oauth2-token']) {
       expect(kindSpec(kind).secretFields.length, kind).toBeGreaterThan(0);
@@ -90,6 +101,13 @@ describe('the kind registry', () => {
     ).toBe('sigv4');
   });
 
+  it('and the afterEach really un-registers it, so the widening does not leak', () => {
+    // Runs after the sigv4 test in declaration order, so a working restore makes this the state a
+    // fresh process would see.
+    expect(() => kindSpec('sigv4')).toThrow(expect.objectContaining({ code: 'invalid_request' }));
+    expect(unregisterKind('sigv4')).toBe(false); // already gone, not merely absent-by-luck
+  });
+
   it('rejects an unregistered kind', () => {
     expect(codeOf(() => parseCredentialBody('x', bearerBody({ kind: 'telepathy' })))).toBe(
       'invalid_request',
@@ -99,6 +117,46 @@ describe('the kind registry', () => {
   it('supplies the kind default binding when the body omits one', () => {
     const parsed = parseCredentialBody('x', bearerBody({ binding: undefined }));
     expect(parsed.descriptor.binding).toEqual(kindSpec('bearer').defaultBinding);
+  });
+});
+
+describe("consumer: 'control-plane', the third member of the union", () => {
+  // Zero coverage until now: only 'inference' and 'sandbox-egress' were exercised, so nothing proved
+  // the third member is accepted at all -- or that it is NOT subject to the inference-only rules.
+  const cpBody = (over: Record<string, unknown> = {}) =>
+    bearerBody({ consumer: 'control-plane', ...over });
+
+  it('is accepted and survives into the descriptor verbatim', () => {
+    expect(parseCredentialBody('gh-app', cpBody()).descriptor.consumer).toBe('control-plane');
+  });
+
+  it('is rejected an endpoint, which is inference-only', () => {
+    // endpoint means "where inference goes"; accepting it here would create a second, silently
+    // ignored notion of destination alongside destination.hosts.
+    expect(codeOf(() => parseCredentialBody('gh-app', cpBody({ endpoint: 'https://x/v1' })))).toBe(
+      'invalid_request',
+    );
+  });
+
+  it('is NOT held to the single-secret-field rule that inference imposes', () => {
+    // 'basic' declares two secret fields, which inference refuses because a two-field kind cannot
+    // become one Bearer. That restriction is about inference specifically, not about every consumer.
+    expect(
+      parseCredentialBody('gh-basic', {
+        ...cpBody(),
+        kind: 'basic',
+        binding: { header: 'Authorization', format: 'Basic {username}' },
+        secret: { username: 'u', password: 'p' }, // notsecret
+      }).descriptor.kind,
+    ).toBe('basic');
+  });
+
+  it('is not resolvable as an inference credential', () => {
+    // resolveInferenceName must ignore it: a control-plane credential is not a thing a turn can run on.
+    const descriptors = [
+      parseCredentialBody('gh-app', cpBody()).descriptor,
+    ] as CredentialDescriptor[];
+    expect(codeOf(() => resolveInferenceName(descriptors, undefined))).toBe('credential_required');
   });
 });
 

@@ -126,9 +126,9 @@ describe('control-plane env', () => {
   });
 
   it('defaults the operator fallback off', () => {
-    // spec §6.4: ALLOW_OPERATOR_FALLBACK defaults false, so a deployment does not silently let one
+    // spec §6.4: SH_ALLOW_OPERATOR_FALLBACK defaults false, so a deployment does not silently let one
     // subject spend the operator's key.
-    expect(envOf('ALLOW_OPERATOR_FALLBACK')?.value).toBe('false');
+    expect(envOf('SH_ALLOW_OPERATOR_FALLBACK')?.value).toBe('false');
   });
 
   it('carries the Redis URL and the credential namespace', () => {

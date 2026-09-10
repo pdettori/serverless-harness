@@ -33,6 +33,24 @@ const codeOf = async (fn: () => Promise<unknown>): Promise<string> => {
   throw new Error('expected a throw');
 };
 
+describe('the constructor refuses a missing client id', () => {
+  // main.ts already validates SH_GITHUB_CLIENT_ID, but this guard is the one that holds if a second
+  // caller ever constructs the provider directly -- and '' must fail exactly as undefined does, since
+  // control-plane.yaml ships the variable present-but-empty on purpose.
+  it('throws naming the env var, for both unset and empty', () => {
+    for (const clientId of [undefined, '']) {
+      expect(
+        () => new GithubOAuthProvider({ clientId: clientId as string }),
+        String(clientId),
+      ).toThrow(/SH_GITHUB_CLIENT_ID is required/);
+    }
+  });
+
+  it('accepts a non-empty one', () => {
+    expect(() => new GithubOAuthProvider({ clientId: 'Iv1.abc' })).not.toThrow();
+  });
+});
+
 describe('startDeviceAuth', () => {
   it('returns what an operator has to type, and how fast to poll', () => {
     const { fetch } = fakeFetch({

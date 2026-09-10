@@ -12,9 +12,10 @@ describe('seal/open', () => {
   });
 
   it('never emits the plaintext in the sealed form', () => {
+    // One assertion, not two: re-base64ing the already-base64 sealed string cannot reveal a plaintext
+    // the first assertion did not, so the second added no coverage.
     const sealed = seal(KEK, 'github:1234', 'my-anthropic', 'sk-live-abc');
     expect(sealed).not.toContain('sk-live-abc');
-    expect(Buffer.from(sealed).toString('base64')).not.toContain('sk-live-abc');
   });
 
   it('is versioned, so a later Vault/ESO backend is distinguishable at rest', () => {

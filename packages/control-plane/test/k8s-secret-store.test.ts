@@ -235,3 +235,73 @@ describe('K8sSecretStore', () => {
     expect((await store.list(ALICE)).map((d) => d.name)).toEqual(['a']);
   });
 });
+
+describe('the credential store answers 503, not 500, when kubectl or the API is the problem', () => {
+  // credential_unavailable (503) already existed in the taxonomy and nothing on the control-plane side
+  // mapped to it. An unreachable API server, an expired ServiceAccount token or a 403 from a narrowed
+  // Role are all "the store is not answering" -- retryable -- and escaping as a plain Error made every
+  // one of them a 500 internal_error, which claims the control plane is broken.
+  const storeWith = (run: RunKubectl) => new K8sSecretStore({ namespace: NS, kek: KEK, run });
+  const codeOf = async (fn: () => Promise<unknown>): Promise<string> => {
+    try {
+      await fn();
+    } catch (e) {
+      return (e as { code?: string }).code ?? `UNTYPED:${(e as Error).name}`;
+    }
+    throw new Error('expected a throw');
+  };
+
+  it('maps a kubectl failure on every read and write path', async () => {
+    const dead: RunKubectl = async () => {
+      throw new Error('The connection to the server 10.0.0.1:6443 was refused');
+    };
+    const s = storeWith(dead);
+    expect(await codeOf(() => s.get(ALICE, 'a'))).toBe('credential_unavailable');
+    expect(await codeOf(() => s.list(ALICE))).toBe('credential_unavailable');
+    expect(await codeOf(() => s.delete(ALICE, 'a'))).toBe('credential_unavailable');
+    // put() goes through ensureSecret first, whose catch must distinguish an outage from AlreadyExists.
+    expect(await codeOf(() => s.put(ALICE, cred('a')))).toBe('credential_unavailable');
+  });
+
+  it('never leaks kubectl stderr into the message, which can name a token or a resource', async () => {
+    const dead: RunKubectl = async () => {
+      throw new Error('error: secrets "sh-cred-deadbeef" is forbidden: token ghp-leaked'); // notsecret
+    };
+    try {
+      await storeWith(dead).list(ALICE);
+      throw new Error('expected a throw');
+    } catch (e) {
+      expect((e as Error).message).not.toContain('ghp-leaked'); // notsecret
+      expect((e as Error).message).not.toContain('sh-cred-deadbeef');
+    }
+  });
+
+  it('maps malformed kubectl output to 503 rather than letting a SyntaxError become 500', async () => {
+    // A proxy's HTML error page or a truncated read is not a control-plane bug.
+    for (const body of [
+      '<html>502 Bad Gateway</html>',
+      '{"metadata":',
+      '[]',
+      'null',
+      '"a string"',
+    ]) {
+      const s = storeWith(async () => body);
+      expect(await codeOf(() => s.list(ALICE)), body).toBe('credential_unavailable');
+    }
+  });
+
+  it('rejects a right-shaped object whose metadata or data is the wrong type', async () => {
+    for (const body of ['{"metadata":"nope"}', '{"data":[1,2]}']) {
+      const s = storeWith(async () => body);
+      expect(await codeOf(() => s.list(ALICE)), body).toBe('credential_unavailable');
+    }
+  });
+
+  it('still treats empty output as "no such Secret" rather than an outage', async () => {
+    // `get --ignore-not-found` prints nothing for a subject who has never stored anything, and that is
+    // a valid empty answer -- turning it into a 503 would break every first-time user.
+    const s = storeWith(async () => '   \n');
+    expect(await s.list(ALICE)).toEqual([]);
+    expect(await s.get(ALICE, 'a')).toBeNull();
+  });
+});

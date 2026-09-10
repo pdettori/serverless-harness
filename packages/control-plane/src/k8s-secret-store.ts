@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { open, seal } from './envelope.js';
+import { CpError } from './errors.js';
 import {
   buildCreateSecretArgs,
-  buildDeleteSecretArgs,
   buildGetSecretArgs,
   buildPatchSecretArgs,
   defaultRunKubectl,
@@ -53,6 +53,45 @@ interface SecretJson {
   data?: Record<string, string>;
 }
 
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * Parse `kubectl get -o json` output into a SecretJson, or refuse in a TYPED way.
+ *
+ * `JSON.parse(raw) as SecretJson` asserted a shape it had not checked, so malformed kubectl output
+ * (a proxy's HTML error page, a truncated read) escaped as a raw SyntaxError and became a 500
+ * `internal_error` -- a code that says "the control plane has a bug" about something that is
+ * squarely "the credential store is not answering right now".
+ */
+function parseSecretJson(raw: string): SecretJson {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new CpError('credential_unavailable', 'the credential store returned a non-JSON body');
+  }
+  if (!isRecord(parsed)) {
+    throw new CpError(
+      'credential_unavailable',
+      'the credential store returned an unexpected shape',
+    );
+  }
+  // metadata/data are both optional in the wire object, so a wrong TYPE on either is the only thing
+  // left to reject; every consumer below already treats absent as empty.
+  const { metadata, data } = parsed as { metadata?: unknown; data?: unknown };
+  if (metadata !== undefined && !isRecord(metadata)) {
+    throw new CpError(
+      'credential_unavailable',
+      'the credential store returned unexpected metadata',
+    );
+  }
+  if (data !== undefined && !isRecord(data)) {
+    throw new CpError('credential_unavailable', 'the credential store returned unexpected data');
+  }
+  return parsed as SecretJson;
+}
+
 export class K8sSecretStore implements CredentialStore {
   private readonly namespace: string;
   private readonly kek: Buffer;
@@ -64,10 +103,34 @@ export class K8sSecretStore implements CredentialStore {
     this.run = opts.run ?? defaultRunKubectl;
   }
 
+  /**
+   * Turn a kubectl / Kubernetes-API failure into `credential_unavailable` (503) rather than letting it
+   * escape as a plain Error and become 500 `internal_error`.
+   *
+   * The taxonomy already has the right code and nothing on the control-plane side mapped to it: an
+   * unreachable API server, an expired ServiceAccount token, a 403 from a narrowed Role are all "the
+   * credential store is not answering", which is a 503 the caller can retry -- not a 500 that says the
+   * control plane is broken. The exact mirror of OwnershipIndex.guard, and for the same reason: this
+   * class is the only thing that knows a call was a credential-store call.
+   *
+   * A CpError from a nested call is already typed and passes through unwrapped. The message never
+   * carries kubectl's stderr, which can hold a token or a resource name.
+   */
+  private async guard<T>(op: () => Promise<T>): Promise<T> {
+    try {
+      return await op();
+    } catch (err) {
+      if (err instanceof CpError) throw err;
+      throw new CpError('credential_unavailable', 'the credential store is not answering');
+    }
+  }
+
   private async fetch(subject: string): Promise<SecretJson | null> {
-    const raw = (await this.run(buildGetSecretArgs(secretNameFor(subject), this.namespace))).trim();
+    const raw = (
+      await this.guard(() => this.run(buildGetSecretArgs(secretNameFor(subject), this.namespace)))
+    ).trim();
     if (!raw) return null; // --ignore-not-found prints nothing
-    return JSON.parse(raw) as SecretJson;
+    return parseSecretJson(raw);
   }
 
   /** Idempotent: the create is attempted every time and AlreadyExists is the expected outcome. */
@@ -75,7 +138,11 @@ export class K8sSecretStore implements CredentialStore {
     try {
       await this.run(buildCreateSecretArgs(secretNameFor(subject), this.namespace));
     } catch (err) {
-      if (!isAlreadyExists(err)) throw err;
+      // AlreadyExists is the expected outcome and is NOT an outage; anything else is.
+      if (!isAlreadyExists(err)) {
+        if (err instanceof CpError) throw err;
+        throw new CpError('credential_unavailable', 'the credential store is not answering');
+      }
     }
   }
 
@@ -101,9 +168,8 @@ export class K8sSecretStore implements CredentialStore {
         [descriptor.name]: seal(this.kek, subject, descriptor.name, JSON.stringify(secret)),
       },
     };
-    await this.run(
-      buildPatchSecretArgs(secretNameFor(subject), this.namespace),
-      JSON.stringify(patch),
+    await this.guard(() =>
+      this.run(buildPatchSecretArgs(secretNameFor(subject), this.namespace), JSON.stringify(patch)),
     );
   }
 
@@ -144,9 +210,8 @@ export class K8sSecretStore implements CredentialStore {
       },
       stringData: { [name]: null },
     };
-    await this.run(
-      buildPatchSecretArgs(secretNameFor(subject), this.namespace),
-      JSON.stringify(patch),
+    await this.guard(() =>
+      this.run(buildPatchSecretArgs(secretNameFor(subject), this.namespace), JSON.stringify(patch)),
     );
   }
 }

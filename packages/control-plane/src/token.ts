@@ -59,8 +59,22 @@ export function publicKeyToBase64(publicKey: KeyObject): string {
   return (publicKey.export({ format: 'der', type: 'spki' }) as Buffer).toString('base64');
 }
 
+/**
+ * Decode a base64 DER SPKI public key, and REFUSE anything that is not Ed25519.
+ *
+ * Not exploitable without it -- an RSA or P-256 key simply fails `cryptoVerify` with `alg: EdDSA`, so
+ * every token is rejected -- but the failure then arrives per request as "bad token signature" on a
+ * healthy-looking deployment. Asserting the curve here fails at PARSE time instead: `parseKeyset` runs
+ * at startup on both tiers, so a mislabelled key becomes a boot error naming the real problem.
+ */
 export function publicKeyFromBase64(b64: string): KeyObject {
-  return createPublicKey({ key: Buffer.from(b64, 'base64'), format: 'der', type: 'spki' });
+  const key = createPublicKey({ key: Buffer.from(b64, 'base64'), format: 'der', type: 'spki' });
+  if (key.asymmetricKeyType !== 'ed25519') {
+    throw new Error(
+      `public key is ${key.asymmetricKeyType ?? 'of unknown type'}, expected ed25519`,
+    );
+  }
+  return key;
 }
 
 /**
@@ -96,7 +110,8 @@ export function parseKeyset(raw: string | undefined): Map<string, KeyObject> {
       key = publicKeyFromBase64(trimmed.slice(idx + 1).trim());
     } catch (err) {
       throw new Error(
-        `SH_SESSION_TOKEN_PUBLIC_KEYS entry '${kid}' is not a base64 Ed25519 SPKI: ${String(err)}`,
+        `SH_SESSION_TOKEN_PUBLIC_KEYS entry '${kid}' is not a base64 Ed25519 SPKI ` +
+          `(a wrong curve is rejected here, not per request): ${String(err)}`,
       );
     }
     const derived = keyIdFor(key);
@@ -154,9 +169,15 @@ export function makeSigner(privateKeyPem: string): {
   };
 }
 
-const bad = (why: string): never => {
+// A `function` declaration, not a `const` arrow, and for the reason credential-store.ts documents on
+// its own `invalid()`: TS's never-return control-flow narrowing is unreliable for an arrow assigned to
+// a `never`-typed const, so `if (!key) bad(...)` left `key` as `KeyObject | undefined` afterwards and
+// the call site needed a `key!` to compensate. A function declaration narrows correctly, which is what
+// makes that non-null assertion -- and the `header.kid as string` beside it -- genuinely redundant
+// rather than merely ugly.
+function bad(why: string): never {
   throw new CpError('token_invalid', why);
-};
+}
 
 /**
  * Verify locally -- no network, no JWKS fetch. Deliberately not a JWKS endpoint (spec §5.2):
@@ -185,11 +206,12 @@ export function verifyToken(
   if (typeof header !== 'object' || header === null) bad('unparseable token header');
   // Reject `alg: none` and every non-EdDSA alg BEFORE looking at the key: accepting the header's
   // word on the algorithm is the classic JWT downgrade.
-  if (header.alg !== 'EdDSA') bad(`unsupported alg`);
+  if (header.alg !== 'EdDSA') bad('unsupported alg');
   if (typeof header.kid !== 'string') bad('token header has no kid');
-  const key = keys.get(header.kid as string);
+  const key = keys.get(header.kid);
+  // `bad()` is declared `: never`, so control flow cannot reach past it -- no `key!` needed.
   if (!key) bad('unknown token key id');
-  if (!cryptoVerify(null, Buffer.from(`${h}.${p}`), key!, Buffer.from(s, 'base64url'))) {
+  if (!cryptoVerify(null, Buffer.from(`${h}.${p}`), key, Buffer.from(s, 'base64url'))) {
     bad('bad token signature');
   }
 
@@ -201,6 +223,11 @@ export function verifyToken(
   }
   if (typeof claims !== 'object' || claims === null) bad('unparseable token payload');
   if (claims.aud !== TOKEN_AUDIENCE) bad('wrong token audience');
+  // `iss` was minted (MintInput lets a caller set it) but never checked, so the claim was decorative:
+  // a token from any other issuer signed by a key in this keyset verified fine. It matters as soon as
+  // a deployment publishes more than one issuer's key -- which is exactly what the keyset LIST exists
+  // to allow (spec §5.2) -- so check it while there is still only one.
+  if (claims.iss !== DEFAULT_ISSUER) bad('wrong token issuer');
   if (typeof claims.sub !== 'string' || claims.sub.length === 0) bad('token has no subject');
   if (typeof claims.exp !== 'number') bad('token has no expiry');
   const now = opts.now ?? Math.floor(Date.now() / 1000);

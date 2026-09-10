@@ -59,6 +59,9 @@ export function fakeRedis() {
       }
       return keys.length;
     },
+    async zScore(key, member) {
+      return (zsets.get(key) ?? []).find((m) => m.value === member)?.score ?? null;
+    },
     async xAdd(key, _id, fields) {
       ops.push(`xAdd ${key}`);
       streams.set(key, [...(streams.get(key) ?? []), fields]);

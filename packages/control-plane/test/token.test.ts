@@ -2,6 +2,7 @@ import { createHash, generateKeyPairSync, sign as cryptoSign } from 'node:crypto
 import { describe, expect, it } from 'vitest';
 import { CpError } from '../src/errors.js';
 import {
+  DEFAULT_ISSUER,
   TOKEN_AUDIENCE,
   keyIdFor,
   makeSigner,
@@ -253,5 +254,76 @@ describe('mint and verify', () => {
     expect(() => verifyToken(mintApi(privatePem), new Map(), { now: NOW })).toThrow(
       expect.objectContaining({ code: 'token_invalid' }),
     );
+  });
+
+  it('rejects a wrong ISSUER, even validly signed by a key in the keyset', () => {
+    // `iss` was minted -- MintInput lets a caller set it -- but never checked, so the claim was
+    // decorative. It matters as soon as a deployment publishes more than one issuer's key, which is
+    // exactly what the keyset LIST exists to allow (spec §5.2).
+    const { privatePem, publicKey } = keypair();
+    const signer = makeSigner(privatePem);
+    const token = mintApi(privatePem, { iss: 'some-other-control-plane' });
+    expect(() => verifyToken(token, new Map([[signer.kid, publicKey]]), { now: NOW })).toThrow(
+      expect.objectContaining({ code: 'token_invalid' }),
+    );
+    // ...and the default issuer still round-trips, so the check is not simply refusing everything.
+    expect(
+      verifyToken(mintApi(privatePem), new Map([[signer.kid, publicKey]]), { now: NOW }).iss,
+    ).toBe(DEFAULT_ISSUER);
+  });
+
+  it('rejects a token whose header or payload decodes to JSON null', () => {
+    // `JSON.parse('null')` succeeds and yields null, so `typeof x === 'object'` is true for it and a
+    // bare typeof check would wave it through into a property read on null. Mutation-verified in
+    // Task 2's fix round but never pinned by a test until now.
+    const { privatePem, publicKey } = keypair();
+    const signer = makeSigner(privatePem);
+    const keys = new Map([[signer.kid, publicKey]]);
+    const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    const goodHeader = b64({ alg: 'EdDSA', typ: 'JWT', kid: signer.kid });
+    const goodPayload = mintApi(privatePem).split('.')[1]!;
+    const resign = (h: string, p: string) => {
+      const sig = cryptoSign(null, Buffer.from(`${h}.${p}`), { key: privatePem }).toString(
+        'base64url',
+      );
+      return `${h}.${p}.${sig}`;
+    };
+    // A null HEADER cannot reach the key lookup, so it must be refused before it.
+    expect(() => verifyToken(resign(b64(null), goodPayload), keys, { now: NOW })).toThrow(
+      expect.objectContaining({ code: 'token_invalid' }),
+    );
+    // A null PAYLOAD is validly signed by a known key -- only the payload guard can reject it.
+    expect(() => verifyToken(resign(goodHeader, b64(null)), keys, { now: NOW })).toThrow(
+      expect.objectContaining({ code: 'token_invalid' }),
+    );
+  });
+});
+
+describe('a public key must be Ed25519, and is rejected at parse time if not', () => {
+  // Not exploitable without the check -- a wrong curve simply fails cryptoVerify with alg: EdDSA -- but
+  // the failure then arrives per request as "bad token signature" on a healthy-looking deployment.
+  // parseKeyset runs at STARTUP on both tiers, so this turns a mislabelled key into a boot error.
+  it('refuses an RSA public key from publicKeyFromBase64', () => {
+    const { publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    expect(() => publicKeyFromBase64(publicKeyToBase64(publicKey))).toThrow(/ed25519/);
+  });
+
+  it('refuses a P-256 public key too, not just RSA', () => {
+    const { publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    expect(() => publicKeyFromBase64(publicKeyToBase64(publicKey))).toThrow(/ed25519/);
+  });
+
+  it('refuses a whole keyset entry whose key is the wrong curve', () => {
+    const { publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    // The kid is derived from the SPKI either way, so this entry is self-consistent -- the ONLY thing
+    // that can reject it is the curve assertion.
+    const entry = `${keyIdFor(publicKey)}:${publicKeyToBase64(publicKey)}`;
+    expect(() => parseKeyset(entry)).toThrow(/Ed25519 SPKI/);
+  });
+
+  it('still accepts a real Ed25519 keyset', () => {
+    const { publicKey } = keypair();
+    const entry = `${keyIdFor(publicKey)}:${publicKeyToBase64(publicKey)}`;
+    expect([...parseKeyset(entry).keys()]).toEqual([keyIdFor(publicKey)]);
   });
 });

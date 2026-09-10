@@ -28,6 +28,11 @@ export interface CpRedisLike {
   ): Promise<string[]>;
   del(keys: string[]): Promise<unknown>;
   xAdd(key: string, id: string, fields: Record<string, string>): Promise<unknown>;
+  /**
+   * The score of one member, or null when it is gone. `listByOwner` needs it to page from the zset's
+   * own position rather than from a surviving record -- see the comment there for why.
+   */
+  zScore(key: string, member: string): Promise<number | null>;
 }
 
 export interface SessionRecord {
@@ -162,11 +167,23 @@ export class OwnershipIndex {
       // removes the hash last, so this window is real and must read as "already deleted".
       if (rec) sessions.push(rec);
     }
-    const last = sessions.at(-1);
-    return {
-      sessions,
-      nextCursor: ids.length === limit && last ? last.createdAt : null,
-    };
+    // The cursor must come from the last ZSET MEMBER's position, not the last surviving RECORD.
+    // `sessions` has the ghosts filtered out, so on a page whose tail member has no hash the last
+    // record's createdAt is a HIGHER score than the tail's -- and the next page's exclusive `(score`
+    // bound then re-visits the ghost, and every real member between it and the record, forever. Worse,
+    // a page that is entirely ghosts leaves `sessions` empty and truncated the walk to null while more
+    // pages existed.
+    //
+    // A full page is the only case that needs a cursor, so this costs one extra round-trip per page and
+    // none on the last. `zScore` returning null means the tail was removed between the two calls: fall
+    // back to the last surviving record, which is the pre-existing behaviour and no worse than it.
+    let nextCursor: number | null = null;
+    if (ids.length === limit) {
+      const tail = ids[ids.length - 1]!;
+      const score = await this.guard(() => this.redis.zScore(ownerKey(subject), tail));
+      nextCursor = score ?? sessions.at(-1)?.createdAt ?? null;
+    }
+    return { sessions, nextCursor };
   }
 
   /** Step 1 of the cascade, and the flag the credential exchange checks (spec §5.3, §7.3). */
