@@ -291,7 +291,7 @@ type Config struct {
     MaxCommittedBytes   int64         // memory-budget admission gate (§7.3)
     MemoryReserveBytes  int64         // host headroom never committed
     StandbyIdle         time.Duration // no Exec for this long → drop standbys, KEEP workspace; 90s (§4.4)
-    WorkspaceIdle       time.Duration // no Exec for this long → delete the workspace too; 2h (§4.4)
+    WorkspaceIdle       time.Duration // no Exec for this long → delete the workspace too; 30m interim, §4.5 owns the final value (§4.4)
     ReplenishDelay      time.Duration // grace before refilling a popped slot; default 200ms (§4.4)
     ReclaimScanInterval time.Duration // idle-host sweep tick; default StandbyIdle/4 (§4.2)
     MaxReclaimsPerScan  int           // VMs destroyed per sweep — rate-limits munmap; default 8 (§6)
@@ -804,9 +804,11 @@ after results land (§10's file table). A prediction that can be edited to fit t
    `ls`/`find`-heavy commands rather than in `cat`.
 5. **Idle standby residency returns to zero** within `StandbyIdle + ReclaimScanInterval` of a rung's last
    `Exec` on an otherwise idle host, while **workspace count does not change** until `WorkspaceIdle`; and
-   `ReplenishDelay` holds the post-final-`Exec` refill to **zero** VMs rather than D. This predicts the
-   reclamation path's _shape_ — convergence without an arrival to trigger it, and RAM released long before
-   state is — which is the half §4.2 says the tier above does not give us for free.
+   a run's final `Exec` — the cleanup `Exec` — **does** mint D standbys, which `StandbyIdle` ages out
+   within one `ReclaimScanInterval`, so idle standby residency tracks (runs finishing per `StandbyIdle`) ×
+   D × `GuestRAMBytes` and not zero. This predicts the reclamation path's _shape_ — convergence without an
+   arrival to trigger it, and RAM released long before state is — which is the half §4.2 says the tier
+   above does not give us for free.
 
 Prediction 1 is only observable as back-pressure because §6's memory gate exists. Without it the
 prediction would be "confirmed" by the host falling over, which is not a measurement.
@@ -848,9 +850,10 @@ at `MaxCommittedBytes` and records the refusal distinctly from `MaxRuns`. Four m
 path, all with an injected clock and no KVM: the sweep fires from the **ticker** with no further `Exec`
 arriving (the §4.2 case a request-triggered sweep cannot cover); `StandbyIdle` drops a run's standbys and
 **leaves its workspace on disk**, so the next `Exec` for that key is a cold acquire against the same tree
-rather than a fresh one; `ReplenishDelay` means a run's final `Exec` mints **no** replacement standby, while an `Exec` arriving
-inside the delay window is still served; and a sweep destroys at most `MaxReclaimsPerScan` VMs, leaving
-the rest for the next tick.
+rather than a fresh one; a run's final `Exec` mints D replacement standbys after `ReplenishDelay`, which
+`StandbyIdle` ages out rather than reclaiming immediately, while an `Exec` arriving inside the delay
+window is served from them without a cold acquire; and a sweep destroys at most `MaxReclaimsPerScan` VMs,
+leaving the rest for the next tick.
 
 **Correctness gates** — none of these produces a number, and all are blocking:
 
@@ -890,17 +893,15 @@ KVM-requiring tests gated by an env var and skipped by default so `make test` st
 - **The `fastTransport`/`streamTransport` split.** Kept as a priced one-line fallback on
   `Exec.streaming` (§3.3), taken only if §7.2's third rule fires.
 - **An explicit release signal from the harness.** A `Release{workspace_key}` variant on the existing
-  `ServerFrame` oneof, sent from the `finally` that already calls `cleanupWorkspace`, making it the primary
-  reclamation trigger with both idle thresholds as crash backstops (§4.4) — the same
-  explicit-release-plus-expiry shape `sandbox-lease.ts` already uses. Deferred because it is a **second**
-  wire change against §3.4's one, and because `ReplenishDelay` plus a 90s `StandbyIdle` should already
-  bound the RAM cost. Pulled in when E11 shows **idle standby residency** (§7.1) is a material fraction of
-  resident memory with both in force, or when prediction 5 fails. `Pool.Reclaim` is already its call site,
-  so the deferral costs no rework.
+  `ServerFrame` oneof — the same explicit-release-plus-expiry shape `sandbox-lease.ts` already uses.
+  Deferred because it is a **second** wire change against §3.4's "one wire change"; see §4.4 for the
+  mechanism, the residual it would remove, and the condition — already partly met — that pulls it in.
+  `Pool.Reclaim` is already its call site, so the deferral costs no rework.
 - **The `/turn` path on the microVM tier.** It never leases (`run-turn.ts:57`), so it has no run id to
   populate `workspace_key` with, and §3.4 refuses an empty one on the VM path rather than letting it mean
   "share one workspace". Interactive sessions therefore stay on the container tier this slice; giving
-  `/turn` a request-scoped key is the same plumbing MU2 owes it for pool selection.
+  `/turn` a request-scoped key is the same plumbing the next multi-user slice (MU1 is #238) owes it for
+  pool selection.
 - **Multi-host placement, discovery or rebalancing.** Single host, vertical only — same boundary P6 §8
   draws, for the same reason.
 - **gVisor and Kata arms.** P4's registry row lists them; this slice takes the KVM/microVM arm only.
