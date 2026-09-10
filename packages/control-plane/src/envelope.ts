@@ -54,17 +54,18 @@ export function open(kek: Buffer, subject: string, name: string, sealed: string)
   if (parts.length !== 4) throw new Error('sealed credential is malformed');
   const [version, ivB64, tagB64, ctB64] = parts as [string, string, string, string];
   if (version !== VERSION) throw new Error(`unsupported sealed credential version '${version}'`);
-  const decipher = createDecipheriv('aes-256-gcm', kek, Buffer.from(ivB64, 'base64url'));
-  decipher.setAAD(credentialAad(subject, name));
-  decipher.setAuthTag(Buffer.from(tagB64, 'base64url'));
   try {
+    const decipher = createDecipheriv('aes-256-gcm', kek, Buffer.from(ivB64, 'base64url'));
+    decipher.setAAD(credentialAad(subject, name));
+    decipher.setAuthTag(Buffer.from(tagB64, 'base64url'));
     return Buffer.concat([
       decipher.update(Buffer.from(ctB64, 'base64url')),
       decipher.final(),
     ]).toString('utf8');
   } catch {
     // One opaque message for every failure -- wrong KEK, wrong subject, wrong name, tampered
-    // ciphertext. Distinguishing them would tell a caller which half of the AAD it guessed right.
+    // ciphertext, or malformed IV/tag in the sealed format. Distinguishing them would tell a
+    // caller which part of the input it guessed right.
     throw new Error(`failed to decrypt credential '${name}'`);
   }
 }

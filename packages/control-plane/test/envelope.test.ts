@@ -79,6 +79,43 @@ describe('failure modes', () => {
     for (const broken of ['', 'v1', 'v1.a', 'v1.a.b', 'v1.a.b.c.d']) {
       expect(() => open(KEK, 'github:1', 'a', broken), broken).toThrow();
     }
+    // 4 segments with wrong content lengths still fail with opaque error
+    // IV too short (needs 12 bytes)
+    expect(() =>
+      open(
+        KEK,
+        'github:1',
+        'a',
+        `v1.${randomBytes(11).toString('base64url')}.${randomBytes(16).toString('base64url')}.c`,
+      ),
+    ).toThrow(/decrypt/i);
+    // IV too long (needs 12 bytes)
+    expect(() =>
+      open(
+        KEK,
+        'github:1',
+        'a',
+        `v1.${randomBytes(13).toString('base64url')}.${randomBytes(16).toString('base64url')}.c`,
+      ),
+    ).toThrow(/decrypt/i);
+    // Tag too short (needs 16 bytes)
+    expect(() =>
+      open(
+        KEK,
+        'github:1',
+        'a',
+        `v1.${randomBytes(12).toString('base64url')}.${randomBytes(15).toString('base64url')}.c`,
+      ),
+    ).toThrow(/decrypt/i);
+    // Tag too long (needs 16 bytes)
+    expect(() =>
+      open(
+        KEK,
+        'github:1',
+        'a',
+        `v1.${randomBytes(12).toString('base64url')}.${randomBytes(17).toString('base64url')}.c`,
+      ),
+    ).toThrow(/decrypt/i);
   });
 
   it('rejects a KEK of the wrong length rather than padding it', () => {
