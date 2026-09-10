@@ -28,3 +28,14 @@ export {
   type KindSpec,
   type StoredCredential,
 } from './credential-store.js';
+export {
+  buildCreateSecretArgs,
+  buildDeleteSecretArgs,
+  buildFindPodBySelectorArgs,
+  buildGetPodPhaseArgs,
+  buildGetSecretArgs,
+  buildPatchSecretArgs,
+  defaultRunKubectl,
+  isAlreadyExists,
+  type RunKubectl,
+} from './kubectl.js';
