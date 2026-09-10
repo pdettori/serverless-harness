@@ -25,6 +25,17 @@ describe('checkExchangeAuth', () => {
     );
   });
 
+  it('rejects a same-length, different-content token via the constant-time compare', () => {
+    // 'shared-xyz' and 'shared-abc' are both 10 characters, so this is the one case that actually
+    // exercises `timingSafeEqual` rather than the `a.length !== b.length` shortcut immediately
+    // before it (spec §5.3.1) -- deleting the timingSafeEqual term from that OR-expression would
+    // leave every OTHER checkExchangeAuth test passing.
+    expect(() => checkExchangeAuth('shared-xyz', 'shared-abc')).toThrow(
+      // notsecret
+      expect.objectContaining({ code: 'unauthorized' }),
+    );
+  });
+
   it('rejects EVERY call when no token is configured — fail-closed, not fail-open', () => {
     // /internal/credentials hands out real credentials, so an unconfigured deployment must reject
     // everything rather than accept anything (spec §5.3.1, plan gap #3).
@@ -97,11 +108,17 @@ describe('exchangeCredential', () => {
   });
 
   it('rejects an api-scoped token — only a session token may drive a turn', async () => {
+    // A valid session must exist for this sid, and the token must otherwise be a real session
+    // token in every respect except its scope -- otherwise the missing-sid guard (exchange.ts:73)
+    // would independently throw token_invalid for the same fixture, and removing the
+    // requiredScope check from verifyToken would not make this test fail.
+    await sessionToken(d);
     const api = d.signer.mint({
       sub: 'github:1234',
       tenant: 'github:1234',
       roles: [],
       scope: ['api'],
+      sid: 'sid-fixed',
       ttlSeconds: 3600,
     });
     expect(await codeOf(() => exchangeCredential(api, d))).toBe('token_invalid');
