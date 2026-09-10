@@ -66,7 +66,10 @@ describe('secret argv builders', () => {
     ];
     for (const args of secretCalls) {
       expect(args, args.join(' ')).toContain('n'); // the object is always named
-      expect(args.some((a) => a === '-l' || a.startsWith('--selector')), args.join(' ')).toBe(false);
+      expect(
+        args.some((a) => a === '-l' || a.startsWith('--selector')),
+        args.join(' '),
+      ).toBe(false);
       expect(args[1]).toMatch(/^secret$/); // never the plural collection form
     }
   });
@@ -104,7 +107,9 @@ describe('pod argv builders', () => {
 describe('isAlreadyExists', () => {
   it('recognises the create-race error so put() can be idempotent', () => {
     expect(
-      isAlreadyExists(new Error('Error from server (AlreadyExists): secrets "sh-cred-x" already exists')),
+      isAlreadyExists(
+        new Error('Error from server (AlreadyExists): secrets "sh-cred-x" already exists'),
+      ),
     ).toBe(true);
     expect(isAlreadyExists(new Error('Error from server (Forbidden): cannot create secrets'))).toBe(
       false,

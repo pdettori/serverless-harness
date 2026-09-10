@@ -70,7 +70,16 @@ export function buildDeleteSecretArgs(name: string, namespace: string): string[]
 }
 
 export function buildGetPodPhaseArgs(pod: string, namespace: string): string[] {
-  return ['get', 'pod', pod, '-n', namespace, '-o', 'jsonpath={.status.phase}', '--ignore-not-found'];
+  return [
+    'get',
+    'pod',
+    pod,
+    '-n',
+    namespace,
+    '-o',
+    'jsonpath={.status.phase}',
+    '--ignore-not-found',
+  ];
 }
 
 /** Tab-separated `<name>\t<phase>`, empty when the selector matches nothing. */
