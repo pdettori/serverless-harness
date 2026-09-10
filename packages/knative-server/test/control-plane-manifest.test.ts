@@ -195,7 +195,7 @@ describe('the data plane learns about the control plane', () => {
     // The control plane holds the Ed25519 session-signing key, the credential KEK and the shared
     // exchange token, all as env vars (see 'control-plane env' above). It runs in namespace `default`
     // today, where the harness ServiceAccount holds `pods/exec: ['create']` with no `resourceNames`
-    // restriction (service.yaml:113-127, control-plane.yaml:129 and :191-205) -- so anyone with code
+    // restriction (service.yaml:113-127, control-plane.yaml:138 and :200-214) -- so anyone with code
     // execution in the harness pod can `kubectl exec` into sh-control-plane and read all three from
     // /proc/1/environ. Either half below is a legitimate state on its own -- today ships 'false' +
     // 'default', the intended end state is 'true' + 'sh-credentials' -- only the combination is
