@@ -631,7 +631,7 @@ creation — a missing key should fail at session creation, not three turns in.
 
 **The operator fallback relocates rather than disappearing.** For deployments that want "user has no
 key yet → use the deployment's", the control plane resolves the operator key **at exchange time**,
-behind `ALLOW_OPERATOR_FALLBACK` (default `false`) — never as an environment fallback in the harness.
+behind `SH_ALLOW_OPERATOR_FALLBACK` (default `false`) — never as an environment fallback in the harness.
 
 Same convenience, a different property: the decision is made by the trusted tier, is attributable to a
 subject, and is logged. The harness still cannot run bare, so a control-plane bug fails closed instead

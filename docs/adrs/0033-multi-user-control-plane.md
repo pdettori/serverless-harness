@@ -96,7 +96,7 @@ The containments are the reason the cost is bounded:
   policy** (two checks) rather than **by construction** (nothing reachable). The spec §3.5 refuses to
   blur the two, and §9.3 test 1 asserts the policy form now and tightens later.
 - Negative / accepted cost: the operator-key fallback does not disappear, it relocates — behind
-  `ALLOW_OPERATOR_FALLBACK` (default `false`), resolved by the trusted tier where it is attributable and
+  `SH_ALLOW_OPERATOR_FALLBACK` (default `false`), resolved by the trusted tier where it is attributable and
   logged rather than ambient in the harness.
 - Negative / accepted cost: revoking a user at the identity provider does not stop their scheduled runs,
   because the stored credential — not an OIDC grant — is what authorizes background egress.
