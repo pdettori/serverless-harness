@@ -201,3 +201,79 @@ describe('rollout posture', () => {
     expect(base.resources).not.toContain('control-plane.yaml');
   });
 });
+
+describe('the harness can actually reach the control plane (egress composition)', () => {
+  // harness-egress-policy.yaml is default-deny egress on the harness pod and its allowlist predates
+  // MU1 -- DNS, Redis 6379, relay 8443, 0.0.0.0/0 on 443/6443. The exchange hop is TCP 8080, which no
+  // rule there permits, so on any egress-enforcing cluster every authenticated turn ends in
+  // 503 credential_unavailable. control-plane.yaml therefore ships an ADDITIVE policy (policies union),
+  // and the base file stays untouched because MU1 is opt-in.
+  type NetPol = {
+    kind: string;
+    metadata: { namespace?: string };
+    spec: {
+      podSelector: { matchLabels?: Record<string, string> };
+      policyTypes?: string[];
+      egress?: {
+        to?: { podSelector?: { matchLabels?: Record<string, string> } }[];
+        ports?: { protocol?: string; port?: number }[];
+      }[];
+    };
+  };
+  const netpols = (file: string) =>
+    docs(file).filter((o) => o.kind === 'NetworkPolicy') as NetPol[];
+  // The one policy in control-plane.yaml that opens a path to the control plane's own pod labels.
+  const cpLabels = () =>
+    cp().find((o) => o.kind === 'Deployment').spec.template.metadata.labels as Record<
+      string,
+      string
+    >;
+  const added = () => {
+    const pols = netpols('control-plane.yaml');
+    expect(pols.length, 'control-plane.yaml must ship an egress policy for the exchange hop').toBe(
+      1,
+    );
+    return pols[0];
+  };
+  // Parsed out of the URL rather than hardcoded, so a future SH_CONTROL_PLANE_URL port change fails
+  // here instead of in production.
+  const exchangePort = () => {
+    const url = (
+      docs('service.yaml').find(
+        (o) => o.apiVersion === 'serving.knative.dev/v1' && o.kind === 'Service',
+      ).spec.template.spec.containers[0].env as EnvVar[]
+    ).find((e) => e.name === 'SH_CONTROL_PLANE_URL')?.value;
+    expect(url, 'SH_CONTROL_PLANE_URL must be set on the harness Service').toBeTruthy();
+    const port = Number(new URL(url!).port);
+    expect(Number.isInteger(port) && port > 0, `no explicit port in ${url}`).toBe(true);
+    return port;
+  };
+
+  it('allows egress to the control-plane pod on the exchange port, in the workload namespace', () => {
+    const pol = added();
+    expect(pol.metadata.namespace).toBe('default');
+    expect(pol.spec.policyTypes).toEqual(['Egress']);
+    const rule = pol.spec.egress!.find((e) =>
+      e.to?.some((t) => t.podSelector?.matchLabels?.app === cpLabels().app),
+    );
+    expect(rule, "no egress rule selects the control plane's own pod labels").toBeTruthy();
+    expect(rule!.ports).toEqual([{ protocol: 'TCP', port: exchangePort() }]);
+  });
+
+  it('selects the harness pod exactly the way the base default-deny policy does', () => {
+    // The composition assertion: two independently authored files, compared. A drift here means the
+    // added policy selects nothing and the base policy still denies 8080 -- silently, until a turn runs.
+    const base = netpols('harness-egress-policy.yaml');
+    expect(base.length).toBe(1);
+    expect(added().spec.podSelector).toEqual(base[0].spec.podSelector);
+  });
+
+  it('does not widen the base allowlist — the exchange port is absent from it', () => {
+    // If someone "helpfully" edits harness-egress-policy.yaml instead, opting out of MU1 stops being
+    // "do not apply control-plane.yaml" and every base deployment gains the hop.
+    const basePorts = netpols('harness-egress-policy.yaml')[0]
+      .spec.egress!.flatMap((e) => e.ports ?? [])
+      .map((p) => p.port);
+    expect(basePorts).not.toContain(exchangePort());
+  });
+});

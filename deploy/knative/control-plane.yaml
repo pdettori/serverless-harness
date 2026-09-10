@@ -242,3 +242,42 @@ spec:
   ports:
     - port: 8080
       targetPort: 8080
+---
+# ADDITIVE egress NetworkPolicy: harness -> control plane on TCP 8080.
+#
+# deploy/knative/harness-egress-policy.yaml is a default-deny egress policy on the harness pod whose
+# allowlist predates MU1: DNS, Redis on 6379, the sandbox relay on 8443, and 0.0.0.0/0 on 443 and 6443.
+# MU1's per-turn credential exchange adds a hop the base allowlist never anticipated --
+# SH_CONTROL_PLANE_URL is `http://sh-control-plane.default.svc:8080` (service.yaml), plaintext h2c on
+# TCP 8080 -- and 8080 matches no rule there. On any cluster that enforces egress (OVN-Kubernetes on
+# OCP, and modern kindnet) the exchange fetch is dropped and every authenticated turn ends in
+# 503 credential_unavailable. Fail-closed, so not a security hole, but MU1's central data path is dead.
+#
+# NetworkPolicies UNION: a pod's allowed egress is the union of every policy selecting it, so a second
+# policy that only ADDS an allow is the correct shape for an opt-in component. harness-egress-policy.yaml
+# belongs to the base stack and is applied by `kubectl apply -k deploy/knative` on every deployment,
+# MU1 or not; it is deliberately left untouched so that opting out of MU1 is exactly "do not apply this
+# file" and the base allowlist never widens for deployments that never run a control plane.
+#
+# The podSelector below must stay identical to harness-egress-policy.yaml's -- Knative stamps
+# `serving.knative.dev/service` on the user pod, and an `app=` selector would match nothing.
+# packages/knative-server/test/control-plane-manifest.test.ts compares the two files and parses the
+# port out of SH_CONTROL_PLANE_URL, so a drift in either fails there rather than in production.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sh-control-plane-egress-from-harness
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      serving.knative.dev/service: serverless-harness
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: sh-control-plane
+      ports:
+        - { protocol: TCP, port: 8080 }
