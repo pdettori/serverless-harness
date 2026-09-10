@@ -45,7 +45,9 @@ describe('resolveSandbox', () => {
   });
 
   it('reports unknown when the harness reported neither', async () => {
+    let called = false;
     const run: RunKubectl = async () => {
+      called = true;
       throw new Error('should not be called');
     };
     expect(await resolveSandbox({}, 'default', run, 'github:1234')).toEqual({
@@ -53,6 +55,10 @@ describe('resolveSandbox', () => {
       phase: 'unknown',
       tenant: 'github:1234',
     });
+    expect(
+      called,
+      'resolveSandbox must not invoke kubectl when neither a pinned pod nor a selector was reported',
+    ).toBe(false);
   });
 
   it('reports unknown rather than 500 when the Kubernetes API is down', async () => {
