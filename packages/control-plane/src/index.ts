@@ -51,3 +51,12 @@ export {
   type CpRedisLike,
   type SessionRecord,
 } from './ownership.js';
+export {
+  GithubOAuthProvider,
+  adminSubjectsFromEnv,
+  rolesFor,
+  type DeviceStart,
+  type FetchLike,
+  type IdentityProvider,
+  type Principal,
+} from './identity.js';
