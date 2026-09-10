@@ -1,5 +1,5 @@
 .PHONY: lint fmt test test-deploy typecheck demo-remote-sandbox demo-remote-sandbox-teardown \
-	demo-promoted-workflow demo-promoted-workflow-teardown
+	demo-promoted-workflow demo-promoted-workflow-teardown demo-multiuser demo-multiuser-teardown
 
 lint:
 	pre-commit run --all-files
@@ -43,3 +43,13 @@ demo-promoted-workflow:
 
 demo-promoted-workflow-teardown:
 	bash deploy/knative/demo-promoted-workflow.sh --teardown
+
+# MU1 multi-user demo: two GitHub logins, owned sessions, per-user credentials, and a credential
+# property that holds with the deployment's own key present in the environment. Needs a warm cluster,
+# a GitHub OAuth app with device flow enabled, and two GitHub accounts; it SKIPS with a message
+# otherwise. See docs/specs/2026-09-08-multi-user-control-plane-design.md §10.
+demo-multiuser:
+	bash deploy/knative/demo-multiuser.sh $(DEMO_ARGS)
+
+demo-multiuser-teardown:
+	bash deploy/knative/demo-multiuser.sh --teardown

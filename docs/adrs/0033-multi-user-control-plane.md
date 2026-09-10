@@ -1,6 +1,6 @@
 # ADR-0033: An always-on control plane owns multi-user identity and credentials
 
-- **Status:** Proposed <!-- Proposed → Accepted → Superseded by ADR-NNNN / Deprecated -->
+- **Status:** Accepted <!-- Proposed → Accepted → Superseded by ADR-NNNN / Deprecated -->
 - **Date:** 2026-09-08
 - **Deciders:** Serverless Harness team
 - **Spec:** [`../specs/2026-09-08-multi-user-control-plane-design.md`](../specs/2026-09-08-multi-user-control-plane-design.md)
