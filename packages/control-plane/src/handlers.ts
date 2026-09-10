@@ -5,6 +5,7 @@ import {
   validateCredentialName,
   type CredentialStore,
 } from './credential-store.js';
+import { exchangeCredential } from './exchange.js';
 import type { RunKubectl } from './kubectl.js';
 import { DEFAULT_PAGE_SIZE, type OwnershipIndex, type SessionRecord } from './ownership.js';
 import type { IdentityProvider } from './identity.js';
@@ -339,5 +340,32 @@ export const HANDLERS: Record<string, Handler> = {
       rec.tenant,
     );
     return { status: 200, body: projectResources(rec, runtime, sandbox) };
+  },
+
+  exchangeCredential: async (ctx, deps) => {
+    // The router performs the shared-bearer check (it is the only layer that sees headers) and marks
+    // the request. A handler reached without that mark is a routing bug, and 401 is the safe answer.
+    if (!ctx.exchangeAuthorized) {
+      throw new CpError('unauthorized', 'exchange authentication failed');
+    }
+    const token = asRecord(ctx.body).token;
+    if (typeof token !== 'string' || token.length === 0) {
+      throw new CpError('invalid_request', 'token is required');
+    }
+    return { status: 200, body: await exchangeCredential(token, deps) };
+  },
+
+  /**
+   * Readiness is "can I serve session routes", i.e. is Redis answering. Credentials live in
+   * Kubernetes Secrets, so they stay up while Redis is down (spec §7.1, §9.2) -- which is why this
+   * probe checks only the index.
+   */
+  readyz: async (_ctx, deps) => {
+    try {
+      await deps.index.get('__readyz__');
+    } catch {
+      throw new CpError('redis_unavailable', 'redis is not answering');
+    }
+    return { status: 200, body: 'ok' };
   },
 };

@@ -70,3 +70,10 @@ export {
   type RequestCtx,
 } from './handlers.js';
 export { projectResources, resolveSandbox, type SandboxView } from './resources.js';
+export {
+  checkExchangeAuth,
+  exchangeCredential,
+  placeholderFor,
+  type CredentialMode,
+  type ExchangeResponse,
+} from './exchange.js';
