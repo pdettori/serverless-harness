@@ -1,5 +1,10 @@
 import { CpError } from './errors.js';
-import { resolveInferenceName, type CredentialStore } from './credential-store.js';
+import {
+  resolveInferenceName,
+  parseCredentialBody,
+  validateCredentialName,
+  type CredentialStore,
+} from './credential-store.js';
 import type { RunKubectl } from './kubectl.js';
 import { DEFAULT_PAGE_SIZE, type OwnershipIndex, type SessionRecord } from './ownership.js';
 import type { IdentityProvider } from './identity.js';
@@ -275,5 +280,50 @@ export const HANDLERS: Record<string, Handler> = {
     // 202 rather than pretending a synchronous delete happened; a sweeper reaps what the in-flight
     // turn writes on its way out (spec §7.3).
     return { status: inFlight ? 202 : 204, body: undefined };
+  },
+
+  /**
+   * Write-only. There is deliberately no read-back path anywhere in /v1 (spec §4.2): the value goes
+   * in and is never returned, so a compromised api token cannot exfiltrate a stored provider key.
+   * The subject comes from the TOKEN, never from the path or the body -- the principal is never in a
+   * path (spec §4.1), which is what stops the URL and the token being two sources of truth for one
+   * fact.
+   */
+  putCredential: async (ctx, deps) => {
+    const p = requirePrincipal(ctx);
+    const name = validateCredentialName(ctx.params.name ?? '');
+    const cred = parseCredentialBody(name, ctx.body);
+    await deps.credentials.put(p.sub, cred);
+    await deps.index.audit({ subject: p.sub, credential: name, decision: 'credential_written' });
+    return { status: 204, body: undefined };
+  },
+
+  /** Metadata only, and it decrypts nothing: the descriptor lives in annotations (spec §6.2). */
+  listCredentials: async (ctx, deps) => {
+    const p = requirePrincipal(ctx);
+    // No ?owner= is read here. Listing another user's credential NAMES is not a privilege MU1
+    // grants, and not reading the parameter is what stops it becoming one by accident.
+    const descriptors = await deps.credentials.list(p.sub);
+    return {
+      status: 200,
+      body: {
+        credentials: descriptors.map((d) => ({
+          name: d.name,
+          kind: d.kind,
+          consumer: d.consumer,
+          destination: d.destination,
+          endpoint: d.endpoint,
+        })),
+      },
+    };
+  },
+
+  deleteCredential: async (ctx, deps) => {
+    const p = requirePrincipal(ctx);
+    const name = validateCredentialName(ctx.params.name ?? '');
+    await deps.credentials.delete(p.sub, name);
+    await deps.index.audit({ subject: p.sub, credential: name, decision: 'credential_deleted' });
+    // 204 whether or not it existed: a 404 here would be an existence oracle over credential names.
+    return { status: 204, body: undefined };
   },
 };
