@@ -9,7 +9,8 @@ import {
 
 /** Records every request and replies from a scripted queue keyed by URL substring. */
 function fakeFetch(script: Record<string, { status: number; body: unknown }[]>) {
-  const seen: { url: string; method: string; headers: Record<string, string>; body?: string }[] = [];
+  const seen: { url: string; method: string; headers: Record<string, string>; body?: string }[] =
+    [];
   const fetch: FetchLike = async (url, init) => {
     seen.push({ url, ...init });
     const key = Object.keys(script).find((k) => url.includes(k));
@@ -183,7 +184,9 @@ describe('completeDeviceAuth', () => {
 
   it('maps a terminal GitHub error to unauthorized', async () => {
     for (const error of ['access_denied', 'expired_token', 'incorrect_device_code']) {
-      const { fetch } = fakeFetch({ '/login/oauth/access_token': [{ status: 200, body: { error } }] });
+      const { fetch } = fakeFetch({
+        '/login/oauth/access_token': [{ status: 200, body: { error } }],
+      });
       expect(await codeOf(() => provider(fetch).completeDeviceAuth('dc-1')), error).toBe(
         'unauthorized',
       );
@@ -200,6 +203,16 @@ describe('completeDeviceAuth', () => {
 
   it('rejects a non-JSON reply rather than throwing a raw SyntaxError', async () => {
     const fetch: FetchLike = async () => ({ status: 200, text: async () => '<html>502</html>' });
+    expect(await codeOf(() => provider(fetch).completeDeviceAuth('dc-1'))).toBe('unauthorized');
+  });
+
+  it('rejects a JSON null reply rather than attempting to read its id', async () => {
+    // typeof null === 'object', so the guard must check `parsed === null` explicitly.
+    // This test pins that the `|| parsed === null` clause works (spec §5.5).
+    const { fetch } = fakeFetch({
+      '/login/oauth/access_token': [{ status: 200, body: { access_token: 'gho-fake' } }], // notsecret
+      '/user': [{ status: 200, body: null }],
+    });
     expect(await codeOf(() => provider(fetch).completeDeviceAuth('dc-1'))).toBe('unauthorized');
   });
 });

@@ -79,7 +79,10 @@ export class GithubOAuthProvider implements IdentityProvider {
   }
 
   /** GitHub replies form-encoded unless asked for JSON, so the Accept header is load-bearing. */
-  private async postJson(url: string, params: Record<string, string>): Promise<Record<string, unknown>> {
+  private async postJson(
+    url: string,
+    params: Record<string, string>,
+  ): Promise<Record<string, unknown>> {
     const res = await this.fetchImpl(url, {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
