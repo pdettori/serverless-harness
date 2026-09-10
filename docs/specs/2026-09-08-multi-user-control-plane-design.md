@@ -863,7 +863,9 @@ ServiceAccount reach into it. The split has to carry the RBAC with it: `sh-contr
 (`control-plane.yaml:110-118`), the Role backing `/resources`'s pod-phase read (§7.4), needs `get`/
 `list` on Pods in the **workload** namespace, not in `sh-credentials`, so it cannot move with the
 Deployment and has to be split out as a separate, narrower grant. Not done in slice 1 — tracked as
-follow-up work.
+[#248](https://github.com/rossoctl/serverless-harness/issues/248), which must land before any
+deployment sets `SH_REQUIRE_AUTH=true`. A CI tripwire in
+`packages/knative-server/test/control-plane-manifest.test.ts` refuses that combination until it does.
 
 ---
 
