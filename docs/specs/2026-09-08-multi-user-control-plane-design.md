@@ -329,9 +329,22 @@ harness process** in server mode. Direct mode puts one there every turn.
 divergence from **P5 §5** as well as from Z1 §2 / Z3 — so that P5's implementation does not assert an
 invariant MU1 knowingly breaks.
 
-Concretely, P5's lock-down assertion wants scoping to the **environment** (which MU1 never writes)
-rather than to the whole process, or gating on direct mode being disabled. MU3 removes the divergence
-by removing direct mode.
+Concretely, the environment is not out of reach either — it is written, by **P5's own construct, not
+MU1's**. The write-once-if-absent seed at `run-turn.ts:336-338` — guarded by
+`if (authToken && !process.env.ANTHROPIC_API_KEY)` — is unchanged by this spec, and MU1 was
+deliberately forbidden from touching it (§3.5's ownership split). Since MU1, the resolved token is
+`config?.upstreamCredential?.value` first (`:329-332`), so in direct mode the first authenticated turn
+in a fresh harness pod with no `ANTHROPIC_API_KEY` set writes **that subject's real provider key**
+into the process environment for the pod's lifetime, spanning every other user's subsequent turns.
+`harness/test/model-gateway.test.ts` now pins exactly this, asserting `process.env.ANTHROPIC_API_KEY`
+becomes the direct-mode credential value, so the claim is anchored to something executable rather than
+to prose.
+
+Reachability stays narrow: `service.yaml:45-49` makes `ANTHROPIC_API_KEY` a **required**
+`secretKeyRef`, so a normally-deployed pod always has it set and the guard never fires — this is not a
+routine leak. The net effect is that the divergence declared above is slightly wider than this section
+first said, not that MU1 introduces a second one: the seed is P5's, and removing it without P5's
+sentinel remains P5's to do, not MU1's. MU3 removes the divergence by removing direct mode.
 
 #### 3. Inbound `X-SH-Subject` becomes conditional
 
@@ -759,21 +772,31 @@ what a multi-user deployment sets. Under the permissive default the control-plan
 with no token has no `sid` to bind against. A deployment that wants the guarantees below sets the flag;
 one that has not enabled multi-user keeps today's behaviour and makes no claim.
 
-| Layer                  | Property                                                          | Mechanism                                                                                              |
-| ---------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| API                    | a user sees and deletes only their own sessions                   | `assertOwner`, owner zset, 404 on mismatch                                                             |
-| Session drive          | a valid token cannot drive another session                        | `token.sid === body.sessionId`                                                                         |
-| Token forgery          | the harness cannot mint a token                                   | Ed25519, harness holds the public key only                                                             |
-| Inference credential   | a turn runs on its own subject's key or not at all                | per-subject inflow; **enforced by policy** pre-P5, **by construction** once P5's sentinel lands (§3.5) |
-| Credential at rest     | a namespace secret read yields ciphertext; a relabel attack fails | envelope encryption, AAD = `subject\|name`                                                             |
-| Credential enumeration | the serving path cannot list users                                | no `list` verb, separate namespace                                                                     |
+| Layer                  | Property                                                                  | Mechanism                                                                                              |
+| ---------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| API                    | a user sees and deletes only their own sessions                           | `assertOwner`, owner zset, 404 on mismatch                                                             |
+| Session drive          | a valid token cannot drive another session                                | `token.sid === body.sessionId`                                                                         |
+| Token forgery          | the **sandbox tier** cannot mint a token; the **harness tier** can — §8.2 | Ed25519, harness holds the public key only — bounded to the sandbox tier (§8.2)                        |
+| Inference credential   | a turn runs on its own subject's key or not at all                        | per-subject inflow; **enforced by policy** pre-P5, **by construction** once P5's sentinel lands (§3.5) |
+| Credential at rest     | a namespace secret read yields ciphertext; a relabel attack fails         | envelope encryption, AAD = `subject\|name`                                                             |
+| Credential enumeration | the serving path cannot list users                                        | no `list` verb, separate namespace                                                                     |
 
 **404, not 403, for another user's session.** A 403 is an existence oracle. Session ids are unguessable
 UUIDs so the leak is small, but 404 is the standard answer and the one we would otherwise have to
 change later. `403` is reserved for _authenticated but insufficiently privileged on a resource you may
 know exists_ — e.g. a non-admin passing `?owner=`.
 
-### 8.2 What slice 1 does not guarantee — the shared pool
+**Token forgery holds at the sandbox tier, not the harness tier.** Ed25519 with a public-key-only
+verifier is what makes forgery cryptographically impossible for the **sandbox tier** rather than merely
+discouraged — no private key is mounted anywhere a sandbox pod can reach. Namespace collocation defeats
+that custody for the **harness tier** specifically: code execution in the harness pod can reach the
+control-plane pod holding the private key (§8.2 item 2). The sandbox tier, where model code actually
+runs, is unaffected — it holds neither the harness's ServiceAccount nor a network path to the control
+plane.
+
+### 8.2 What slice 1 does not guarantee
+
+#### 1. The shared pool
 
 Two users' leaves can be placed on the same pooled sandbox pod. Nothing in slice 1 changes that, and
 the demo narration says so out loud.
@@ -813,6 +836,34 @@ decision.
 Rejected alternatives: **exclusive lease + scrub on release** (isolation reduces to the completeness of
 a scrub list — the #216/#222 bug class, permanently); **per-session ephemeral sandbox** (strongest and
 simplest to explain, but discards the warm-pool cold-start work).
+
+#### 2. Namespace collocation reaches the control plane's secrets from the harness pod
+
+`deploy/knative/control-plane.yaml:138` puts the `sh-control-plane` Deployment in namespace `default`
+— the same namespace as the harness — and `:200-214` injects `SH_SESSION_TOKEN_PRIVATE_KEY`,
+`SH_CREDENTIAL_KEK`, and `SH_EXCHANGE_TOKEN` as environment variables. `service.yaml:113-127` grants
+the harness ServiceAccount `pods/exec: ['create']` in `default` with **no `resourceNames`**
+restriction — it needs exec to run agent code in sandbox pods, and the sandbox pool lives in
+`default` too — and that same unscoped grant lets it `kubectl exec` into `deploy/sh-control-plane`
+and read all three secrets from `/proc/1/environ`. Both tiers run the same image, so a shell is
+present; `readOnlyRootFilesystem` and `runAsNonRoot` constrain what the exec'd process can do, not
+which pod it can reach. `harness-egress-policy.yaml:91-99` allows the egress this needs, to the API
+server on 443/6443.
+
+This is reachable from **code execution in the harness pod** — a compromise of the semi-trusted brain
+tier (§3.2) — not from the sandbox (hands) tier where model code actually runs: a leaf sandbox pod
+holds neither the harness's ServiceAccount nor a network path to the control plane. §8.1's _Token
+forgery_ row is qualified to that distinction, because it is what keeps this a bounded exposure rather
+than a broken design.
+
+The fix is namespace separation, not a new mechanism: move the `sh-control-plane` Deployment and its
+three Secrets out of `default` and into `sh-credentials`, the namespace the manifest already creates
+for the credential store (`control-plane.yaml:53-55`), so no RoleBinding gives the harness
+ServiceAccount reach into it. The split has to carry the RBAC with it: `sh-control-plane-pods`
+(`control-plane.yaml:110-118`), the Role backing `/resources`'s pod-phase read (§7.4), needs `get`/
+`list` on Pods in the **workload** namespace, not in `sh-credentials`, so it cannot move with the
+Deployment and has to be split out as a separate, narrower grant. Not done in slice 1 — tracked as
+follow-up work.
 
 ---
 
