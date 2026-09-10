@@ -77,3 +77,5 @@ export {
   type CredentialMode,
   type ExchangeResponse,
 } from './exchange.js';
+export { buildHandler, startControlPlane } from './server.js';
+export { configFromEnv, depsFromEnv, portFromEnv, verifyKeysFromEnv } from './main.js';
