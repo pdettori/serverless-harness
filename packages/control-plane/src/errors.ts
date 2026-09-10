@@ -4,25 +4,36 @@
  * `session_not_found` / `prompt_required` (packages/knative-server/src/server.ts). Mapped to a
  * status in exactly one place, so a handler never picks a status itself (spec §9.1).
  */
-export type CpErrorCode =
-  | 'invalid_json'
-  | 'invalid_request'
-  | 'token_required'
-  | 'token_invalid'
-  | 'token_expired'
-  | 'subject_conflict'
-  | 'unauthorized'
-  | 'forbidden'
-  | 'session_not_found'
-  | 'session_mismatch'
-  | 'credential_required'
-  | 'credential_ambiguous'
-  | 'credential_not_found'
-  | 'credential_unavailable'
-  | 'endpoint_unresolved'
-  | 'authorization_pending'
-  | 'redis_unavailable'
-  | 'internal_error';
+/**
+ * Every error code the control plane can emit, as a VALUE so tests can iterate it.
+ *
+ * The type derives from this array rather than being declared beside it, which makes the two
+ * impossible to disagree: adding a code here forces a `STATUS` entry (Record exhaustiveness) and
+ * forces the OpenAPI `Error.error` enum to list it (openapi-contract.test.ts). Order is irrelevant --
+ * every consumer sorts.
+ */
+export const CP_ERROR_CODES = [
+  'invalid_json',
+  'invalid_request',
+  'token_required',
+  'token_invalid',
+  'token_expired',
+  'subject_conflict',
+  'unauthorized',
+  'forbidden',
+  'session_not_found',
+  'session_mismatch',
+  'credential_required',
+  'credential_ambiguous',
+  'credential_not_found',
+  'credential_unavailable',
+  'endpoint_unresolved',
+  'authorization_pending',
+  'redis_unavailable',
+  'internal_error',
+] as const;
+
+export type CpErrorCode = (typeof CP_ERROR_CODES)[number];
 
 const STATUS: Record<CpErrorCode, number> = {
   invalid_json: 400,

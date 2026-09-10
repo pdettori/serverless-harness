@@ -1,4 +1,4 @@
-export { CpError, statusFor, writeError, type CpErrorCode } from './errors.js';
+export { CP_ERROR_CODES, CpError, statusFor, writeError, type CpErrorCode } from './errors.js';
 export { ROUTES, matchRoute, type RouteSpec } from './routes.js';
 export {
   TOKEN_AUDIENCE,
