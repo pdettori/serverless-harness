@@ -10,6 +10,7 @@ import { DEFAULT_PAGE_SIZE, type OwnershipIndex, type SessionRecord } from './ow
 import type { IdentityProvider } from './identity.js';
 import type { KeyObject } from 'node:crypto';
 import type { MintInput, TokenClaims } from './token.js';
+import { projectResources, resolveSandbox } from './resources.js';
 
 export interface CpConfig {
   apiTokenTtlSeconds: number;
@@ -326,5 +327,17 @@ export const HANDLERS: Record<string, Handler> = {
     await deps.index.audit({ subject: p.sub, credential: name, decision: 'credential_deleted' });
     // 204 whether or not it existed: a 404 here would be an existence oracle over credential names.
     return { status: 204, body: undefined };
+  },
+
+  getSessionResources: async (ctx, deps) => {
+    const rec = await assertOwner(ctx.params.id!, ctx.principal, deps);
+    const runtime = await deps.index.getRuntime(rec.sessionId);
+    const sandbox = await resolveSandbox(
+      runtime,
+      deps.config.sandboxNamespace,
+      deps.runKubectl,
+      rec.tenant,
+    );
+    return { status: 200, body: projectResources(rec, runtime, sandbox) };
   },
 };

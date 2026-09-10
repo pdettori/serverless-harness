@@ -69,3 +69,4 @@ export {
   type Handler,
   type RequestCtx,
 } from './handlers.js';
+export { projectResources, resolveSandbox, type SandboxView } from './resources.js';
