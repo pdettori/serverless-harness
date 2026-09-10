@@ -175,8 +175,11 @@ describe('the exchange hop', () => {
   });
 
   it('does not accept the exchange token as an /v1 credential', async () => {
-    // The two auth kinds are separate: the shared bearer authenticates a DEPLOYMENT hop, and must not
-    // stand in for a user's identity anywhere.
+    // The exchange token is an opaque shared secret, not a JWT, so it fails verifyToken's structural
+    // check before requiredScope is ever evaluated -- this does not exercise scope separation (that is
+    // covered by the "401s a session token on an /v1 route" case above). What this guards against is
+    // someone later adding an `if (presented === config.exchangeToken) allow` shortcut inside
+    // authorize(), which would let the deployment-hop secret stand in for a user's identity.
     const res = await request('GET', '/v1/me', { headers: { Authorization: 'Bearer shared-abc' } }); // notsecret
     expect(res.status).toBe(401);
   });
@@ -187,7 +190,7 @@ describe('error hygiene', () => {
     const broken = makeDeps({
       identity: {
         startDeviceAuth: async () => {
-          throw new Error('redis://user:hunter2@10.0.0.1:6379 exploded');
+          throw new Error('redis://user:hunter2@10.0.0.1:6379 exploded'); // notsecret
         },
         completeDeviceAuth: async () => {
           throw new Error('nope');
