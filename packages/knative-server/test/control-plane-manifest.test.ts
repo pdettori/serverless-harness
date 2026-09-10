@@ -190,6 +190,44 @@ describe('the data plane learns about the control plane', () => {
     expect(controlPlane.name).toBe(dataPlane.name);
     expect(controlPlane.key).toBe(dataPlane.key);
   });
+
+  describe('SH_REQUIRE_AUTH=true must not ship while the control plane is collocated (spec §8.2)', () => {
+    // The control plane holds the Ed25519 session-signing key, the credential KEK and the shared
+    // exchange token, all as env vars (see 'control-plane env' above). It runs in namespace `default`
+    // today, where the harness ServiceAccount holds `pods/exec: ['create']` with no `resourceNames`
+    // restriction (service.yaml:113-127, control-plane.yaml:129 and :191-205) -- so anyone with code
+    // execution in the harness pod can `kubectl exec` into sh-control-plane and read all three from
+    // /proc/1/environ. Either half below is a legitimate state on its own -- today ships 'false' +
+    // 'default', the intended end state is 'true' + 'sh-credentials' -- only the combination is
+    // dangerous, so the assertion below must be a conjunction of values read from the manifests.
+    const requireAuth = () => svcEnv().find((e) => e.name === 'SH_REQUIRE_AUTH')?.value;
+    const controlPlaneNamespace = () =>
+      cp().find((o) => o.kind === 'Deployment').metadata.namespace;
+
+    it('refuses SH_REQUIRE_AUTH=true while the control plane still runs in the workload namespace', () => {
+      const authIsLive = requireAuth() === 'true';
+      const collocatedWithWorkload = controlPlaneNamespace() === 'default';
+      expect(
+        authIsLive && collocatedWithWorkload,
+        'SH_REQUIRE_AUTH=true with sh-control-plane still deployed in `default` exposes the ' +
+          'session-signing key, the credential KEK and the shared exchange token to anyone with code ' +
+          'execution in the harness pod: `kubectl exec` into sh-control-plane, then read ' +
+          '/proc/1/environ -- defeating the "the harness cannot mint a token" property. Fix: move the ' +
+          'control plane to its own namespace (sh-credentials) before flipping this flag, and when you ' +
+          'do, also add a namespaceSelector to the egress policy above or the exchange hop breaks with ' +
+          'a 503. See spec §8.2.',
+      ).toBe(false);
+    });
+
+    // Canary pinning the current shipped state. This is EXPECTED to fail the moment either half
+    // changes -- update it in the same change that moves the namespace or flips the flag, so a
+    // namespace move that forgot the flag (or a flag flip that forgot the namespace) still shows up
+    // as a failure here, even on the rare occasion the conjunction above stays green.
+    it('canary: pins the current shipped state (false + default)', () => {
+      expect(requireAuth()).toBe('false');
+      expect(controlPlaneNamespace()).toBe('default');
+    });
+  });
 });
 
 describe('rollout posture', () => {
