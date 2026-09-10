@@ -1,0 +1,237 @@
+import { createHash, randomBytes } from 'node:crypto';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { KEK_BYTES, seal } from '../src/envelope.js';
+import { parseCredentialBody, type StoredCredential } from '../src/credential-store.js';
+import { K8sSecretStore, secretNameFor, subjectHash } from '../src/k8s-secret-store.js';
+import type { RunKubectl } from '../src/kubectl.js';
+
+const KEK = randomBytes(KEK_BYTES); // notsecret -- generated per run
+const NS = 'sh-credentials';
+const ALICE = 'github:1234';
+
+const cred = (name: string, over: Record<string, unknown> = {}): StoredCredential =>
+  parseCredentialBody(name, {
+    kind: 'bearer',
+    consumer: 'sandbox-egress',
+    destination: { hosts: ['api.github.com'] },
+    binding: { header: 'Authorization', format: 'Bearer {token}' },
+    secret: { token: 'ghp-fake' }, // notsecret
+    ...over,
+  });
+
+/**
+ * A kubectl stand-in that keeps one in-memory Secret per name and honours exactly the three
+ * operations the store performs (create / merge-patch / get -o json). It reproduces kubectl's own
+ * asymmetry deliberately: a patch is written through `stringData`, but a read returns `data`
+ * base64-encoded -- a fake that skipped that would let a base64 bug ship.
+ */
+function fakeCluster() {
+  const secrets = new Map<
+    string,
+    { annotations: Record<string, string>; data: Record<string, string> }
+  >();
+  const calls: string[][] = [];
+  const run: RunKubectl = async (args, stdin) => {
+    calls.push(args);
+    const [verb] = args;
+    const name = verb === 'create' ? args[3]! : args[2]!;
+    if (verb === 'create') {
+      if (secrets.has(name))
+        throw new Error(`Error from server (AlreadyExists): secrets "${name}" already exists`);
+      secrets.set(name, { annotations: {}, data: {} });
+      return '';
+    }
+    if (verb === 'patch') {
+      const s = secrets.get(name);
+      if (!s) throw new Error(`Error from server (NotFound): secrets "${name}" not found`);
+      const patch = JSON.parse(stdin ?? '{}');
+      for (const [k, v] of Object.entries(patch.stringData ?? {})) {
+        if (v === null) delete s.data[k];
+        else s.data[k] = v as string;
+      }
+      for (const [k, v] of Object.entries(patch.metadata?.annotations ?? {})) {
+        if (v === null) delete s.annotations[k];
+        else s.annotations[k] = v as string;
+      }
+      return '';
+    }
+    if (verb === 'get') {
+      const s = secrets.get(name);
+      if (!s) return ''; // --ignore-not-found
+      return JSON.stringify({
+        metadata: { name, annotations: s.annotations },
+        data: Object.fromEntries(
+          Object.entries(s.data).map(([k, v]) => [k, Buffer.from(v).toString('base64')]),
+        ),
+      });
+    }
+    if (verb === 'delete') {
+      secrets.delete(name);
+      return '';
+    }
+    throw new Error(`unexpected kubectl verb ${verb}`);
+  };
+  return { run, calls, secrets };
+}
+
+describe('secret naming', () => {
+  it('derives the object name from the subject, so every access is a get by exact name', () => {
+    expect(subjectHash(ALICE)).toBe(createHash('sha256').update(ALICE).digest('hex').slice(0, 16));
+    expect(secretNameFor(ALICE)).toBe(`sh-cred-${subjectHash(ALICE)}`);
+  });
+
+  it('discloses no login in the object name', () => {
+    // The name is a hash, so `kubectl get secrets` in the namespace reveals no GitHub identities
+    // (spec §6.5) -- and reaching Bob's Secret requires already knowing Bob's subject.
+    expect(secretNameFor('github:1234')).not.toContain('1234');
+  });
+
+  it('produces a valid Kubernetes object name', () => {
+    expect(secretNameFor(ALICE)).toMatch(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/);
+    expect(secretNameFor(ALICE).length).toBeLessThanOrEqual(253);
+  });
+});
+
+describe('K8sSecretStore', () => {
+  let cluster: ReturnType<typeof fakeCluster>;
+  let store: K8sSecretStore;
+
+  beforeEach(() => {
+    cluster = fakeCluster();
+    store = new K8sSecretStore({ namespace: NS, kek: KEK, run: cluster.run });
+  });
+
+  it('round-trips put/get', async () => {
+    await store.put(ALICE, cred('github-work'));
+    const got = await store.get(ALICE, 'github-work');
+    expect(got?.secret).toEqual({ token: 'ghp-fake' }); // notsecret
+    expect(got?.descriptor).toEqual(cred('github-work').descriptor);
+  });
+
+  it('stores ciphertext, not the secret, in the Secret', async () => {
+    await store.put(ALICE, cred('github-work'));
+    const raw = JSON.stringify([...cluster.secrets.values()]);
+    expect(raw).not.toContain('ghp-fake'); // notsecret
+    expect(raw).toContain('v1.'); // the envelope version prefix
+  });
+
+  it('creates the Secret on first put and tolerates it already existing', async () => {
+    await store.put(ALICE, cred('a'));
+    await store.put(ALICE, cred('b'));
+    expect(cluster.calls.filter((c) => c[0] === 'create')).toHaveLength(2); // attempted twice
+    expect(await store.list(ALICE)).toHaveLength(2); // and both landed
+  });
+
+  it('adds a second credential without dropping the first (merge, not apply)', async () => {
+    await store.put(ALICE, cred('a'));
+    await store.put(ALICE, cred('b'));
+    expect((await store.list(ALICE)).map((d) => d.name).sort()).toEqual(['a', 'b']);
+    expect((await store.get(ALICE, 'a'))?.secret.token).toBe('ghp-fake'); // notsecret
+  });
+
+  it('keeps non-secret metadata in annotations, so list decrypts nothing', async () => {
+    await store.put(
+      ALICE,
+      cred('my-anthropic', { consumer: 'inference', endpoint: 'https://litellm.internal/v1' }),
+    );
+    const secret = [...cluster.secrets.values()][0]!;
+    expect(secret.annotations['sh.io/kind.my-anthropic']).toBe('bearer');
+    expect(secret.annotations['sh.io/consumer.my-anthropic']).toBe('inference');
+    expect(JSON.parse(secret.annotations['sh.io/destination.my-anthropic']!)).toEqual([
+      'api.github.com',
+    ]);
+    expect(secret.annotations['sh.io/endpoint.my-anthropic']).toBe('https://litellm.internal/v1');
+
+    const listed = await store.list(ALICE);
+    // list() must not have needed the KEK: prove it by listing through a store built with a WRONG
+    // key and still getting full descriptors back.
+    const wrongKek = new K8sSecretStore({
+      namespace: NS,
+      kek: randomBytes(KEK_BYTES),
+      run: cluster.run,
+    });
+    expect(await wrongKek.list(ALICE)).toEqual(listed);
+  });
+
+  it('every annotation key it writes is a valid Kubernetes annotation name', async () => {
+    await store.put(ALICE, cred('a'.repeat(40)));
+    for (const key of Object.keys([...cluster.secrets.values()][0]!.annotations)) {
+      const [prefix, nameHalf] = key.split('/');
+      expect(prefix).toBe('sh.io');
+      expect(nameHalf!.length, key).toBeLessThanOrEqual(63);
+      expect(nameHalf, key).toMatch(/^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$/);
+    }
+  });
+
+  it('returns null for an unknown name and for a subject with no Secret at all', async () => {
+    expect(await store.get(ALICE, 'nope')).toBeNull();
+    expect(await store.get('github:9999', 'nope')).toBeNull();
+    expect(await store.list('github:9999')).toEqual([]);
+  });
+
+  it('deletes one credential and leaves the others', async () => {
+    await store.put(ALICE, cred('a'));
+    await store.put(ALICE, cred('b'));
+    await store.delete(ALICE, 'a');
+    expect(await store.get(ALICE, 'a')).toBeNull();
+    expect((await store.get(ALICE, 'b'))?.secret.token).toBe('ghp-fake'); // notsecret
+    // The now-unused annotations go too, or list() would report a credential with no value.
+    expect(Object.keys([...cluster.secrets.values()][0]!.annotations).join()).not.toContain('.a');
+  });
+
+  it('deletes idempotently, including for a subject that never had a Secret', async () => {
+    await store.delete(ALICE, 'a');
+    await store.delete('github:9999', 'a');
+  });
+
+  it('never lists Secrets to answer list(), only gets one by name', async () => {
+    await store.put(ALICE, cred('a'));
+    await store.list(ALICE);
+    const secretVerbs = cluster.calls.filter((c) => c[1] === 'secret' || c[1] === 'secrets');
+    for (const args of secretVerbs) {
+      expect(args.includes('-l'), args.join(' ')).toBe(false);
+    }
+  });
+
+  it('surfaces a relabel attack as a decrypt failure rather than a wrong credential', async () => {
+    // An attacker with Secret WRITE moves Alice's ciphertext into Bob's Secret under the same name.
+    await store.put(ALICE, cred('my-anthropic'));
+    const aliceCipher = [...cluster.secrets.values()][0]!.data['my-anthropic']!;
+    await cluster.run(buildBobSecret());
+    cluster.secrets.set(secretNameFor('github:9999'), {
+      annotations: {
+        'sh.io/kind.my-anthropic': 'bearer',
+        'sh.io/consumer.my-anthropic': 'inference',
+        'sh.io/destination.my-anthropic': JSON.stringify(['api.github.com']),
+        'sh.io/binding.my-anthropic': JSON.stringify({
+          header: 'Authorization',
+          format: 'Bearer {token}',
+        }),
+      },
+      data: { 'my-anthropic': aliceCipher },
+    });
+    await expect(store.get('github:9999', 'my-anthropic')).rejects.toThrow(/decrypt/i);
+
+    function buildBobSecret(): string[] {
+      return ['create', 'secret', 'generic', secretNameFor('github:9999'), '-n', NS];
+    }
+  });
+
+  it('rejects ciphertext sealed under a different KEK', async () => {
+    await store.put(ALICE, cred('a'));
+    const other = new K8sSecretStore({
+      namespace: NS,
+      kek: randomBytes(KEK_BYTES),
+      run: cluster.run,
+    });
+    await expect(other.get(ALICE, 'a')).rejects.toThrow(/decrypt/i);
+  });
+
+  it('ignores a data key with no descriptor annotations when listing', async () => {
+    // Something else wrote a stray key into the Secret. It must not appear as a credential with an
+    // invented descriptor -- list() reports only what it can describe.
+    await store.put(ALICE, cred('a'));
+    [...cluster.secrets.values()][0]!.data['stray'] = seal(KEK, ALICE, 'stray', 'x');
+    expect((await store.list(ALICE)).map((d) => d.name)).toEqual(['a']);
+  });
+});

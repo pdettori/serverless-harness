@@ -39,3 +39,4 @@ export {
   isAlreadyExists,
   type RunKubectl,
 } from './kubectl.js';
+export { K8sSecretStore, secretNameFor, subjectHash } from './k8s-secret-store.js';
