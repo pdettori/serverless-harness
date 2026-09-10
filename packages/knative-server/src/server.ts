@@ -25,6 +25,13 @@ import {
   type WorkloadRecord,
   type WorkloadRequest,
 } from './context-service.js';
+import { CpError, statusFor } from '@sh/control-plane';
+import {
+  resolveTurnAuth,
+  runtimeFieldsForTurn,
+  turnAuthDepsFromEnv,
+  type TurnAuth,
+} from './turn-auth.js';
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -63,13 +70,43 @@ function saturationWaitConfig() {
 
 const isSaturated = (r: LeafResult): boolean => r.status === 'failed' && r.reason === 'saturated';
 
-function buildConfig(): TurnConfig {
+/**
+ * When `auth` is present the credential comes from the control plane and the ambient
+ * ANTHROPIC_AUTH_TOKEN is NOT passed through at all -- so pi is never even offered the deployment's
+ * identity for an authenticated turn (MU1 spec §3.4). When it is absent, this is byte-for-byte
+ * today's behaviour, which is what keeps the 14 unauthenticated deploy scripts working (§4.3.1).
+ */
+function buildConfig(auth?: TurnAuth | null): TurnConfig {
+  if (auth) {
+    return {
+      redisUrl: process.env.REDIS_URL,
+      cwd: process.env.HARNESS_CWD || process.cwd(),
+      anthropicBaseUrl: auth.anthropicBaseUrl,
+      upstreamCredential: auth.credential,
+    };
+  }
   return {
     redisUrl: process.env.REDIS_URL,
     cwd: process.env.HARNESS_CWD || process.cwd(),
     anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL,
     anthropicAuthToken: process.env.ANTHROPIC_AUTH_TOKEN,
   };
+}
+
+// Read per request so a Knative env change takes effect on the next request without a code path that
+// caches a stale keyset, matching how saturationWaitConfig() already behaves.
+const turnAuthDeps = () => turnAuthDepsFromEnv(process.env);
+
+/** One mapping for control-plane codes, reusing @sh/control-plane's table so the tiers agree. */
+function writeAuthError(res: ServerResponse, err: unknown, sessionId?: string): void {
+  if (!(err instanceof CpError)) throw err;
+  res.writeHead(statusFor(err.code), JSON_HEADERS).end(
+    JSON.stringify({
+      error: err.code,
+      ...(err.message && err.message !== err.code ? { message: err.message } : {}),
+      ...(sessionId ? { sessionId } : {}),
+    }),
+  );
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -104,10 +141,36 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
     return;
   }
 
+  const deps = turnAuthDeps();
+  let auth: TurnAuth | null;
+  try {
+    auth = await resolveTurnAuth(req.headers, parsed, deps);
+  } catch (err) {
+    writeAuthError(res, err, sessionId);
+    return;
+  }
+
   const wantsStream = /text\/event-stream/i.test(req.headers.accept ?? '');
-  if (wantsStream) return handleTurnStream(prompt, sessionId, req, res);
+  if (wantsStream) return handleTurnStream(prompt, sessionId, auth, deps, req, res);
 
   try {
+    if (auth) {
+      // Best-effort pod-identity reporting (spec §7.4). Never gates the turn on Redis.
+      void deps.reportRuntime?.(auth.sessionId, runtimeFieldsForTurn(process.env, 'start'));
+      try {
+        const result = await executeTurn({
+          prompt,
+          sessionId: auth.sessionId,
+          config: buildConfig(auth),
+          // A control-plane-minted session id must not 404 its first turn (plan gap #1).
+          createIfAbsent: true,
+        });
+        res.writeHead(200, JSON_HEADERS).end(JSON.stringify(result));
+      } finally {
+        void deps.reportRuntime?.(auth.sessionId, runtimeFieldsForTurn(process.env, 'end'));
+      }
+      return;
+    }
     const result = await runTurn(prompt, sessionId, buildConfig());
     res.writeHead(200, JSON_HEADERS).end(JSON.stringify(result));
   } catch (err) {
@@ -150,6 +213,8 @@ function makeFrameWriter(res: ServerResponse, keepaliveMs: number) {
 async function handleTurnStream(
   prompt: string,
   sessionId: string | undefined,
+  auth: TurnAuth | null,
+  deps: ReturnType<typeof turnAuthDeps>,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
@@ -167,12 +232,16 @@ async function handleTurnStream(
   });
 
   const { writeFrame, stop } = makeFrameWriter(res, intEnv('SH_TURN_STREAM_KEEPALIVE_MS', 20000));
+  const effectiveSessionId = auth?.sessionId ?? sessionId;
+  if (auth) void deps.reportRuntime?.(auth.sessionId, runtimeFieldsForTurn(process.env, 'start'));
   try {
     const result = await executeTurn({
       prompt,
-      sessionId,
-      config: buildConfig(),
-      createIfAbsent: false, // preserve /turn's 404-on-missing-session contract
+      sessionId: effectiveSessionId,
+      config: buildConfig(auth),
+      // Unauthenticated: preserve /turn's 404-on-missing-session contract. Authenticated: the id was
+      // minted by the trusted control-plane tier, so it may create-or-resume (plan gap #1).
+      createIfAbsent: auth !== null,
       onEvent: (f) => writeFrame(f),
       signal: ac.signal,
     });
@@ -209,6 +278,7 @@ async function handleTurnStream(
     }
   } finally {
     stop();
+    if (auth) void deps.reportRuntime?.(auth.sessionId, runtimeFieldsForTurn(process.env, 'end'));
     if (!res.writableEnded) res.end();
   }
 }
@@ -538,7 +608,7 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
   }
 
   // Run endpoint: canonical `POST /runs`, plus the deprecated `POST /run-leaf` alias.
-  if (req.method === 'POST' && (url === '/runs' || url === '/run-leaf')) {
+  if (req.method === 'POST' && (url === '/runs' || url === '/run-leaf' || url === '/v1/runs')) {
     if (url === '/run-leaf') warnDeprecatedRoute('/run-leaf');
     const route = async () => {
       const raw = await readBody(req);
@@ -561,7 +631,7 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
-  if (req.method === 'POST' && req.url === '/turn') {
+  if (req.method === 'POST' && (url === '/turn' || url === '/v1/turn')) {
     handleTurn(req, res).catch((err) => {
       if (!res.headersSent) {
         res.writeHead(500, JSON_HEADERS).end(JSON.stringify({ error: String(err) }));

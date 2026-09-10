@@ -147,12 +147,18 @@ importers:
 
   packages/knative-server:
     dependencies:
+      '@sh/control-plane':
+        specifier: workspace:*
+        version: link:../control-plane
       '@sh/harness':
         specifier: workspace:*
         version: link:../../harness
       '@sh/work-queue':
         specifier: workspace:*
         version: link:../work-queue
+      redis:
+        specifier: ^6.2.1
+        version: 6.2.1
     devDependencies:
       '@types/node':
         specifier: ^22.0.0

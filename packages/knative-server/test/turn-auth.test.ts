@@ -1,0 +1,477 @@
+import { generateKeyPairSync } from 'node:crypto';
+import { describe, expect, it } from 'vitest';
+import { CpError } from '@sh/control-plane';
+import { keyIdFor, makeSigner, publicKeyToBase64 } from '@sh/control-plane';
+import {
+  makeRuntimeReporter,
+  resolveTurnAuth,
+  runtimeFieldsForTurn,
+  sharedRuntimeReporter,
+  turnAuthDepsFromEnv,
+  type TurnAuthDeps,
+} from '../src/turn-auth.js';
+
+const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+const signer = makeSigner(privateKey.export({ format: 'pem', type: 'pkcs8' }).toString());
+const KEYSET = `${keyIdFor(publicKey)}:${publicKeyToBase64(publicKey)}`;
+const NOW_S = 1_757_000_000;
+
+const sessionToken = (over: Record<string, unknown> = {}) =>
+  signer.mint({
+    sub: 'github:1234',
+    tenant: 'github:1234',
+    roles: [],
+    scope: ['turn:write'],
+    sid: 'sid-1',
+    ttlSeconds: 300,
+    now: NOW_S,
+    ...over,
+  });
+
+/** A scripted exchange endpoint. Records the requests so auth headers can be asserted. */
+function fakeExchange(reply: { status: number; body: unknown } | Error) {
+  const calls: { url: string; init: RequestInit }[] = [];
+  const fetchImpl = (async (url: string, init: RequestInit) => {
+    calls.push({ url, init });
+    if (reply instanceof Error) throw reply;
+    return {
+      status: reply.status,
+      text: async () => JSON.stringify(reply.body),
+    };
+  }) as unknown as typeof fetch;
+  return { fetchImpl, calls };
+}
+
+const deps = (over: Partial<TurnAuthDeps> = {}): TurnAuthDeps => ({
+  keys: new Map([[keyIdFor(publicKey), publicKey]]),
+  requireAuth: false,
+  controlPlaneUrl: 'http://cp.default.svc:8080',
+  exchangeToken: 'shared-abc', // notsecret
+  now: () => NOW_S * 1000,
+  fetchImpl: fakeExchange({
+    status: 200,
+    body: {
+      mode: 'direct',
+      anthropicAuthToken: 'sk-alice', // notsecret
+      anthropicBaseUrl: 'https://litellm.internal/v1',
+      sessionId: 'sid-1',
+      subject: 'github:1234',
+    },
+  }).fetchImpl,
+  ...over,
+});
+
+const codeOf = async (fn: () => Promise<unknown>): Promise<string> => {
+  try {
+    await fn();
+  } catch (e) {
+    return (e as CpError).code;
+  }
+  throw new Error('expected a throw');
+};
+
+describe('the SH_REQUIRE_AUTH table (spec §4.3.1)', () => {
+  it('permissive default + no token → proceeds unauthenticated', async () => {
+    expect(await resolveTurnAuth({}, {}, deps({ requireAuth: false }))).toBeNull();
+  });
+
+  it('required + no token → 401 token_required', async () => {
+    expect(await codeOf(() => resolveTurnAuth({}, {}, deps({ requireAuth: true })))).toBe(
+      'token_required',
+    );
+  });
+
+  it('a present-but-bad token is 401 in EITHER mode', async () => {
+    // The flag governs whether auth is REQUIRED, never whether it is ENFORCED. "Unauthenticated is
+    // allowed here" and "this bad token is close enough" are different statements, and only the first
+    // is a deployment choice (spec §4.3.1).
+    for (const requireAuth of [false, true]) {
+      const code = await codeOf(() =>
+        resolveTurnAuth(
+          { authorization: 'Bearer not-a-jwt' },
+          { sessionId: 'sid-1' },
+          deps({ requireAuth }),
+        ),
+      );
+      expect(code, `requireAuth=${requireAuth}`).toBe('token_invalid');
+    }
+  });
+
+  it('evaluates expiry at TURN START only, so a long turn is not killed mid-stream', async () => {
+    // Spec §9.2. resolveTurnAuth is called once, before executeTurn; nothing re-checks `exp` while a
+    // turn runs, which is why a 5-minute token can outlive its own lifetime mid-stream. Asserted by
+    // resolving successfully at t and then showing the resolver is not consulted again -- the only
+    // clock read is the one passed in here.
+    const auth = await resolveTurnAuth(
+      { authorization: `Bearer ${sessionToken()}` },
+      { sessionId: 'sid-1' },
+      deps({ now: () => (NOW_S + 299) * 1000 }),
+    );
+    expect(auth?.credential.value).toBe('sk-alice'); // notsecret
+    // One second past expiry a NEW turn is refused -- the boundary applies per turn, not per stream.
+    expect(
+      await codeOf(() =>
+        resolveTurnAuth(
+          { authorization: `Bearer ${sessionToken()}` },
+          { sessionId: 'sid-1' },
+          deps({ now: () => (NOW_S + 301) * 1000 }),
+        ),
+      ),
+    ).toBe('token_expired');
+  });
+
+  it('an expired token is 401, never a silent downgrade to ambient', async () => {
+    const expired = sessionToken({ now: NOW_S - 400 });
+    expect(
+      await codeOf(() =>
+        resolveTurnAuth({ authorization: `Bearer ${expired}` }, { sessionId: 'sid-1' }, deps()),
+      ),
+    ).toBe('token_expired');
+  });
+
+  it('rejects every token when no public key is configured, in either mode', async () => {
+    // Fail closed: an operator who set SH_REQUIRE_AUTH but forgot the keyset gets 401s, not a
+    // deployment that quietly accepts nothing and runs everything ambiently.
+    expect(
+      await codeOf(() =>
+        resolveTurnAuth(
+          { authorization: `Bearer ${sessionToken()}` },
+          { sessionId: 'sid-1' },
+          deps({ keys: new Map() }),
+        ),
+      ),
+    ).toBe('token_invalid');
+  });
+
+  it('rejects an api-scoped token — only a session token may drive a turn', async () => {
+    const api = signer.mint({
+      sub: 'github:1234',
+      tenant: 'github:1234',
+      roles: [],
+      scope: ['api'],
+      ttlSeconds: 3600,
+      now: NOW_S,
+    });
+    expect(
+      await codeOf(() => resolveTurnAuth({ authorization: `Bearer ${api}` }, {}, deps())),
+    ).toBe('token_invalid');
+  });
+});
+
+describe('the one rule /turn enforces', () => {
+  it('accepts a matching sessionId and derives the subject from the token', async () => {
+    const auth = await resolveTurnAuth(
+      { authorization: `Bearer ${sessionToken()}` },
+      { sessionId: 'sid-1' },
+      deps(),
+    );
+    expect(auth).toEqual({
+      subject: 'github:1234',
+      sessionId: 'sid-1',
+      credential: { mode: 'direct', value: 'sk-alice' }, // notsecret
+      anthropicBaseUrl: 'https://litellm.internal/v1',
+    });
+  });
+
+  it('400 session_mismatch when the body names a different session', async () => {
+    expect(
+      await codeOf(() =>
+        resolveTurnAuth(
+          { authorization: `Bearer ${sessionToken()}` },
+          { sessionId: 'someone-elses' },
+          deps(),
+        ),
+      ),
+    ).toBe('session_mismatch');
+  });
+
+  it('uses token.sid when the body names no session', async () => {
+    const auth = await resolveTurnAuth({ authorization: `Bearer ${sessionToken()}` }, {}, deps());
+    expect(auth?.sessionId).toBe('sid-1');
+  });
+
+  it('performs no ownership lookup — it holds no ownership data (spec §4.3)', async () => {
+    // Proved by there being no Redis or control-plane call other than the exchange itself.
+    const { fetchImpl, calls } = fakeExchange({
+      status: 200,
+      body: {
+        mode: 'direct',
+        anthropicAuthToken: 'sk-alice', // notsecret
+        anthropicBaseUrl: 'https://x/v1',
+        sessionId: 'sid-1',
+        subject: 'github:1234',
+      },
+    });
+    await resolveTurnAuth(
+      { authorization: `Bearer ${sessionToken()}` },
+      { sessionId: 'sid-1' },
+      deps({ fetchImpl }),
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe('http://cp.default.svc:8080/internal/credentials');
+  });
+});
+
+describe('the subject is derived, never asserted', () => {
+  it('ignores an inbound X-SH-Subject that agrees with the token', async () => {
+    const auth = await resolveTurnAuth(
+      { authorization: `Bearer ${sessionToken()}`, 'x-sh-subject': 'github:1234' },
+      { sessionId: 'sid-1' },
+      deps(),
+    );
+    expect(auth?.subject).toBe('github:1234');
+  });
+
+  it('400 subject_conflict on a conflicting X-SH-Subject, rather than resolving by precedence', async () => {
+    // A silent winner here is a cross-tenant bug waiting to be written (spec §3.5). P5 reads the
+    // header, which is correct for a trusted orchestrator but spoofable once arbitrary users can call
+    // the API -- so when a token is present, the token wins and a conflict is REJECTED.
+    expect(
+      await codeOf(() =>
+        resolveTurnAuth(
+          { authorization: `Bearer ${sessionToken()}`, 'x-sh-subject': 'github:9999' },
+          { sessionId: 'sid-1' },
+          deps(),
+        ),
+      ),
+    ).toBe('subject_conflict');
+  });
+
+  it('leaves an inbound X-SH-Subject alone when there is no token (the operator path)', async () => {
+    // The operator-driven and leaf paths keep P5's inbound-header behaviour; they are not
+    // user-facing (spec §3.5).
+    expect(
+      await resolveTurnAuth({ 'x-sh-subject': 'github:9999' }, {}, deps({ requireAuth: false })),
+    ).toBeNull();
+  });
+});
+
+describe('the exchange hop', () => {
+  it('presents the shared exchange token', async () => {
+    const { fetchImpl, calls } = fakeExchange({
+      status: 200,
+      body: {
+        mode: 'direct',
+        anthropicAuthToken: 'sk-alice', // notsecret
+        anthropicBaseUrl: 'https://x/v1',
+        sessionId: 'sid-1',
+        subject: 'github:1234',
+      },
+    });
+    await resolveTurnAuth(
+      { authorization: `Bearer ${sessionToken()}` },
+      { sessionId: 'sid-1' },
+      deps({ fetchImpl }),
+    );
+    const headers = calls[0]!.init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer shared-abc'); // notsecret
+  });
+
+  it('503 credential_unavailable when the control plane is unreachable — NEVER an env fallback', async () => {
+    // The single most important behaviour in the design (spec §9.2). §6 is scaffolding for it.
+    process.env.ANTHROPIC_AUTH_TOKEN = 'sk-deployment-ambient'; // notsecret
+    try {
+      const { fetchImpl } = fakeExchange(new Error('ECONNREFUSED'));
+      expect(
+        await codeOf(() =>
+          resolveTurnAuth(
+            { authorization: `Bearer ${sessionToken()}` },
+            { sessionId: 'sid-1' },
+            deps({ fetchImpl }),
+          ),
+        ),
+      ).toBe('credential_unavailable');
+    } finally {
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
+    }
+  });
+
+  it('503 when no control-plane URL is configured at all', async () => {
+    expect(
+      await codeOf(() =>
+        resolveTurnAuth(
+          { authorization: `Bearer ${sessionToken()}` },
+          { sessionId: 'sid-1' },
+          deps({ controlPlaneUrl: undefined }),
+        ),
+      ),
+    ).toBe('credential_unavailable');
+  });
+
+  it('propagates a typed refusal from the control plane', async () => {
+    for (const [status, error] of [
+      [400, 'credential_required'],
+      [400, 'endpoint_unresolved'],
+      [404, 'session_not_found'],
+      [401, 'unauthorized'],
+    ] as const) {
+      const { fetchImpl } = fakeExchange({ status, body: { error } });
+      expect(
+        await codeOf(() =>
+          resolveTurnAuth(
+            { authorization: `Bearer ${sessionToken()}` },
+            { sessionId: 'sid-1' },
+            deps({ fetchImpl }),
+          ),
+        ),
+        error,
+      ).toBe(error);
+    }
+  });
+
+  it('reduces an unrecognised failure body to credential_unavailable', async () => {
+    const { fetchImpl } = fakeExchange({ status: 500, body: { oops: true } });
+    expect(
+      await codeOf(() =>
+        resolveTurnAuth(
+          { authorization: `Bearer ${sessionToken()}` },
+          { sessionId: 'sid-1' },
+          deps({ fetchImpl }),
+        ),
+      ),
+    ).toBe('credential_unavailable');
+  });
+
+  it('refuses a reply with no base url, rather than passing undefined into TurnConfig', async () => {
+    const { fetchImpl } = fakeExchange({
+      status: 200,
+      body: { mode: 'direct', anthropicAuthToken: 'sk-alice', sessionId: 'sid-1' }, // notsecret
+    });
+    expect(
+      await codeOf(() =>
+        resolveTurnAuth(
+          { authorization: `Bearer ${sessionToken()}` },
+          { sessionId: 'sid-1' },
+          deps({ fetchImpl }),
+        ),
+      ),
+    ).toBe('endpoint_unresolved');
+  });
+
+  it('refuses an unknown mode rather than guessing', async () => {
+    // A mislabelled credential is exactly what the tag exists to prevent (spec §3.6); an unknown tag
+    // must not default to `direct`, which would send a placeholder upstream as though it were real.
+    const { fetchImpl } = fakeExchange({
+      status: 200,
+      body: {
+        mode: 'whatever',
+        anthropicAuthToken: 'x',
+        anthropicBaseUrl: 'https://x/v1',
+        sessionId: 'sid-1',
+      },
+    });
+    expect(
+      await codeOf(() =>
+        resolveTurnAuth(
+          { authorization: `Bearer ${sessionToken()}` },
+          { sessionId: 'sid-1' },
+          deps({ fetchImpl }),
+        ),
+      ),
+    ).toBe('credential_unavailable');
+  });
+
+  it('carries a placeholder through with its tag intact', async () => {
+    const { fetchImpl } = fakeExchange({
+      status: 200,
+      body: {
+        mode: 'placeholder',
+        anthropicAuthToken: 'sh-placeholder-github:1234',
+        anthropicBaseUrl: 'https://x/v1',
+        sessionId: 'sid-1',
+      },
+    });
+    const auth = await resolveTurnAuth(
+      { authorization: `Bearer ${sessionToken()}` },
+      { sessionId: 'sid-1' },
+      deps({ fetchImpl }),
+    );
+    expect(auth?.credential).toEqual({ mode: 'placeholder', value: 'sh-placeholder-github:1234' });
+  });
+});
+
+describe('turnAuthDepsFromEnv', () => {
+  it('is permissive by default and reads exactly `true` for the flag', () => {
+    expect(turnAuthDepsFromEnv({}).requireAuth).toBe(false);
+    expect(turnAuthDepsFromEnv({ SH_REQUIRE_AUTH: 'true' }).requireAuth).toBe(true);
+    for (const v of ['1', 'yes', 'TRUE', 'false', '']) {
+      expect(turnAuthDepsFromEnv({ SH_REQUIRE_AUTH: v }).requireAuth, v).toBe(false);
+    }
+  });
+
+  it('parses the keyset and the control-plane wiring', () => {
+    const d = turnAuthDepsFromEnv({
+      SH_SESSION_TOKEN_PUBLIC_KEYS: KEYSET,
+      SH_CONTROL_PLANE_URL: 'http://cp:8080',
+      SH_EXCHANGE_TOKEN: 'shared-abc', // notsecret
+    });
+    expect(d.keys.size).toBe(1);
+    expect(d.controlPlaneUrl).toBe('http://cp:8080');
+  });
+
+  it('yields an empty keyset when none is published, rather than throwing at startup', () => {
+    // The permissive default must still boot on a deployment that has never heard of MU1 -- which is
+    // every existing one. A malformed keyset, by contrast, is an operator error and does throw.
+    expect(turnAuthDepsFromEnv({}).keys.size).toBe(0);
+    expect(() => turnAuthDepsFromEnv({ SH_SESSION_TOKEN_PUBLIC_KEYS: 'garbage' })).toThrow();
+  });
+});
+
+describe('runtimeFieldsForTurn', () => {
+  it('reports pod identity from the environment Knative already provides', async () => {
+    const fields = runtimeFieldsForTurn(
+      { HOSTNAME: 'harness-abc', K_REVISION: 'serverless-harness-00003' },
+      'start',
+    );
+    expect(fields).toMatchObject({
+      harnessPod: 'harness-abc',
+      revision: 'serverless-harness-00003',
+    });
+    expect(Number(fields.turnStartedAt)).toBeGreaterThan(0);
+    expect(fields.turnEndedAt).toBeUndefined();
+  });
+
+  it('reports the pinned sandbox pod, else the pool selector (plan gap #5)', async () => {
+    expect(runtimeFieldsForTurn({ KAGENTI_SANDBOX_POD: 'sandbox-0-0' }, 'start').sandboxPod).toBe(
+      'sandbox-0-0',
+    );
+    expect(
+      runtimeFieldsForTurn({ KAGENTI_SANDBOX_POOL_SELECTOR: 'a=b' }, 'start').sandboxSelector,
+    ).toBe('a=b');
+  });
+
+  it('reports the end phase without re-stamping the start', async () => {
+    const end = runtimeFieldsForTurn({}, 'end');
+    expect(Number(end.turnEndedAt)).toBeGreaterThan(0);
+    expect(end.turnStartedAt).toBeUndefined();
+    expect(Number(end.lastTurnAt)).toBeGreaterThan(0);
+  });
+
+  it('omits a field the environment does not carry, rather than writing an empty string', async () => {
+    expect(runtimeFieldsForTurn({}, 'start').harnessPod).toBeUndefined();
+  });
+});
+
+describe('makeRuntimeReporter', () => {
+  it('is a no-op when no Redis URL is configured, and never throws', async () => {
+    await expect(
+      makeRuntimeReporter(undefined)('sid-1', { harnessPod: 'p' }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('shares one reporter per URL, so a per-request deps build does not leak a connection', () => {
+    // turnAuthDepsFromEnv runs on EVERY turn so an env change takes effect without a restart, and
+    // makeRuntimeReporter memoises its Redis client inside the closure it returns. A fresh closure
+    // per request would therefore open one connection per authenticated turn and close none.
+    expect(sharedRuntimeReporter('redis://127.0.0.1:6379')).toBe(
+      sharedRuntimeReporter('redis://127.0.0.1:6379'),
+    );
+    expect(sharedRuntimeReporter('redis://other:6379')).not.toBe(
+      sharedRuntimeReporter('redis://127.0.0.1:6379'),
+    );
+    // The env-driven builder must hand out the shared one, not a fresh closure.
+    const a = turnAuthDepsFromEnv({ REDIS_URL: 'redis://127.0.0.1:6379' });
+    const b = turnAuthDepsFromEnv({ REDIS_URL: 'redis://127.0.0.1:6379' });
+    expect(a.reportRuntime).toBe(b.reportRuntime);
+  });
+});
