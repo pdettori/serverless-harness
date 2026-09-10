@@ -40,3 +40,14 @@ export {
   type RunKubectl,
 } from './kubectl.js';
 export { K8sSecretStore, secretNameFor, subjectHash } from './k8s-secret-store.js';
+export {
+  AUDIT_STREAM,
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+  OwnershipIndex,
+  ownerKey,
+  runtimeKey,
+  sessionKey,
+  type CpRedisLike,
+  type SessionRecord,
+} from './ownership.js';
