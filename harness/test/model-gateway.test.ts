@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync } from 'node:fs';
 import { applyModelGateway } from '../src/run-turn';
 
 const baseModel = { id: 'claude-haiku-4-5', headers: { 'x-api-key': 'orig' } } as never;
@@ -125,14 +124,46 @@ describe('applyModelGateway', () => {
       expect(m.headers.Authorization).toBe('Bearer env-token'); // notsecret
     });
 
-    it('leaves P5`s seed and both environment fallbacks exactly as they were', () => {
-      // These three lines are P5's to remove (spec §3.5 ownership split). Deleting the seed without
-      // P5's sentinel would make ANTHROPIC_API_KEY absent and break gateway mode outright, and MU1
-      // duplicating the sentinel would be both redundant and a merge conflict.
-      const src = readFileSync(new URL('../src/run-turn.ts', import.meta.url), 'utf8');
-      expect(src).toContain('if (authToken && !process.env.ANTHROPIC_API_KEY) {');
-      expect(src).toContain('process.env.ANTHROPIC_AUTH_TOKEN');
-      expect(src).toContain('process.env.ANTHROPIC_BASE_URL');
+    it("seeds ANTHROPIC_API_KEY from the subject's own credential when the env var is unset", () => {
+      // This test does TWO things, both deliberate.
+      //
+      // (1) It PINS P5's write-once seed (run-turn.ts:336-338) so it cannot be deleted by accident.
+      //     Those lines are P5's to remove, not MU1's (spec §3.5 ownership split): dropping the seed
+      //     without P5's sentinel makes ANTHROPIC_API_KEY absent and breaks gateway mode outright, and
+      //     MU1 duplicating the sentinel would be both redundant and a merge conflict. What used to
+      //     stand here was a source-text grep for the two `process.env.*` identifiers -- which pins
+      //     that an identifier EXISTS, not that it is the right-hand side of a `||`, and which the
+      //     sibling tests above already cover behaviourally. Deleting
+      //     `config?.anthropicAuthToken ||` from run-turn.ts:331 left it green.
+      //
+      // (2) It makes the seed's REACH an asserted property rather than an unexamined one: in direct
+      //     mode, the FIRST authenticated turn in a fresh pod with no ANTHROPIC_API_KEY set writes
+      //     THAT SUBJECT'S key into the process environment, where it stays for the pod's lifetime and
+      //     is what a later `!process.env.ANTHROPIC_API_KEY` reader would find. Reachability is narrow
+      //     -- service.yaml:45-49 makes ANTHROPIC_API_KEY a required secretKeyRef, so a normal
+      //     deployment always has it set and the guard never fires -- but the property should be
+      //     visible in a test rather than discovered later.
+      //
+      // The suite's beforeEach/afterEach already save, clear and restore ANTHROPIC_API_KEY, which is
+      // what makes the fresh-pod precondition real here and stops the write leaking to other tests.
+      expect(process.env.ANTHROPIC_API_KEY).toBeUndefined();
+      applyModelGateway(baseModel, {
+        anthropicBaseUrl: 'https://gw.example/v1',
+        upstreamCredential: { mode: 'direct', value: 'sk-alice' }, // notsecret
+      });
+      expect(process.env.ANTHROPIC_API_KEY).toBe('sk-alice'); // notsecret
+    });
+
+    it('does NOT overwrite an ANTHROPIC_API_KEY that is already set — the seed is write-once', () => {
+      // The other half of the same property, and the half that keeps the seed from being a
+      // cross-subject leak on every turn: with the deployment's key already in the environment (the
+      // normal case, per service.yaml's required secretKeyRef) Alice's credential does not replace it.
+      process.env.ANTHROPIC_API_KEY = 'sk-deployment'; // notsecret
+      applyModelGateway(baseModel, {
+        anthropicBaseUrl: 'https://gw.example/v1',
+        upstreamCredential: { mode: 'direct', value: 'sk-alice' }, // notsecret
+      });
+      expect(process.env.ANTHROPIC_API_KEY).toBe('sk-deployment'); // notsecret
     });
   });
 });
