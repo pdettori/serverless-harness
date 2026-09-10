@@ -27,6 +27,11 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
  * a format change is exactly what becomes a migration -- one needing the old KEK, which the no-read-
  * back rule forbids -- the moment the first credential is sealed. Try-each costs a few failed GCM
  * verifications on a ring of two and buys the rotation without one.
+ *
+ * What the key id WOULD also have bought is observability, so `open` returns the ring index instead:
+ * it never leaves the process and changes no bytes at rest. Dropping the retired key is the one step
+ * of the rotation an operator has to decide, and without the index the only signal they had decided
+ * wrong was the outage it caused (`K8sSecretStore.get`, spec §6.5).
  */
 export const KEK_BYTES = 32; // AES-256
 const IV_BYTES = 12; // GCM standard nonce
@@ -82,25 +87,42 @@ export function seal(keks: Buffer[], subject: string, name: string, plaintext: s
 }
 
 /**
+ * What `open` recovered, and WHICH ring key recovered it.
+ *
+ * `keyIndex > 0` means "sealed under a key that is no longer primary", i.e. this credential has not
+ * been re-sealed since the rotation began. It is the only in-process fact that distinguishes a
+ * rotation still in flight from one that is complete, and it is for an operator, never for a caller
+ * -- see `K8sSecretStore.get`, which is the sole place it is consumed.
+ */
+export interface Opened {
+  plaintext: string;
+  keyIndex: number;
+}
+
+/**
  * Tries every key in the ring, so ciphertext sealed before a rotation still reads.
  *
  * Version and structure are checked ONCE, before any key: those are properties of the sealed value,
  * not of a key, and re-reporting them per attempt would say nothing extra.
+ *
+ * The returned `keyIndex` is reported ONLY on success. A failure still yields one opaque message
+ * carrying no index and no ring size, so trying N keys cannot become N distinguishable outcomes.
  */
-export function open(keks: Buffer[], subject: string, name: string, sealed: string): string {
+export function open(keks: Buffer[], subject: string, name: string, sealed: string): Opened {
   const parts = sealed.split('.');
   if (parts.length !== 4) throw new Error('sealed credential is malformed');
   const [version, ivB64, tagB64, ctB64] = parts as [string, string, string, string];
   if (version !== VERSION) throw new Error(`unsupported sealed credential version '${version}'`);
-  for (const kek of keks) {
+  for (const [keyIndex, kek] of keks.entries()) {
     try {
       const decipher = createDecipheriv('aes-256-gcm', kek, Buffer.from(ivB64, 'base64url'));
       decipher.setAAD(credentialAad(subject, name));
       decipher.setAuthTag(Buffer.from(tagB64, 'base64url'));
-      return Buffer.concat([
+      const plaintext = Buffer.concat([
         decipher.update(Buffer.from(ctB64, 'base64url')),
         decipher.final(),
       ]).toString('utf8');
+      return { plaintext, keyIndex };
     } catch {
       // Keep trying: on a ring of two, the second key is the retired one this value was sealed under.
       // The AAD is re-bound per attempt, so a relabelled ciphertext is refused by EVERY key rather

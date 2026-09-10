@@ -8,7 +8,7 @@ const OTHER = randomBytes(KEK_BYTES);
 describe('seal/open', () => {
   it('round-trips a secret', () => {
     const sealed = seal([KEK], 'github:1234', 'my-anthropic', 'sk-live-abc');
-    expect(open([KEK], 'github:1234', 'my-anthropic', sealed)).toBe('sk-live-abc');
+    expect(open([KEK], 'github:1234', 'my-anthropic', sealed).plaintext).toBe('sk-live-abc');
   });
 
   it('never emits the plaintext in the sealed form', () => {
@@ -26,14 +26,14 @@ describe('seal/open', () => {
     const a = seal([KEK], 'github:1', 'a', 'same');
     const b = seal([KEK], 'github:1', 'a', 'same');
     expect(a).not.toBe(b);
-    expect(open([KEK], 'github:1', 'a', b)).toBe('same');
+    expect(open([KEK], 'github:1', 'a', b).plaintext).toBe('same');
   });
 
   it('round-trips a long value and one with non-ASCII bytes', () => {
     const long = 'x'.repeat(8192);
-    expect(open([KEK], 'github:1', 'a', seal([KEK], 'github:1', 'a', long))).toBe(long);
+    expect(open([KEK], 'github:1', 'a', seal([KEK], 'github:1', 'a', long)).plaintext).toBe(long);
     const utf8 = 'ключ-🔐-token';
-    expect(open([KEK], 'github:1', 'a', seal([KEK], 'github:1', 'a', utf8))).toBe(utf8);
+    expect(open([KEK], 'github:1', 'a', seal([KEK], 'github:1', 'a', utf8)).plaintext).toBe(utf8);
   });
 });
 
@@ -144,7 +144,7 @@ describe('KEK rotation', () => {
     const oldK = randomBytes(KEK_BYTES);
     const newK = randomBytes(KEK_BYTES);
     const sealedBefore = seal([oldK], 'github:1', 'a', 'sk-old');
-    expect(open([newK, oldK], 'github:1', 'a', sealedBefore)).toBe('sk-old');
+    expect(open([newK, oldK], 'github:1', 'a', sealedBefore).plaintext).toBe('sk-old');
   });
 
   it('seals under the FIRST key, so a rotation re-seals forward and never backward', () => {
@@ -153,7 +153,7 @@ describe('KEK rotation', () => {
     const oldK = randomBytes(KEK_BYTES);
     const newK = randomBytes(KEK_BYTES);
     const sealedAfter = seal([newK, oldK], 'github:1', 'a', 'sk-new');
-    expect(open([newK], 'github:1', 'a', sealedAfter)).toBe('sk-new');
+    expect(open([newK], 'github:1', 'a', sealedAfter).plaintext).toBe('sk-new');
     expect(() => open([oldK], 'github:1', 'a', sealedAfter)).toThrow(/decrypt/i);
   });
 
@@ -161,7 +161,7 @@ describe('KEK rotation', () => {
     const oldK = randomBytes(KEK_BYTES);
     const newK = randomBytes(KEK_BYTES);
     const resealed = seal([newK, oldK], 'github:1', 'a', 'sk-x');
-    expect(open([newK], 'github:1', 'a', resealed)).toBe('sk-x');
+    expect(open([newK], 'github:1', 'a', resealed).plaintext).toBe('sk-x');
   });
 
   it('parses a comma-separated ring, newest first, trimming whitespace', () => {
@@ -219,6 +219,22 @@ describe('KEK rotation', () => {
     const sealed = seal([oldK], 'github:alice', 'my-anthropic', 'sk-alice');
     expect(() => open([newK, oldK], 'github:bob', 'my-anthropic', sealed)).toThrow(/decrypt/i);
     expect(() => open([newK, oldK], 'github:alice', 'other-name', sealed)).toThrow(/decrypt/i);
+  });
+
+  it('reports WHICH ring key opened the value, so completing a rotation is observable', () => {
+    // Step (c) of the rotation -- "drop the retired key" -- is the one step an operator has to
+    // decide, and before this nothing in the system could tell them when it was safe. `open`
+    // discarded the index it had just computed, so the only signal a key was dropped too early was
+    // the failure it caused. A three-key ring on purpose: a boolean "was it the primary" passes a
+    // two-key test and still cannot say which retired key is still in use.
+    const keys = [randomBytes(KEK_BYTES), randomBytes(KEK_BYTES), randomBytes(KEK_BYTES)] as const;
+    for (const [i, kek] of keys.entries()) {
+      const sealed = seal([kek], 'github:1', 'a', `sk-${i}`);
+      expect(open([...keys], 'github:1', 'a', sealed)).toEqual({
+        plaintext: `sk-${i}`,
+        keyIndex: i,
+      });
+    }
   });
 
   it('rejects an unknown version before trying any key', () => {

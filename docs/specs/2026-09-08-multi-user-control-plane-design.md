@@ -690,6 +690,20 @@ every credential by hand — the outcome the design otherwise avoids, arriving a
 Rotation is: prepend the new key and roll the Service; writes re-seal forward on the next
 `PUT /v1/credentials/{name}`; drop the retired key once nothing is left under it.
 
+**And that last step is observable, or it would not be a step.** Dropping the retired key is the only
+part of the procedure an operator has to _decide_, and the first draft of this design gave them nothing
+to decide it with: `open` computed the ring index and discarded it, nothing counted a non-primary open,
+`list()` never touches the KEK (§6.2), there is no read-back path to sweep the store with, and the audit
+record carries the decision but not the key. The only signal was the outage that followed deciding
+wrong. So `open` returns its ring index and `K8sSecretStore.get` logs every `keyIndex > 0`, keyed by the
+subject hash — a **positive** terminating condition ("no non-primary open for a full credential-lifetime
+window"), and while a rotation is in flight those lines are the remaining backlog. Deliberately not
+deduplicated: a once-per-process log would let a long-lived pod satisfy the condition while credentials
+were still stale. The same hash is added to the decrypt-failure message, because a credential name is
+user-chosen and collides freely across subjects — without it an operator who dropped a key too early
+knows some users are broken and cannot enumerate which. Neither reaches a caller: `writeError` reduces a
+non-`CpError` to a bare `internal_error` with no message.
+
 The ring lives in configuration rather than in the sealed value. A key id on the wire would let `open`
 select a key instead of trying each, but it is a format change — and a format change becomes a migration
 needing the old KEK, which the no-read-back rule forbids, from the moment the first credential is

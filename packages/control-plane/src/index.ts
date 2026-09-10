@@ -12,7 +12,7 @@ export {
   type MintInput,
   type TokenClaims,
 } from './token.js';
-export { KEK_BYTES, credentialAad, keksFromBase64, open, seal } from './envelope.js';
+export { KEK_BYTES, credentialAad, keksFromBase64, open, seal, type Opened } from './envelope.js';
 export {
   CREDENTIAL_NAME_RE,
   InMemoryCredentialStore,

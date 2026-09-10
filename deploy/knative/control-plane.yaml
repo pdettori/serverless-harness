@@ -38,7 +38,16 @@
 #   #          | kubectl apply -f -
 #   #      Roll the Service so the new Revision picks it up.
 #   #   b. Let writes re-seal forward: every PUT /v1/credentials/{name} reseals under the new key.
-#   #   c. Once nothing is left under the old key, drop it from the list and roll again.
+#   #   c. Drop the retired key and roll again -- but only once the log says it is safe. Every read
+#   #      that needed a non-primary key prints a line of the form
+#   #        [control-plane] credential opened under NON-PRIMARY KEK ring index <n>:
+#   #        subject=<hash> credential=<name> -- re-seals on its next PUT; ...
+#   #      so the terminating condition is a POSITIVE signal (no such line for a full
+#   #      credential-lifetime window) rather than a guess, and while the rotation is in flight those
+#   #      lines ARE the remaining backlog. Dropping the key early is not recoverable: /v1 has no
+#   #      read-back path, so the affected users must re-enter the credential by hand. Both log lines
+#   #      -- this one and the decrypt failure -- name the subject HASH, which is also the Secret name
+#   #      suffix (sh-cred-<hash>), so you can enumerate whom to tell.
 #
 #   # 3. The shared bearer for the exchange hop, mounted into BOTH tiers from this one Secret
 #   #    (spec §5.3.1). Fail-closed in code: absent => every exchange call is rejected.

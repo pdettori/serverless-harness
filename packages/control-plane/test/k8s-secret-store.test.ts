@@ -25,6 +25,14 @@ const cred = (name: string, over: Record<string, unknown> = {}): StoredCredentia
  * asymmetry deliberately: a patch is written through `stringData`, but a read returns `data`
  * base64-encoded -- a fake that skipped that would let a base64 bug ship.
  */
+/** Collect console.warn lines, the way exchange.test.ts collects the audit-gap console.error. */
+function captureWarn(): { lines: string[]; restore: () => void } {
+  const lines: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => void lines.push(args.join(' '));
+  return { lines, restore: () => void (console.warn = original) };
+}
+
 function fakeCluster() {
   const secrets = new Map<
     string,
@@ -175,6 +183,78 @@ describe('K8sSecretStore', () => {
       // 4. And the retired KEK alone no longer opens it -- the rotation actually moved.
       const oldOnly = new K8sSecretStore({ namespace: NS, keks: [KEK], run: cluster.run });
       await expect(oldOnly.get(ALICE, 'my-anthropic')).rejects.toThrow(/decrypt/i);
+    });
+
+    it('says out loud when a credential opened under a NON-PRIMARY key, naming the subject hash', async () => {
+      // This is what makes step (c) of the rotation performable. `open` knows the ring index and used
+      // to discard it, so an operator's only signal that they had dropped the retired key too early
+      // was the outage it caused -- and that log names the user-chosen credential NAME, which
+      // collides freely across subjects, so they could not enumerate whose credential was broken.
+      //
+      // Deliberately not deduplicated: the terminating condition is "no non-primary open for N days",
+      // and a once-per-process log would let a long-lived pod satisfy it while credentials were still
+      // stale.
+      await store.put(ALICE, cred('my-anthropic'));
+      const rotating = new K8sSecretStore({
+        namespace: NS,
+        keks: [randomBytes(KEK_BYTES), KEK],
+        run: cluster.run,
+      });
+
+      const warned = captureWarn();
+      try {
+        expect((await rotating.get(ALICE, 'my-anthropic'))?.secret).toEqual({ token: 'ghp-fake' }); // notsecret
+        await rotating.get(ALICE, 'my-anthropic'); // every read reports, not just the first
+      } finally {
+        warned.restore();
+      }
+
+      expect(warned.lines).toHaveLength(2);
+      const line = warned.lines[0]!;
+      expect(line).toContain(subjectHash(ALICE)); // WHOSE, without disclosing a login
+      expect(line).toContain('credential=my-anthropic');
+      // `ring index 1`, not a bare `1`: the subject hash is hex and contains digits, so `toContain('1')`
+      // would be satisfied by the hash alone and could not fail.
+      expect(line).toContain('ring index 1');
+      expect(line).not.toContain(ALICE); // the raw subject is a login; the hash is what names it
+      expect(line).not.toContain('ghp-fake'); // notsecret -- and never the value it just opened
+    });
+
+    it('stays silent once everything is re-sealed, or the signal would be worthless', async () => {
+      // "No non-primary open for N days" only terminates the rotation if the steady state is silent.
+      await store.put(ALICE, cred('my-anthropic'));
+      const warned = captureWarn();
+      try {
+        expect((await store.get(ALICE, 'my-anthropic'))?.secret.token).toBe('ghp-fake'); // notsecret
+      } finally {
+        warned.restore();
+      }
+      expect(warned.lines).toEqual([]);
+    });
+
+    it('names the subject hash when NO key opens it, so the affected users are enumerable', async () => {
+      // The failure case the signal above exists to prevent. envelope.ts keeps its message opaque for
+      // a CALLER, and this adds nothing a caller sees -- writeError reduces a non-CpError to a bare
+      // `internal_error` with no message -- but the operator log gets the one field that identifies
+      // who must re-enter their credential.
+      await store.put(ALICE, cred('my-anthropic'));
+      const dropped = new K8sSecretStore({
+        namespace: NS,
+        keks: [randomBytes(KEK_BYTES)],
+        run: cluster.run,
+      });
+      const err = await dropped.get(ALICE, 'my-anthropic').then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
+      expect(err).toBeInstanceOf(Error); // it must throw at all, not read as absent
+      // Exact, because this line is read by an operator and both halves are load-bearing: the name
+      // says WHAT, the hash says WHOSE. Matching the whole string is also what pins the absence of
+      // the raw subject -- a login -- rather than asserting it separately.
+      expect(err?.message).toBe(
+        `failed to decrypt credential 'my-anthropic' for subject ${subjectHash(ALICE)}`,
+      );
+      expect((err?.cause as Error).message).toBe("failed to decrypt credential 'my-anthropic'");
     });
 
     it('refuses a credential sealed under a KEK that is in no ring, rather than returning null', async () => {
