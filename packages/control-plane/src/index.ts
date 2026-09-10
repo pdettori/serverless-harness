@@ -13,3 +13,18 @@ export {
   type TokenClaims,
 } from './token.js';
 export { KEK_BYTES, credentialAad, kekFromBase64, open, seal } from './envelope.js';
+export {
+  CREDENTIAL_NAME_RE,
+  InMemoryCredentialStore,
+  kindSpec,
+  parseCredentialBody,
+  registerKind,
+  resolveInferenceName,
+  validateCredentialName,
+  type Consumer,
+  type CredentialBinding,
+  type CredentialDescriptor,
+  type CredentialStore,
+  type KindSpec,
+  type StoredCredential,
+} from './credential-store.js';
