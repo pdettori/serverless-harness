@@ -60,3 +60,12 @@ export {
   type IdentityProvider,
   type Principal,
 } from './identity.js';
+export {
+  HANDLERS,
+  assertOwner,
+  requirePrincipal,
+  type CpConfig,
+  type CpDeps,
+  type Handler,
+  type RequestCtx,
+} from './handlers.js';
