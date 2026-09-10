@@ -82,6 +82,14 @@ export function buildHandler(deps: CpDeps): (req: IncomingMessage, res: ServerRe
       const url = new URL(req.url ?? '/', 'http://localhost');
       const ctx: RequestCtx = { params: matched.params, query: url.searchParams, body: undefined };
 
+      // AUTHENTICATION FIRST, then the body. `authorize` reads only headers, so the order is free --
+      // and with it reversed an unauthenticated `PUT /v1/credentials/x` carrying malformed JSON got
+      // 400 invalid_json instead of 401, telling an anonymous caller something about the route's body
+      // handling before it had established the caller may talk to the route at all. Nothing of
+      // consequence leaked and the 64 KiB cap bounded it, but authentication belongs in front. Every
+      // route here is new in MU1, so no existing caller depends on the old codes.
+      authorize(matched.route, req, deps, ctx);
+
       if (req.method === 'POST' || req.method === 'PUT') {
         const raw = await readBody(req);
         if (raw.length > 0) {
@@ -96,8 +104,6 @@ export function buildHandler(deps: CpDeps): (req: IncomingMessage, res: ServerRe
           throw new CpError('invalid_json', 'body is required');
         }
       }
-
-      authorize(matched.route, req, deps, ctx);
 
       const handler = HANDLERS[matched.route.operationId];
       // A declared-but-unwired route is a programming error; the enumeration test catches it in CI,

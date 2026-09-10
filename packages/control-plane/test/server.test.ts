@@ -10,7 +10,7 @@ let d: TestDeps;
 function request(
   method: string,
   path: string,
-  opts: { body?: unknown; headers?: Record<string, string> } = {},
+  opts: { body?: unknown; rawBody?: string; headers?: Record<string, string> } = {},
 ): Promise<{ status: number; body: string; json(): unknown }> {
   return new Promise((resolve, reject) => {
     const req = http.request(new URL(path, base), { method, headers: opts.headers }, (res) => {
@@ -29,6 +29,10 @@ function request(
     if (opts.body !== undefined) {
       req.setHeader('Content-Type', 'application/json');
       req.write(JSON.stringify(opts.body));
+    } else if (opts.rawBody !== undefined) {
+      // Bytes as given, so a test can send something JSON.parse will reject.
+      req.setHeader('Content-Type', 'application/json');
+      req.write(opts.rawBody);
     }
     req.end();
   });
@@ -111,6 +115,28 @@ describe('api auth', () => {
     const res = await request('GET', '/v1/me');
     expect(res.status).toBe(401);
     expect((res.json() as { error: string }).error).toBe('token_required');
+  });
+
+  it('authenticates BEFORE it parses the body: no token + malformed JSON is 401, not 400', async () => {
+    // The body used to be read and JSON.parsed before authorize(), so an anonymous caller got
+    // 400 invalid_json and learned something about the route's body handling before it was established
+    // that it may talk to the route at all. Nothing of consequence leaked and the 64 KiB cap bounded
+    // it, but authentication belongs in front. Every route here is new in MU1, so no existing caller
+    // depended on the old codes.
+    const res = await request('PUT', '/v1/credentials/github-work', { rawBody: '{not json' });
+    expect(res.status).toBe(401);
+    expect((res.json() as { error: string }).error).toBe('token_required');
+  });
+
+  it('still 400s a malformed body once the caller IS authenticated', async () => {
+    // The reorder must not have swallowed the invalid_json path -- only moved it behind the gate.
+    const token = await apiToken();
+    const res = await request('PUT', '/v1/credentials/github-work', {
+      rawBody: '{not json',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(400);
+    expect((res.json() as { error: string }).error).toBe('invalid_json');
   });
 
   it('401s a malformed header, a wrong scheme and a garbage token', async () => {
