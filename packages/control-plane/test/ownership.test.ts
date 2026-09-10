@@ -251,6 +251,11 @@ describe('runtime hash', () => {
     const f = fakeRedis();
     const index = new OwnershipIndex(f.redis);
     await index.putRuntime('sid-1', { harnessPod: 'h-1', owner: 'github:attacker' });
+    // Pin the WRITE side independently of the read side: getRuntime() re-filters through the same
+    // RUNTIME_FIELDS allow-list, so asserting only on its output would still pass even if putRuntime
+    // stopped filtering and stored the raw hash. Reading the fake's underlying store directly proves
+    // the field was dropped on write, not merely hidden on read.
+    expect(f.hashes.get(runtimeKey('sid-1'))).not.toHaveProperty('owner');
     expect(await index.getRuntime('sid-1')).not.toHaveProperty('owner');
   });
 });
