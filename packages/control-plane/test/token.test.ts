@@ -25,7 +25,10 @@ function keypair() {
 
 const NOW = 1_757_000_000; // fixed epoch seconds, so expiry assertions are not clock-dependent
 
-function mintApi(privatePem: string, over: Partial<Parameters<ReturnType<typeof makeSigner>['mint']>[0]> = {}) {
+function mintApi(
+  privatePem: string,
+  over: Partial<Parameters<ReturnType<typeof makeSigner>['mint']>[0]> = {},
+) {
   return makeSigner(privatePem).mint({
     sub: 'github:1234',
     tenant: 'github:1234',
@@ -187,12 +190,15 @@ describe('mint and verify', () => {
   });
 
   it('rejects the alg-none downgrade and any non-EdDSA alg', () => {
-    const { publicKey } = keypair();
+    const { privatePem, publicKey } = keypair();
     const keys = new Map([[keyIdFor(publicKey), publicKey]]);
     const header = { alg: 'none', typ: 'JWT', kid: keyIdFor(publicKey) };
     const payload = { sub: 'github:1', aud: TOKEN_AUDIENCE, exp: NOW + 60, scope: ['api'] };
     const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
-    expect(() => verifyToken(`${b64(header)}.${b64(payload)}.`, keys, { now: NOW })).toThrow(
+    const h = b64(header);
+    const p = b64(payload);
+    const s = cryptoSign(null, Buffer.from(`${h}.${p}`), { key: privatePem }).toString('base64url');
+    expect(() => verifyToken(`${h}.${p}.${s}`, keys, { now: NOW })).toThrow(
       expect.objectContaining({ code: 'token_invalid' }),
     );
   });
@@ -206,16 +212,16 @@ describe('mint and verify', () => {
       Buffer.from(mintApi(privatePem).split('.')[1]!, 'base64url').toString(),
     );
     claims.aud = 'some-other-service';
-    const h = Buffer.from(
-      JSON.stringify({ alg: 'EdDSA', typ: 'JWT', kid: signer.kid }),
-    ).toString('base64url');
+    const h = Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'JWT', kid: signer.kid })).toString(
+      'base64url',
+    );
     const p = Buffer.from(JSON.stringify(claims)).toString('base64url');
     const s = cryptoSign(null, Buffer.from(`${h}.${p}`), {
       key: privatePem,
     }).toString('base64url');
-    expect(() => verifyToken(`${h}.${p}.${s}`, new Map([[signer.kid, publicKey]]), { now: NOW })).toThrow(
-      expect.objectContaining({ code: 'token_invalid' }),
-    );
+    expect(() =>
+      verifyToken(`${h}.${p}.${s}`, new Map([[signer.kid, publicKey]]), { now: NOW }),
+    ).toThrow(expect.objectContaining({ code: 'token_invalid' }));
   });
 
   it('rejects a token whose scope does not include the required one', () => {

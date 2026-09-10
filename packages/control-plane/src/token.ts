@@ -182,6 +182,7 @@ export function verifyToken(
   } catch {
     return bad('unparseable token header');
   }
+  if (typeof header !== 'object' || header === null) bad('unparseable token header');
   // Reject `alg: none` and every non-EdDSA alg BEFORE looking at the key: accepting the header's
   // word on the algorithm is the classic JWT downgrade.
   if (header.alg !== 'EdDSA') bad(`unsupported alg`);
@@ -198,6 +199,7 @@ export function verifyToken(
   } catch {
     return bad('unparseable token payload');
   }
+  if (typeof claims !== 'object' || claims === null) bad('unparseable token payload');
   if (claims.aud !== TOKEN_AUDIENCE) bad('wrong token audience');
   if (typeof claims.sub !== 'string' || claims.sub.length === 0) bad('token has no subject');
   if (typeof claims.exp !== 'number') bad('token has no expiry');
