@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { applyModelGateway } from '../src/run-turn';
 
 const baseModel = { id: 'claude-haiku-4-5', headers: { 'x-api-key': 'orig' } } as never;
@@ -81,5 +82,57 @@ describe('applyModelGateway', () => {
     const m = applyModelGateway(baseModel, { anthropicBaseUrl: '', anthropicAuthToken: '' }) as any;
     expect(m.baseUrl).toBe('https://env-gw/v1');
     expect(m.headers.Authorization).toBe('Bearer env-tok');
+  });
+
+  describe('a tagged upstream credential (MU1 spec §3.6)', () => {
+    it('takes precedence over both anthropicAuthToken and the environment', () => {
+      // MU1's work is to make `config` carry the RIGHT SUBJECT's token; the gateway function itself
+      // needs no new logic (spec §3.4).
+      process.env.ANTHROPIC_AUTH_TOKEN = 'env-deployment-token'; // notsecret
+      const m = applyModelGateway(baseModel, {
+        anthropicBaseUrl: 'https://gw.example/v1',
+        anthropicAuthToken: 'stale-config-token', // notsecret
+        upstreamCredential: { mode: 'direct', value: 'sk-alice' }, // notsecret
+      }) as any;
+      expect(m.headers.Authorization).toBe('Bearer sk-alice'); // notsecret
+    });
+
+    it('installs a placeholder verbatim, for an injector to rewrite', () => {
+      // RC1's static-inject rewrites `Bearer <placeholder>` from a mounted secret_dir (P5 §3.1-§3.2),
+      // so the harness must send it through UNCHANGED rather than treating it as a real token.
+      const m = applyModelGateway(baseModel, {
+        anthropicBaseUrl: 'https://gw.example/v1',
+        upstreamCredential: { mode: 'placeholder', value: 'sh-placeholder-github:1234' },
+      }) as any;
+      expect(m.headers.Authorization).toBe('Bearer sh-placeholder-github:1234');
+    });
+
+    it('falls back to the existing chain when no upstream credential is supplied', () => {
+      // The whole point of an ADDITIVE change: every existing caller -- the leaf path, the CLI, the 14
+      // unauthenticated deploy scripts -- must behave exactly as before.
+      process.env.ANTHROPIC_AUTH_TOKEN = 'env-token'; // notsecret
+      const m = applyModelGateway(baseModel, { anthropicBaseUrl: 'https://gw.example/v1' }) as any;
+      expect(m.headers.Authorization).toBe('Bearer env-token'); // notsecret
+    });
+
+    it('treats an empty value as "not set", like every other term in the chain', () => {
+      // `||` not `??` throughout this function: "" is a not-set sentinel here, not a credential.
+      process.env.ANTHROPIC_AUTH_TOKEN = 'env-token'; // notsecret
+      const m = applyModelGateway(baseModel, {
+        anthropicBaseUrl: 'https://gw.example/v1',
+        upstreamCredential: { mode: 'direct', value: '' },
+      }) as any;
+      expect(m.headers.Authorization).toBe('Bearer env-token'); // notsecret
+    });
+
+    it('leaves P5`s seed and both environment fallbacks exactly as they were', () => {
+      // These three lines are P5's to remove (spec §3.5 ownership split). Deleting the seed without
+      // P5's sentinel would make ANTHROPIC_API_KEY absent and break gateway mode outright, and MU1
+      // duplicating the sentinel would be both redundant and a merge conflict.
+      const src = readFileSync(new URL('../src/run-turn.ts', import.meta.url), 'utf8');
+      expect(src).toContain('if (authToken && !process.env.ANTHROPIC_API_KEY) {');
+      expect(src).toContain('process.env.ANTHROPIC_AUTH_TOKEN');
+      expect(src).toContain('process.env.ANTHROPIC_BASE_URL');
+    });
   });
 });
