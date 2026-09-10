@@ -12,3 +12,4 @@ export {
   type MintInput,
   type TokenClaims,
 } from './token.js';
+export { KEK_BYTES, credentialAad, kekFromBase64, open, seal } from './envelope.js';
