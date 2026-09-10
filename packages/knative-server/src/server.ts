@@ -27,10 +27,12 @@ import {
 } from './context-service.js';
 import { CpError, statusFor } from '@sh/control-plane';
 import {
+  assertKeysetUsable,
   resolveTurnAuth,
   runtimeFieldsForTurn,
   turnAuthDepsFromEnv,
   type TurnAuth,
+  type TurnAuthDeps,
 } from './turn-auth.js';
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
@@ -141,9 +143,14 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
     return;
   }
 
-  const deps = turnAuthDeps();
+  // INSIDE the try: turnAuthDeps() parses the keyset, so it can throw. Built outside, that throw
+  // skipped writeAuthError entirely and surfaced through the route's catch as a 500 carrying the
+  // error's own text -- on the unauthenticated path too, since it happens before anything reads
+  // requireAuth. Both halves of that are fixed: typed here, and refused at boot in startServer.
+  let deps: TurnAuthDeps;
   let auth: TurnAuth | null;
   try {
+    deps = turnAuthDeps();
     auth = await resolveTurnAuth(req.headers, parsed, deps);
   } catch (err) {
     writeAuthError(res, err, sessionId);
@@ -644,6 +651,11 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
 }
 
 export function startServer(port = PORT): ReturnType<typeof createServer> {
+  // Before anything binds: a malformed SH_SESSION_TOKEN_PUBLIC_KEYS must be a boot failure naming the
+  // bad entry, not a Ready pod that 503s every turn. /healthz and /readyz do not touch the keyset, so
+  // this is the only boot-time signal there is.
+  assertKeysetUsable(process.env);
+
   const server = createServer(handler);
 
   process.on('SIGTERM', () => {

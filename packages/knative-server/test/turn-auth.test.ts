@@ -10,6 +10,7 @@ vi.mock('redis', () => ({ createClient: vi.fn() }));
 import { createClient } from 'redis';
 import {
   PASSTHROUGH,
+  assertKeysetUsable,
   makeRuntimeReporter,
   resolveTurnAuth,
   runtimeFieldsForTurn,
@@ -327,6 +328,46 @@ describe('the exchange hop', () => {
     }
   });
 
+  it('reports a rejected EXCHANGE as 503, not as the caller`s 401', async () => {
+    // On /internal/credentials, `unauthorized` has exactly two sources -- checkExchangeAuth's shared
+    // bearer and handlers.ts's defensive re-check -- and neither involves the caller. The user's own
+    // token is checked separately inside exchangeCredential and fails as token_invalid /
+    // token_expired / session_not_found. So `unauthorized` here means one thing: the harness cannot
+    // authenticate to its own control plane, i.e. SH_EXCHANGE_TOKEN disagrees across the two tiers.
+    //
+    // Passing it through made that a 401 -- "your token is bad" -- so the user re-runs the device
+    // flow, gets a brand-new token, and fails identically, while 5xx alerting sees nothing. It
+    // belongs with its three neighbours: unreachable, non-JSON body and unknown mode are all 503.
+    const { fetchImpl } = fakeExchange({ status: 401, body: { error: 'unauthorized' } });
+    expect(
+      await codeOf(() =>
+        resolveTurnAuth(
+          { authorization: `Bearer ${sessionToken()}` },
+          { sessionId: 'sid-1' },
+          deps({ fetchImpl }),
+        ),
+      ),
+    ).toBe('credential_unavailable');
+  });
+
+  it('keeps the exchange status in the message, so the log still says what happened', async () => {
+    // Reclassifying must not lose the diagnosis: whoever reads the harness log needs the 401.
+    const { fetchImpl } = fakeExchange({ status: 401, body: { error: 'unauthorized' } });
+    await expect(
+      resolveTurnAuth(
+        { authorization: `Bearer ${sessionToken()}` },
+        { sessionId: 'sid-1' },
+        deps({ fetchImpl }),
+      ),
+    ).rejects.toThrow(/401/);
+  });
+
+  it('excludes `unauthorized`, because every PASSTHROUGH member must be caller-attributable', () => {
+    // The invariant that makes this set safe, pinned rather than left in a comment: a code belongs
+    // here when the CALLER can act on it, not merely because the control plane can return it.
+    expect(PASSTHROUGH.has('unauthorized')).toBe(false);
+  });
+
   it('every PASSTHROUGH member is a real CP_ERROR_CODES code', async () => {
     // The assertion that makes a typo unshippable. A mistyped member is not a passthrough code at all:
     // it silently degrades that refusal to credential_unavailable, and if one ever reached statusFor,
@@ -431,6 +472,55 @@ describe('turnAuthDepsFromEnv', () => {
     expect(turnAuthDepsFromEnv({}).keys.size).toBe(0);
     expect(() => turnAuthDepsFromEnv({ SH_SESSION_TOKEN_PUBLIC_KEYS: 'garbage' })).toThrow();
   });
+
+  it('throws a TYPED refusal on a malformed keyset, not parseKeyset`s own Error', () => {
+    // A bare `.toThrow()` above passes for either, which is how the raw throw shipped: it reached the
+    // route's catch as `500 {"error":"Error: SH_SESSION_TOKEN_PUBLIC_KEYS entry ..."}`. The code is
+    // what routes it to 503, and the fixed message is what keeps the entry text out of the reply.
+    let err: unknown;
+    try {
+      turnAuthDepsFromEnv({ SH_SESSION_TOKEN_PUBLIC_KEYS: 'garbage' });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(CpError);
+    expect((err as CpError).code).toBe('credential_unavailable');
+    expect(statusFor((err as CpError).code)).toBe(503);
+    expect((err as CpError).message).not.toMatch(/garbage|base64|SPKI/);
+  });
+
+  it('rejects each of parseKeyset`s three failure modes, not just an unparseable entry', () => {
+    // The rotation footgun the keyset design exists to support is the third one: publish the new key
+    // alongside the old and forget to update the kid. All three must reach the same typed refusal.
+    const { publicKey: rsa } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    for (const raw of [
+      'no-colon-at-all', // malformed entry
+      `some-kid:${rsa.export({ format: 'der', type: 'spki' }).toString('base64')}`, // wrong curve
+      `wrong-kid:${publicKeyToBase64(publicKey)}`, // a real Ed25519 key under the wrong kid
+    ]) {
+      expect(() => turnAuthDepsFromEnv({ SH_SESSION_TOKEN_PUBLIC_KEYS: raw }), raw).toThrow(
+        CpError,
+      );
+    }
+  });
+});
+
+describe('assertKeysetUsable', () => {
+  it('rethrows parseKeyset`s own message, so the boot log names the bad entry', () => {
+    // Deliberately NOT the typed refusal: this one is read by an operator in a container log, and the
+    // whole point is that it says which entry is wrong. Only the per-request path must stay opaque.
+    expect(() => assertKeysetUsable({ SH_SESSION_TOKEN_PUBLIC_KEYS: 'garbage' })).toThrow(
+      /SH_SESSION_TOKEN_PUBLIC_KEYS entry 'garbage'/,
+    );
+    expect(() => assertKeysetUsable({ SH_SESSION_TOKEN_PUBLIC_KEYS: 'garbage' })).not.toThrow(
+      CpError,
+    );
+  });
+
+  it('accepts an absent keyset, so every pre-MU1 deployment still boots', () => {
+    expect(() => assertKeysetUsable({})).not.toThrow();
+    expect(() => assertKeysetUsable({ SH_SESSION_TOKEN_PUBLIC_KEYS: '' })).not.toThrow();
+  });
 });
 
 describe('runtimeFieldsForTurn', () => {
@@ -521,5 +611,104 @@ describe('makeRuntimeReporter', () => {
     await reporter('sid-1', { harnessPod: 'p' });
     expect(attempt).toBe(2);
     expect(hSet).toHaveBeenCalledTimes(1);
+  });
+
+  describe('closes the client it discards', () => {
+    // Clearing the memoised state is what makes the retry work, but the client it abandons was
+    // block-scoped -- so nothing held it and nothing closed it. A flapping Redis then accumulated one
+    // CONNECTED, still-reconnecting client per failure, each retrying on its own timer, in the very
+    // function whose sibling comment is about not opening a connection per turn.
+    //
+    // destroy(), not quit(): quit() is deprecated in node-redis 6 and close() waits for pending
+    // commands against a server that has just gone away. This client is being abandoned on a failure
+    // path, so reject its commands immediately.
+    const clientFactory = () => {
+      const made: { destroy: ReturnType<typeof vi.fn>; connected: boolean }[] = [];
+      const hSet = vi.fn(async () => undefined);
+      let failConnect = false;
+      vi.mocked(createClient).mockImplementation(() => {
+        const rec = { destroy: vi.fn(), connected: false };
+        made.push(rec);
+        return {
+          connect: vi.fn(async () => {
+            if (failConnect) throw new Error('ECONNREFUSED');
+            rec.connected = true;
+          }),
+          hSet,
+          destroy: rec.destroy,
+        } as unknown as ReturnType<typeof createClient>;
+      });
+      return { made, hSet, setFailConnect: (v: boolean) => (failConnect = v) };
+    };
+
+    it('destroys the client when a call fails AFTER connecting — the case that definitely leaks', async () => {
+      const { made, hSet } = clientFactory();
+      hSet.mockRejectedValueOnce(new Error('connection lost'));
+      const reporter = makeRuntimeReporter('redis://127.0.0.1:6379');
+
+      await expect(reporter('sid-1', { harnessPod: 'p' })).resolves.toBeUndefined();
+      expect(made).toHaveLength(1);
+      expect(made[0]!.connected).toBe(true);
+      expect(made[0]!.destroy).toHaveBeenCalledTimes(1);
+
+      // And the retry still builds a FRESH client rather than reusing the destroyed one.
+      await reporter('sid-1', { harnessPod: 'p' });
+      expect(made).toHaveLength(2);
+      expect(made[1]!.destroy).not.toHaveBeenCalled();
+    });
+
+    it('destroys the client when connect() itself rejects', async () => {
+      const { made, setFailConnect } = clientFactory();
+      setFailConnect(true);
+      const reporter = makeRuntimeReporter('redis://127.0.0.1:6379');
+
+      await expect(reporter('sid-1', { harnessPod: 'p' })).resolves.toBeUndefined();
+      expect(made[0]!.destroy).toHaveBeenCalledTimes(1);
+    });
+
+    it('accumulates no orphans across repeated flapping — one destroy per clearing', async () => {
+      // The steady state the leak produced: one live client plus one orphan per flap, unbounded until
+      // the pod died. Every client but the last must have been destroyed exactly once.
+      const { made, hSet } = clientFactory();
+      hSet.mockRejectedValue(new Error('connection lost'));
+      const reporter = makeRuntimeReporter('redis://127.0.0.1:6379');
+
+      for (let i = 0; i < 5; i++) await reporter('sid-1', { harnessPod: 'p' });
+
+      expect(made).toHaveLength(5);
+      for (const [i, c] of made.entries())
+        expect(c.destroy, `client ${i}`).toHaveBeenCalledTimes(1);
+    });
+
+    it('survives a destroy() that throws, without failing the turn or blocking the retry', async () => {
+      // destroy() throws on a client that is not open. Display-only data must never fail a turn, and
+      // a throw inside the catch would both reject this promise and skip the state clearing.
+      const { made, hSet, setFailConnect } = clientFactory();
+      setFailConnect(true);
+      const reporter = makeRuntimeReporter('redis://127.0.0.1:6379');
+      vi.mocked(createClient).mockImplementationOnce(() => {
+        const rec = {
+          destroy: vi.fn(() => {
+            throw new Error('client is not open');
+          }),
+          connected: false,
+        };
+        made.push(rec);
+        return {
+          connect: vi.fn(async () => {
+            throw new Error('ECONNREFUSED');
+          }),
+          hSet,
+          destroy: rec.destroy,
+        } as unknown as ReturnType<typeof createClient>;
+      });
+
+      await expect(reporter('sid-1', { harnessPod: 'p' })).resolves.toBeUndefined();
+      expect(made[0]!.destroy).toHaveBeenCalledTimes(1);
+      // State was still cleared: the next call retries rather than awaiting the rejected `ready`.
+      setFailConnect(false);
+      await reporter('sid-1', { harnessPod: 'p' });
+      expect(hSet).toHaveBeenCalled();
+    });
   });
 });

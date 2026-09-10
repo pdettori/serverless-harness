@@ -64,8 +64,15 @@ export function publicKeyToBase64(publicKey: KeyObject): string {
  *
  * Not exploitable without it -- an RSA or P-256 key simply fails `cryptoVerify` with `alg: EdDSA`, so
  * every token is rejected -- but the failure then arrives per request as "bad token signature" on a
- * healthy-looking deployment. Asserting the curve here fails at PARSE time instead: `parseKeyset` runs
- * at startup on both tiers, so a mislabelled key becomes a boot error naming the real problem.
+ * healthy-looking deployment. Asserting the curve here fails at PARSE time instead, so a mislabelled
+ * key becomes a boot error naming the real problem.
+ *
+ * That only holds while BOTH tiers parse before serving, so the two call sites are named here rather
+ * than asserted in prose: `main.ts` (`configFromEnv` -> `verifyKeysFromEnv`) on the control plane, and
+ * `turn-auth.ts`'s `assertKeysetUsable`, called from `startServer`, on the data plane. The data plane
+ * ALSO parses per request so a Knative env change needs no restart; neither `/healthz` nor `/readyz`
+ * touches the keyset, so dropping the boot call would return this to a per-request failure on a pod
+ * that looks Ready -- exactly what this comment claims it prevents.
  */
 export function publicKeyFromBase64(b64: string): KeyObject {
   const key = createPublicKey({ key: Buffer.from(b64, 'base64'), format: 'der', type: 'spki' });

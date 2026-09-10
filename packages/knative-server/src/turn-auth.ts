@@ -57,11 +57,44 @@ const bearer = (headers: Record<string, string | string[] | undefined>): string 
   return value.length > 0 ? value : undefined;
 };
 
+/**
+ * Parse the published keyset, converting an operator error into a TYPED refusal.
+ *
+ * `parseKeyset` throws a plain `Error` whose text names the offending entry. This function is reached
+ * per request, and its caller's failure path returns the message to an arbitrary caller -- so the raw
+ * throw would both disclose internal error text and, because it happens before anything reads
+ * `requireAuth`, break the unauthenticated path that MU1's opt-in design promises to leave alone.
+ *
+ * `assertKeysetUsable` runs this at boot on this tier, so in practice a bad keyset is a crashloop with
+ * the real reason in the container log. This conversion covers the remaining case the per-request read
+ * exists for: the env changing under a pod that is already serving. Fail closed, with a code.
+ */
+function keysFromEnv(raw: string | undefined): Map<string, KeyObject> {
+  try {
+    return parseKeyset(raw);
+  } catch {
+    throw new CpError('credential_unavailable', 'the token keyset is not usable');
+  }
+}
+
+/**
+ * Boot-time keyset check. Call before serving: `parseKeyset`'s own message names the bad entry, and a
+ * crashloop naming it beats a Ready pod that refuses every turn.
+ *
+ * This is what makes `token.ts`'s "parseKeyset runs at startup on both tiers" -- the stated rationale
+ * for asserting the curve at parse time -- true on the data plane. `/healthz` and `/readyz` never
+ * touch the keyset, so without this there is no boot-time signal at all.
+ */
+export function assertKeysetUsable(env: NodeJS.ProcessEnv): void {
+  parseKeyset(env.SH_SESSION_TOKEN_PUBLIC_KEYS);
+}
+
 export function turnAuthDepsFromEnv(env: NodeJS.ProcessEnv): TurnAuthDeps {
   return {
     // Empty when nothing is published, so a deployment that has never heard of MU1 -- i.e. every
-    // existing one -- still boots. A MALFORMED keyset is an operator error and does throw (token.ts).
-    keys: parseKeyset(env.SH_SESSION_TOKEN_PUBLIC_KEYS),
+    // existing one -- still boots. A MALFORMED keyset is an operator error: it throws, as a typed
+    // CpError so the refusal carries a code instead of a stringified Error (see keysFromEnv).
+    keys: keysFromEnv(env.SH_SESSION_TOKEN_PUBLIC_KEYS),
     // Exactly 'true'. Defaults false because 14 deploy/knative scripts call /turn with no auth today
     // (spec §4.3.1); flipping the default is MU2.
     requireAuth: env.SH_REQUIRE_AUTH === 'true',
@@ -75,6 +108,17 @@ export function turnAuthDepsFromEnv(env: NodeJS.ProcessEnv): TurnAuthDeps {
 
 /**
  * Codes the control plane may legitimately return that this tier passes through unchanged.
+ *
+ * THE INVARIANT: every member is attributable to the CALLER, so its status blames the right party and
+ * the caller can act on it. `credential_*` is the subject's credential state, `endpoint_unresolved`
+ * their credential's endpoint, `session_not_found` their session, `token_*` their token. The weaker
+ * test -- "the control plane can return this code" -- is not sufficient, and admitting a code on that
+ * basis is how `unauthorized` got in: on `/internal/credentials` it comes only from
+ * `checkExchangeAuth`'s shared bearer or `handlers.ts`'s defensive re-check, so it means the HARNESS
+ * cannot authenticate to its own control plane. Reported as 401 that read as "your token is bad", so
+ * users re-ran the device flow against an outage while 5xx alerting stayed quiet. It now falls through
+ * to `credential_unavailable`, alongside the three neighbouring control-plane faults (unreachable,
+ * non-JSON body, unknown mode), with the status preserved in the message for the log.
  *
  * EXPORTED so its covering test can iterate it rather than restate it. A typo in one member would make
  * that code fall through to `credential_unavailable` at best, and -- if a mistyped code ever reached
@@ -90,7 +134,6 @@ export const PASSTHROUGH = new Set([
   'session_not_found',
   'token_invalid',
   'token_expired',
-  'unauthorized',
 ]);
 
 async function exchange(token: string, deps: TurnAuthDeps): Promise<ExchangeResponse> {
@@ -249,14 +292,20 @@ export function makeRuntimeReporter(
   redisUrl: string | undefined,
 ): (sessionId: string, fields: Record<string, string>) => Promise<void> {
   if (!redisUrl) return async () => undefined;
+  // HOISTED out of the `if (!ready)` block so the catch can close what it discards. Block-scoped, the
+  // discarded client had no remaining reference and nobody closed it.
+  let client: ReturnType<typeof createClient> | undefined;
   let index: OwnershipIndex | undefined;
   let ready: Promise<void> | undefined;
   return async (sessionId, fields) => {
     try {
       if (!ready) {
-        const client = createClient({ url: redisUrl });
-        ready = client.connect().then(() => {
-          index = new OwnershipIndex(client as unknown as CpRedisLike);
+        client = createClient({ url: redisUrl });
+        // Captured, because `client` is now mutable and the catch may have cleared it by the time a
+        // slow connect() resolves -- in which case `index` would silently never be built.
+        const c = client;
+        ready = c.connect().then(() => {
+          index = new OwnershipIndex(c as unknown as CpRedisLike);
         });
       }
       await ready;
@@ -266,8 +315,20 @@ export function makeRuntimeReporter(
       // reporter for the rest of the process's life: clear the memoised state so the NEXT call
       // retries from scratch, rather than forever awaiting an already-rejected `ready` (fix round 1,
       // Important 2). Display-only data, so the turn itself must never fail because this did.
+      const orphan = client;
+      client = undefined;
       ready = undefined;
       index = undefined;
+      // Close it, or a flapping Redis accumulates one connected, still-reconnecting client per
+      // failure, each retrying on its own timer. destroy() rather than the deprecated quit(), and
+      // rather than close() which waits for pending commands against a server that may be gone.
+      // It throws on a client that never opened, and that must neither fail the turn nor -- since the
+      // clearing above already happened -- be able to skip the retry.
+      try {
+        orphan?.destroy();
+      } catch {
+        // Nothing to do: the reference is dropped either way.
+      }
     }
   };
 }

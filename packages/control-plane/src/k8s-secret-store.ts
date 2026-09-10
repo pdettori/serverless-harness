@@ -94,12 +94,13 @@ function parseSecretJson(raw: string): SecretJson {
 
 export class K8sSecretStore implements CredentialStore {
   private readonly namespace: string;
-  private readonly kek: Buffer;
+  /** The KEK ring, newest first: `seal` uses the first, `open` tries each (envelope.ts). */
+  private readonly keks: Buffer[];
   private readonly run: RunKubectl;
 
-  constructor(opts: { namespace: string; kek: Buffer; run?: RunKubectl }) {
+  constructor(opts: { namespace: string; keks: Buffer[]; run?: RunKubectl }) {
     this.namespace = opts.namespace;
-    this.kek = opts.kek;
+    this.keks = opts.keks;
     this.run = opts.run ?? defaultRunKubectl;
   }
 
@@ -165,7 +166,7 @@ export class K8sSecretStore implements CredentialStore {
       // stringData, so kubectl does the base64. Read back through `data`, which is base64 -- the
       // asymmetry is kubectl's, and the fake in the test reproduces it on purpose.
       stringData: {
-        [descriptor.name]: seal(this.kek, subject, descriptor.name, JSON.stringify(secret)),
+        [descriptor.name]: seal(this.keks, subject, descriptor.name, JSON.stringify(secret)),
       },
     };
     await this.guard(() =>
@@ -180,9 +181,17 @@ export class K8sSecretStore implements CredentialStore {
     if (!sealed) return null;
     const descriptor = describe(name, annotations);
     if (!descriptor) return null;
-    // Throws on a wrong KEK, a wrong subject, or a relabelled ciphertext -- the AAD is what makes
-    // "move Alice's row into Bob's" fail rather than succeed (spec §6.5).
-    const plaintext = open(this.kek, subject, name, Buffer.from(sealed, 'base64').toString('utf8'));
+    // Throws when NO key in the ring opens it, or on a wrong subject or a relabelled ciphertext --
+    // the AAD is what makes "move Alice's row into Bob's" fail rather than succeed (spec §6.5). A
+    // value sealed under a retired KEK still opens while that key remains in the ring, which is what
+    // makes rotation possible; one sealed under a key that has been dropped throws rather than
+    // reading as absent.
+    const plaintext = open(
+      this.keks,
+      subject,
+      name,
+      Buffer.from(sealed, 'base64').toString('utf8'),
+    );
     return { descriptor, secret: JSON.parse(plaintext) as Record<string, string> };
   }
 

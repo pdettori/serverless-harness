@@ -2,7 +2,7 @@ import { createClient } from 'redis';
 import { fileURLToPath } from 'node:url';
 import type { KeyObject } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
-import { kekFromBase64 } from './envelope.js';
+import { keksFromBase64 } from './envelope.js';
 import { adminSubjectsFromEnv, GithubOAuthProvider } from './identity.js';
 import { K8sSecretStore } from './k8s-secret-store.js';
 import { defaultRunKubectl } from './kubectl.js';
@@ -33,7 +33,7 @@ export function portFromEnv(env: NodeJS.ProcessEnv): number {
 export function configFromEnv(env: NodeJS.ProcessEnv): CpConfig {
   required(env, 'SH_SESSION_TOKEN_PRIVATE_KEY');
   required(env, 'SH_GITHUB_CLIENT_ID');
-  kekFromBase64(required(env, 'SH_CREDENTIAL_KEK'));
+  keksFromBase64(required(env, 'SH_CREDENTIAL_KEK'));
   return {
     apiTokenTtlSeconds: intEnv(env, 'SH_API_TOKEN_TTL_SECONDS', 3600),
     // A session outlives a 5-minute token; POST /v1/sessions/{id}/token re-mints (spec §4.2).
@@ -71,7 +71,7 @@ export function depsFromEnv(env: NodeJS.ProcessEnv): CpDeps {
     index: new OwnershipIndex(client as unknown as CpRedisLike),
     credentials: new K8sSecretStore({
       namespace: env.SH_CREDENTIAL_NAMESPACE ?? 'sh-credentials',
-      kek: kekFromBase64(env.SH_CREDENTIAL_KEK),
+      keks: keksFromBase64(env.SH_CREDENTIAL_KEK),
       run: defaultRunKubectl,
     }),
     identity: new GithubOAuthProvider({

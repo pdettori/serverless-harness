@@ -302,3 +302,43 @@ describe('the /v1 aliases', () => {
     expect((await post('/turn', { sessionId: 'sid-1', prompt: 'hi' })).status).toBe(200);
   });
 });
+
+describe('a malformed SH_SESSION_TOKEN_PUBLIC_KEYS', () => {
+  // parseKeyset throws on a malformed entry, a non-Ed25519 key, and a kid that does not match its key
+  // (token.ts). Before this, turnAuthDeps() ran OUTSIDE handleTurn's try, so that throw reached the
+  // route's own catch and became `500 {"error":"Error: SH_SESSION_TOKEN_PUBLIC_KEYS entry ..."}` --
+  // internal error text to an arbitrary caller, on every /turn including the unauthenticated ones the
+  // opt-in design exists to leave undisturbed.
+
+  it('crashes the boot rather than serving, so an operator typo is a container log not a 500 per turn', () => {
+    // token.ts justifies its curve assertion with "parseKeyset runs at startup on both tiers".
+    // main.ts:57 made that true for the control plane; on this tier the only call was per request,
+    // and /healthz never touches the keyset -- so the pod went Ready, stayed Ready, and 500ed every
+    // turn. This boot call is what makes that comment's claim true here.
+    process.env.SH_SESSION_TOKEN_PUBLIC_KEYS = 'garbage';
+    expect(() => startServer(0)).toThrow(/SH_SESSION_TOKEN_PUBLIC_KEYS/);
+  });
+
+  it('refuses a turn with a typed 503 when the env goes bad AFTER boot, leaking no error text', async () => {
+    // The per-request read exists so a Knative env change takes effect without a restart, which is
+    // the one way an already-booted pod reaches a bad keyset. Fail closed, and with a code rather
+    // than a stringified Error.
+    process.env.SH_SESSION_TOKEN_PUBLIC_KEYS = 'garbage';
+    const res = await post('/turn', { sessionId: 'sid-1', prompt: 'hi' });
+    expect(res.status).toBe(503);
+    expect(res.json).toMatchObject({ error: 'credential_unavailable' });
+    expect(JSON.stringify(res.json)).not.toMatch(/base64|SPKI|Error:/);
+    expect(vi.mocked(runTurn)).not.toHaveBeenCalled();
+  });
+
+  it('refuses the SSE branch the same way, rather than streaming from an unusable keyset', async () => {
+    process.env.SH_SESSION_TOKEN_PUBLIC_KEYS = 'garbage';
+    const res = await postRaw(
+      '/turn',
+      { sessionId: 'sid-1', prompt: 'hi' },
+      { Accept: 'text/event-stream' },
+    );
+    expect(res.status).toBe(503);
+    expect(vi.mocked(executeTurn)).not.toHaveBeenCalled();
+  });
+});

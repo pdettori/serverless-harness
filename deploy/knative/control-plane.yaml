@@ -27,6 +27,19 @@
 #   kubectl create secret generic sh-credential-kek -n default \
 #     --from-literal=SH_CREDENTIAL_KEK="$(openssl rand -base64 32)"
 #
+#   # SH_CREDENTIAL_KEK is a comma-separated RING, newest first, exactly like
+#   # SH_SESSION_TOKEN_PUBLIC_KEYS: credentials are sealed under the FIRST key and opened by trying
+#   # each. That dual-read window is what makes rotation possible -- replacing a single key would make
+#   # every stored credential undecryptable at once, and /v1 exposes no read-back path, so the only
+#   # recovery would be every user re-entering every credential by hand (spec §6.5). To rotate:
+#   #   a. PREPEND a new key, keeping the old one:
+#   #        kubectl create secret generic sh-credential-kek -n default --dry-run=client -o yaml \
+#   #          --from-literal=SH_CREDENTIAL_KEK="$(openssl rand -base64 32),$OLD_KEK" \
+#   #          | kubectl apply -f -
+#   #      Roll the Service so the new Revision picks it up.
+#   #   b. Let writes re-seal forward: every PUT /v1/credentials/{name} reseals under the new key.
+#   #   c. Once nothing is left under the old key, drop it from the list and roll again.
+#
 #   # 3. The shared bearer for the exchange hop, mounted into BOTH tiers from this one Secret
 #   #    (spec §5.3.1). Fail-closed in code: absent => every exchange call is rejected.
 #   kubectl create secret generic sh-exchange-token -n default \

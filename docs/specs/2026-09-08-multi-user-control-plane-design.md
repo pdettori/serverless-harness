@@ -495,6 +495,14 @@ Accepting a _list_ is what makes rotation possible without a flag day: publish t
 the old, roll the Service, switch the control plane to signing with the new `kid`, then drop the old
 entry. Tokens minted before the switch keep verifying for their five-minute lifetime.
 
+A malformed or mislabelled entry — including the rotation footgun of publishing the new key under the
+old `kid` — is refused at **parse** time, and both tiers parse before serving: the control plane in
+`configFromEnv`, the data plane in `startServer`. Neither `/healthz` nor `/readyz` touches the keyset,
+so without that boot check an operator typo would be a Ready pod that refuses every turn. The data plane
+_also_ re-reads per request so a Knative env change needs no restart; that path converts the same
+failure into a typed `credential_unavailable` (503) rather than returning the parse error's text to a
+caller.
+
 Deliberately **not** a JWKS endpoint on the control plane. Fetching keys at verify time would put a
 control-plane round trip on the critical path of every turn and undo §9.2's property that an
 identity-provider or control-plane outage does not break running work — verification stays local
@@ -672,6 +680,24 @@ secret read yields ciphertext and the KEK is a distinct RBAC subject.
 
 **AAD = `subject|name`.** Free, and it buys a real property: an attacker who can _write_ Secrets still
 cannot relabel Alice's ciphertext into Bob's row and spend her key — decryption fails.
+
+**The KEK is a ring, for the same reason the token keyset is a list.** `SH_CREDENTIAL_KEK` is
+comma-separated and newest-first: `seal` uses the first key, `open` tries each. Without that dual-read
+window there is no rotation — only a cutover that makes every previously sealed credential
+undecryptable at once. And because there is deliberately no read-back path anywhere in `/v1` (§6.2),
+nothing can export and re-seal, so a single-key cutover's only recovery would be every user re-entering
+every credential by hand — the outcome the design otherwise avoids, arriving at the worst moment.
+Rotation is: prepend the new key and roll the Service; writes re-seal forward on the next
+`PUT /v1/credentials/{name}`; drop the retired key once nothing is left under it.
+
+The ring lives in configuration rather than in the sealed value. A key id on the wire would let `open`
+select a key instead of trying each, but it is a format change — and a format change becomes a migration
+needing the old KEK, which the no-read-back rule forbids, from the moment the first credential is
+sealed. Trying each key costs a failed GCM verification or two on a ring of that size and buys the
+rotation without one. A ring must not become an oracle either: `open` reports the same single opaque
+`failed to decrypt credential '<name>'` after the whole ring fails, so "sealed under a key I do not
+have" is indistinguishable from "tampered ciphertext", and the AAD is re-bound per attempt so a
+relabelled ciphertext is refused by every key rather than only the primary.
 
 **No `list` verb on the serving path.** The Secret name is derived deterministically from the subject,
 so every access is a `get` by exact name. The runtime Role grants
@@ -931,8 +957,9 @@ Three tests carry the design:
 
 Also: Ed25519 mint/verify (expiry, `aud`, `sid` binding, tampered signature, and that a
 harness-side verifier cannot sign); envelope crypto (round-trip, **AAD mismatch must fail**, wrong KEK
-must fail); cascade-delete ordering; cross-tenant negatives (A's token cannot drive B's `sid`; B's list
-omits A's sessions).
+must fail, and a **full rotation cycle** — read under the retired key, re-seal forward on write, retire
+the old key — with the AAD still enforced against every key in the ring); cascade-delete ordering;
+cross-tenant negatives (A's token cannot drive B's `sid`; B's list omits A's sessions).
 
 Live smoke gated by env var per existing convention: `MULTIUSER_LIVE_SMOKE=1` →
 `deploy/knative/demo-multiuser.sh`, in the style of `demo-promoted-workflow.sh`.

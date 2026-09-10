@@ -98,7 +98,7 @@ describe('K8sSecretStore', () => {
 
   beforeEach(() => {
     cluster = fakeCluster();
-    store = new K8sSecretStore({ namespace: NS, kek: KEK, run: cluster.run });
+    store = new K8sSecretStore({ namespace: NS, keks: [KEK], run: cluster.run });
   });
 
   it('round-trips put/get', async () => {
@@ -147,10 +147,47 @@ describe('K8sSecretStore', () => {
     // key and still getting full descriptors back.
     const wrongKek = new K8sSecretStore({
       namespace: NS,
-      kek: randomBytes(KEK_BYTES),
+      keks: [randomBytes(KEK_BYTES)],
       run: cluster.run,
     });
     expect(await wrongKek.list(ALICE)).toEqual(listed);
+  });
+
+  describe('a KEK rotation, end to end through the store', () => {
+    // The envelope tests prove seal/open handle a ring; these prove the store carries it, which is
+    // what an operator actually performs. Before the ring, step 2 here was a total outage that no
+    // /v1 route could recover from -- there is deliberately no read-back, so nothing could re-seal.
+    it('still reads a credential written before the rotation, and re-seals it forward on the next write', async () => {
+      const newKek = randomBytes(KEK_BYTES);
+
+      // 1. Written under the old KEK alone.
+      await store.put(ALICE, cred('my-anthropic'));
+
+      // 2. Rotate: prepend the new KEK, keep the old one for reading.
+      const rotating = new K8sSecretStore({ namespace: NS, keks: [newKek, KEK], run: cluster.run });
+      expect((await rotating.get(ALICE, 'my-anthropic'))?.secret).toEqual({ token: 'ghp-fake' }); // notsecret
+
+      // 3. The next write re-seals under the new KEK, so the old one is no longer needed for it.
+      await rotating.put(ALICE, cred('my-anthropic'));
+      const newOnly = new K8sSecretStore({ namespace: NS, keks: [newKek], run: cluster.run });
+      expect((await newOnly.get(ALICE, 'my-anthropic'))?.secret).toEqual({ token: 'ghp-fake' }); // notsecret
+
+      // 4. And the retired KEK alone no longer opens it -- the rotation actually moved.
+      const oldOnly = new K8sSecretStore({ namespace: NS, keks: [KEK], run: cluster.run });
+      await expect(oldOnly.get(ALICE, 'my-anthropic')).rejects.toThrow(/decrypt/i);
+    });
+
+    it('refuses a credential sealed under a KEK that is in no ring, rather than returning null', async () => {
+      // A miss must not look like "no such credential": that would silently drop a credential the
+      // user can see in list() and cannot use, with no signal to the operator.
+      await store.put(ALICE, cred('my-anthropic'));
+      const unrelated = new K8sSecretStore({
+        namespace: NS,
+        keks: [randomBytes(KEK_BYTES), randomBytes(KEK_BYTES)],
+        run: cluster.run,
+      });
+      await expect(unrelated.get(ALICE, 'my-anthropic')).rejects.toThrow(/decrypt/i);
+    });
   });
 
   it('every annotation key it writes is a valid Kubernetes annotation name', async () => {
@@ -221,7 +258,7 @@ describe('K8sSecretStore', () => {
     await store.put(ALICE, cred('a'));
     const other = new K8sSecretStore({
       namespace: NS,
-      kek: randomBytes(KEK_BYTES),
+      keks: [randomBytes(KEK_BYTES)],
       run: cluster.run,
     });
     await expect(other.get(ALICE, 'a')).rejects.toThrow(/decrypt/i);
@@ -231,7 +268,7 @@ describe('K8sSecretStore', () => {
     // Something else wrote a stray key into the Secret. It must not appear as a credential with an
     // invented descriptor -- list() reports only what it can describe.
     await store.put(ALICE, cred('a'));
-    [...cluster.secrets.values()][0]!.data['stray'] = seal(KEK, ALICE, 'stray', 'x');
+    [...cluster.secrets.values()][0]!.data['stray'] = seal([KEK], ALICE, 'stray', 'x');
     expect((await store.list(ALICE)).map((d) => d.name)).toEqual(['a']);
   });
 });
@@ -241,7 +278,7 @@ describe('the credential store answers 503, not 500, when kubectl or the API is 
   // mapped to it. An unreachable API server, an expired ServiceAccount token or a 403 from a narrowed
   // Role are all "the store is not answering" -- retryable -- and escaping as a plain Error made every
   // one of them a 500 internal_error, which claims the control plane is broken.
-  const storeWith = (run: RunKubectl) => new K8sSecretStore({ namespace: NS, kek: KEK, run });
+  const storeWith = (run: RunKubectl) => new K8sSecretStore({ namespace: NS, keks: [KEK], run });
   const codeOf = async (fn: () => Promise<unknown>): Promise<string> => {
     try {
       await fn();
