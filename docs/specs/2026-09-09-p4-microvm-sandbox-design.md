@@ -804,8 +804,9 @@ after results land (§10's file table). A prediction that can be edited to fit t
    `ls`/`find`-heavy commands rather than in `cat`.
 5. **Idle standby residency returns to zero** within `StandbyIdle + ReclaimScanInterval` of a rung's last
    `Exec` on an otherwise idle host, while **workspace count does not change** until `WorkspaceIdle`; and
-   a run's final `Exec` — the cleanup `Exec` — **does** mint D standbys, which `StandbyIdle` ages out
-   within one `ReclaimScanInterval`, so idle standby residency tracks (runs finishing per `StandbyIdle`) ×
+   a run's final `Exec` — the cleanup `Exec` — pops a standby and mints **its replacement**, so the run's
+   full complement of **D** stands idle rather than being reclaimed, which `StandbyIdle` ages out within
+   one `ReclaimScanInterval`; idle standby residency therefore tracks (runs finishing per `StandbyIdle`) ×
    D × `GuestRAMBytes` and not zero. This predicts the reclamation path's _shape_ — convergence without an
    arrival to trigger it, and RAM released long before state is — which is the half §4.2 says the tier
    above does not give us for free.
@@ -850,10 +851,10 @@ at `MaxCommittedBytes` and records the refusal distinctly from `MaxRuns`. Four m
 path, all with an injected clock and no KVM: the sweep fires from the **ticker** with no further `Exec`
 arriving (the §4.2 case a request-triggered sweep cannot cover); `StandbyIdle` drops a run's standbys and
 **leaves its workspace on disk**, so the next `Exec` for that key is a cold acquire against the same tree
-rather than a fresh one; a run's final `Exec` mints D replacement standbys after `ReplenishDelay`, which
-`StandbyIdle` ages out rather than reclaiming immediately, while an `Exec` arriving inside the delay
-window is served from them without a cold acquire; and a sweep destroys at most `MaxReclaimsPerScan` VMs,
-leaving the rest for the next tick.
+rather than a fresh one; a run's final `Exec` mints **its replacement** standby after `ReplenishDelay`,
+leaving **D** idle, which `StandbyIdle` ages out rather than reclaiming immediately, while an `Exec`
+arriving inside the delay window is served from the **D−1** still `Ready` without a cold acquire; and a
+sweep destroys at most `MaxReclaimsPerScan` VMs, leaving the rest for the next tick.
 
 **Correctness gates** — none of these produces a number, and all are blocking:
 
