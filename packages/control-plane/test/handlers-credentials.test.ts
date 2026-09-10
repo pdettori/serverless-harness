@@ -129,10 +129,28 @@ describe('GET /v1/credentials', () => {
 
   it('returns metadata only — NO value is ever returned', async () => {
     const res = await HANDLERS.listCredentials!(ctx({ principal: alice }), d);
+    const creds = (res.body as { credentials: Record<string, unknown>[] }).credentials;
     const json = JSON.stringify(res.body);
+    // The stored value must not appear, and no `secret` field may exist.
     expect(json).not.toContain('ghp-fake'); // notsecret
-    expect(json).not.toContain('secret');
-    expect(json).not.toContain('token');
+    for (const cred of creds) expect(Object.keys(cred)).not.toContain('secret');
+    // Pin the shape exactly, which is stricter than banning substrings: any field added later has
+    // to be added here deliberately. NOTE `binding` IS returned and IS correct -- spec §6.2 lists
+    // `kind`, `consumer`, `destination` and `binding` as explicitly NOT secret, and the OpenAPI
+    // contract makes `binding` required on CredentialDescriptor. Its `format` legitimately contains
+    // the literal template placeholder `{token}`, which is why a blunt `not.toContain('token')`
+    // assertion would be wrong here: it would fail on correct output and pressure an implementer
+    // into stripping a documented field to make the test pass.
+    for (const cred of creds) {
+      expect(Object.keys(cred).sort()).toEqual([
+        'binding',
+        'consumer',
+        'destination',
+        'endpoint',
+        'kind',
+        'name',
+      ]);
+    }
   });
 
   it('returns the fields a user needs to tell two credentials apart', async () => {

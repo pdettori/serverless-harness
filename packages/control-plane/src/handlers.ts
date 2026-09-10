@@ -312,6 +312,7 @@ export const HANDLERS: Record<string, Handler> = {
           kind: d.kind,
           consumer: d.consumer,
           destination: d.destination,
+          binding: d.binding,
           endpoint: d.endpoint,
         })),
       },
