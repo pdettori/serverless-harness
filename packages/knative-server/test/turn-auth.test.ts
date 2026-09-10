@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { CpError } from '@sh/control-plane';
+import { CP_ERROR_CODES, CpError, statusFor, type CpErrorCode } from '@sh/control-plane';
 import { keyIdFor, makeSigner, publicKeyToBase64 } from '@sh/control-plane';
 
 // Fix round 1, Important 2: lets the retry test control connect() success/failure per attempt
@@ -9,6 +9,7 @@ import { keyIdFor, makeSigner, publicKeyToBase64 } from '@sh/control-plane';
 vi.mock('redis', () => ({ createClient: vi.fn() }));
 import { createClient } from 'redis';
 import {
+  PASSTHROUGH,
   makeRuntimeReporter,
   resolveTurnAuth,
   runtimeFieldsForTurn,
@@ -304,13 +305,14 @@ describe('the exchange hop', () => {
     ).toBe('credential_unavailable');
   });
 
-  it('propagates a typed refusal from the control plane', async () => {
-    for (const [status, error] of [
-      [400, 'credential_required'],
-      [400, 'endpoint_unresolved'],
-      [404, 'session_not_found'],
-      [401, 'unauthorized'],
-    ] as const) {
+  it('propagates EVERY passthrough code, with the status statusFor gives it', async () => {
+    // Iterating the exported set rather than restating four of its eight members: a hand-listed copy
+    // covers whatever it happens to name and is silent about the rest, which is how half of PASSTHROUGH
+    // came to be untested. Deriving the reply status from statusFor also means the fixture cannot drift
+    // from the taxonomy.
+    expect(PASSTHROUGH.size).toBeGreaterThan(0);
+    for (const error of PASSTHROUGH) {
+      const status = statusFor(error as CpErrorCode);
       const { fetchImpl } = fakeExchange({ status, body: { error } });
       expect(
         await codeOf(() =>
@@ -323,6 +325,14 @@ describe('the exchange hop', () => {
         error,
       ).toBe(error);
     }
+  });
+
+  it('every PASSTHROUGH member is a real CP_ERROR_CODES code', async () => {
+    // The assertion that makes a typo unshippable. A mistyped member is not a passthrough code at all:
+    // it silently degrades that refusal to credential_unavailable, and if one ever reached statusFor,
+    // `res.writeHead(undefined)` throws inside the error path and the caller gets a 500 with a
+    // stringified error instead of the refusal the control plane sent.
+    expect([...PASSTHROUGH].every((c) => CP_ERROR_CODES.includes(c as CpErrorCode))).toBe(true);
   });
 
   it('reduces an unrecognised failure body to credential_unavailable', async () => {

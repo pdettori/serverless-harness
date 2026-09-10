@@ -73,8 +73,16 @@ export function turnAuthDepsFromEnv(env: NodeJS.ProcessEnv): TurnAuthDeps {
   };
 }
 
-/** Codes the control plane may legitimately return that this tier passes through unchanged. */
-const PASSTHROUGH = new Set([
+/**
+ * Codes the control plane may legitimately return that this tier passes through unchanged.
+ *
+ * EXPORTED so its covering test can iterate it rather than restate it. A typo in one member would make
+ * that code fall through to `credential_unavailable` at best, and -- if a mistyped code ever reached
+ * `statusFor` -- `res.writeHead(undefined)` throws inside the error path and the caller gets a 500
+ * with a stringified error instead of the intended refusal. turn-auth.test.ts asserts every member is
+ * in CP_ERROR_CODES, which is what makes a typo unshippable.
+ */
+export const PASSTHROUGH = new Set([
   'credential_required',
   'credential_ambiguous',
   'credential_not_found',
