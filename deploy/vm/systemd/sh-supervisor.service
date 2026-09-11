@@ -1,16 +1,23 @@
 [Unit]
 Description=Serverless harness supervisor (P6 VM process manager)
-After=network-online.target redis.service
+# Redis is a bare podman container started by start_redis() in setup-vm.sh, not a systemd
+# unit -- there is nothing here for Requires= to name. The client retries on connect, so
+# ordering against Redis is not load-bearing.
+After=network-online.target
 Wants=network-online.target
-Requires=redis.service
 
 [Service]
 Type=simple
 User=harness
 Group=harness
-WorkingDirectory=/opt/serverless-harness
+# Run from the supervisor's own package dir, matching the Knative precedent
+# (deploy/knative/relay-deployment.yaml, deploy/knative/control-plane.yaml): `node --import
+# tsx` resolves the tsx loader relative to the CWD, and tsx (a devDep) is linked only into
+# each package's own node_modules, never root-hoisted -- a CWD of the repo root crashes with
+# ERR_MODULE_NOT_FOUND 'tsx'. Do not "simplify" this back to the repo root.
+WorkingDirectory=/opt/serverless-harness/packages/supervisor
 EnvironmentFile=/etc/serverless-harness/supervisor.env
-ExecStart=/usr/bin/node --import tsx packages/supervisor/src/main.ts
+ExecStart=/usr/bin/node --import tsx src/main.ts
 Restart=always
 RestartSec=2
 # The supervisor forks W workers; systemd must account for the whole tree.
@@ -26,7 +33,9 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
-ReadWritePaths=/var/lib/serverless-harness
+# systemd creates and owns /var/lib/serverless-harness for us; do not re-add a
+# ReadWritePaths= beside it -- that would name a path nothing creates.
+StateDirectory=serverless-harness
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

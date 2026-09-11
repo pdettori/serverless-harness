@@ -11,6 +11,8 @@ containers as podman containers alongside them. `setup-vm.sh` is the sibling of
 - Node.js 22+ on the VM (the supervisor and relay run directly via `node --import tsx`, not
   containerized)
 - A user able to install systemd units under `/etc/systemd/system` (typically via `sudo`)
+- A system user and group named `harness` (both units run as `User=harness`/`Group=harness`):
+  e.g. `sudo useradd --system --no-create-home --shell /usr/sbin/nologin harness`
 
 ## Bring it up
 
@@ -21,8 +23,9 @@ cd /opt/serverless-harness   # this checkout, on the VM
 
 That one command:
 
-1. Writes `/etc/serverless-harness/supervisor.env` from `env/supervisor.env.example` — only
-   the first time; an operator-edited env file is never clobbered on a re-run.
+1. Writes `/etc/serverless-harness/supervisor.env` and `relay.env` from their `env/*.example`
+   templates — only the first time each; an operator-edited env file is never clobbered on a
+   re-run.
 2. Installs `systemd/sh-supervisor.service` and `systemd/sh-relay.service` into
    `/etc/systemd/system` and reloads the daemon.
 3. Starts a Redis container and `SH_SANDBOX_COUNT` (default 2) sandbox containers via podman.
@@ -34,13 +37,14 @@ Before starting the supervisor, edit `/etc/serverless-harness/supervisor.env` an
 
 ## Where the env file lives
 
-`/etc/serverless-harness/supervisor.env` (mode 0640, owned by the `harness` user/group),
-installed once from `deploy/vm/env/supervisor.env.example`. `SH_TURNS_PER_WORKER` — the
-per-worker cap on in-flight turns (S) — has no default anywhere in this deployment: its
-correct value is an _output_ of experiment E8, not a guess, so shipping one would silently
-truncate the E8 ladder it exists to measure. The unit's `EnvironmentFile=` directive fails
-the service to start rather than falling back to a wrong value if it's left unset when the
-supervisor reads it.
+`/etc/serverless-harness/supervisor.env` (mode 0640, root-owned — `install_env` runs as
+root and does not `chown` to `harness`; that's fine, since systemd reads `EnvironmentFile=`
+as PID 1, before dropping privileges to `User=harness`), installed once from
+`deploy/vm/env/supervisor.env.example`. `SH_TURNS_PER_WORKER` — the per-worker cap on
+in-flight turns (S) — has no default anywhere in this deployment: its correct value is an
+_output_ of experiment E8, not a guess, so shipping one would silently truncate the E8
+ladder it exists to measure. Left unset, the supervisor's own startup check (`readConfig`)
+refuses to start rather than falling back to a wrong value.
 
 ## What round one does not claim
 

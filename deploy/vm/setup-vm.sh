@@ -35,6 +35,20 @@ require_cmds() {
   fi
 }
 
+# Both units run as User=harness/Group=harness; nothing here creates that account (uid
+# policy, shell, and home are an operator decision, not this script's to make). Fail loudly
+# before install_units, naming the account and the units that need it, instead of letting
+# systemd fail later with a confusing "user harness does not exist".
+require_user() {
+  local user="$1"
+  if ! getent passwd "$user" >/dev/null 2>&1; then
+    echo "missing system user '$user': sh-supervisor.service and sh-relay.service both run" \
+      "as User=$user/Group=$user. Create it first, e.g.:" \
+      "sudo useradd --system --no-create-home --shell /usr/sbin/nologin $user" >&2
+    return 1
+  fi
+}
+
 install_units() {
   log "installing systemd units into $SH_UNIT_DIR"
   install -m 0644 "$SCRIPT_DIR/systemd/sh-supervisor.service" "$SH_UNIT_DIR/"
@@ -42,15 +56,24 @@ install_units() {
   systemctl daemon-reload
 }
 
+# install_env_file <name> <hint> installs deploy/vm/env/<name>.env.example to
+# $SH_ENV_DIR/<name>.env, once. Never clobber an operator-edited env file: it holds the S
+# that an E8 run established (supervisor.env) or the shared token a worker was configured
+# with (relay.env) — either one, a silent overwrite on re-run would be a real outage.
+install_env_file() {
+  local name="$1" hint="${2:-}"
+  if [[ ! -f "$SH_ENV_DIR/$name.env" ]]; then
+    install -m 0640 "$SCRIPT_DIR/env/$name.env.example" "$SH_ENV_DIR/$name.env"
+    log "wrote $SH_ENV_DIR/$name.env${hint:+ — $hint}"
+  else
+    log "keeping existing $SH_ENV_DIR/$name.env"
+  fi
+}
+
 install_env() {
   install -d -m 0750 "$SH_ENV_DIR"
-  if [[ ! -f "$SH_ENV_DIR/supervisor.env" ]]; then
-    # Never clobber an operator-edited env file: it holds the S that an E8 run established.
-    install -m 0640 "$SCRIPT_DIR/env/supervisor.env.example" "$SH_ENV_DIR/supervisor.env"
-    log "wrote $SH_ENV_DIR/supervisor.env — set SH_TURNS_PER_WORKER before starting"
-  else
-    log "keeping existing $SH_ENV_DIR/supervisor.env"
-  fi
+  install_env_file supervisor "set SH_TURNS_PER_WORKER before starting"
+  install_env_file relay "set SH_RELAY_TOKEN before starting"
 }
 
 start_redis() {
@@ -73,7 +96,8 @@ start_services() {
 }
 
 main() {
-  require_cmds podman systemctl install node
+  require_cmds podman systemctl install node getent
+  require_user harness
   install_env
   install_units
   start_redis

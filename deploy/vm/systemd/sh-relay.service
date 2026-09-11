@@ -7,9 +7,15 @@ Wants=network-online.target
 Type=simple
 User=harness
 Group=harness
-WorkingDirectory=/opt/serverless-harness
+# Run from the relay's own package dir, matching the Knative precedent
+# (deploy/knative/relay-deployment.yaml, deploy/knative/control-plane.yaml): `node --import
+# tsx` resolves the tsx loader relative to the CWD, and tsx (a devDep) is linked only into
+# each package's own node_modules, never root-hoisted -- a CWD of the repo root crashes with
+# ERR_MODULE_NOT_FOUND 'tsx'. Do not "simplify" this back to the repo root. The relay's own
+# package is packages/sandbox-relay, not packages/relay -- that path never existed.
+WorkingDirectory=/opt/serverless-harness/packages/sandbox-relay
 EnvironmentFile=/etc/serverless-harness/relay.env
-ExecStart=/usr/bin/node --import tsx packages/relay/src/main.ts
+ExecStart=/usr/bin/node --import tsx src/main.ts
 Restart=always
 RestartSec=2
 KillMode=control-group
@@ -24,7 +30,9 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
-ReadWritePaths=/var/lib/serverless-harness
+# systemd creates and owns /var/lib/serverless-harness for us; do not re-add a
+# ReadWritePaths= beside it -- that would name a path nothing creates.
+StateDirectory=serverless-harness
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
