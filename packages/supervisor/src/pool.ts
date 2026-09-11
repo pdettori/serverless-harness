@@ -12,7 +12,7 @@ export type SupervisorToWorker = { type: 'conn'; head?: string } | { type: 'drai
  * §3.9 defines the first three rows; the pool's routing decisions are built on exactly those.
  * `stats` is a fourth, deliberately advisory row (not in §3.9): it carries telemetry for
  * `/metrics` and must never be routed on or merged into `WorkerView` (see `telemetry()` and
- * `aggregates()` below, and note B.1-B.3 in this task's controller notes).
+ * `aggregates()` below).
  */
 export type WorkerToSupervisor =
   | { type: 'ready'; pid: number }
