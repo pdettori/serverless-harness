@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { createClient } from 'redis';
 import { RedisSessionBackend } from '@sh/session-backend';
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
@@ -21,11 +20,9 @@ describe('session survives the worker that started it', () => {
       await b.append(sid, { role: 'user', content: 'second turn' }, 'message');
       expect((await b.read(sid)).length).toBe(2);
     } finally {
+      // reset() needs a live client, so it must run before close() tears the connection down.
+      await b.reset(sid).catch(() => {});
       await b.close().catch(() => {});
-      const cleanup = createClient({ url: REDIS_URL });
-      await cleanup.connect();
-      await cleanup.del([`session:${sid}`, `session:${sid}:seq`]);
-      await cleanup.quit();
     }
   });
 });

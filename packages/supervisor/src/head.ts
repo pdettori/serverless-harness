@@ -84,6 +84,10 @@ export function readHead(
     socket.on('data', onData);
     socket.once('end', onEnd);
     socket.once('error', onEnd);
+    // Required, not defensive: main.ts's server is created with `pauseOnConnect: true`, so
+    // attaching the 'data' listener above does not itself start the flow. Without this resume(),
+    // a sticky-routed connection would just sit there — no data, no error, no timeout firing
+    // early enough to matter.
     socket.resume();
   });
 }
