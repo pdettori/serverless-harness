@@ -15,11 +15,20 @@ export interface SupervisorConfig {
 function readInt(
   env: NodeJS.ProcessEnv,
   name: string,
-  fallback: number,
+  /** `undefined` ⇒ the variable is REQUIRED and has no legal default (GC7). */
+  fallback: number | undefined,
   bounds: { min: number; max?: number },
 ): number {
   const raw = env[name]?.trim();
-  if (!raw) return fallback;
+  if (!raw) {
+    // Expressing "no default" as `undefined` rather than a number means no reader has to work
+    // out whether the value in that slot is a legal one for the variable. `SH_TURNS_PER_WORKER`
+    // used to pass 0 here, which read as though 0 were a legal S -- the opposite of what the
+    // blank check in readConfig() says. That check fires first, so this branch is unreachable
+    // for it; it is a real net for anything else declared required later.
+    if (fallback === undefined) throw new Error(`${name} is required and has no default`);
+    return fallback;
+  }
   const n = Number(raw);
   const max = bounds.max ?? Number.MAX_SAFE_INTEGER;
   if (!Number.isInteger(n) || n < bounds.min || n > max) {
@@ -49,7 +58,7 @@ export function readConfig(env: NodeJS.ProcessEnv): SupervisorConfig {
   return {
     port,
     workers: readInt(env, 'SH_WORKERS', cpus().length, { min: 1 }),
-    turnsPerWorker: readInt(env, 'SH_TURNS_PER_WORKER', 0, { min: 1 }),
+    turnsPerWorker: readInt(env, 'SH_TURNS_PER_WORKER', undefined, { min: 1 }),
     policy: policyFromName(env.SH_ROUTING_POLICY),
     restartBackoffMs: readInt(env, 'SH_WORKER_RESTART_BACKOFF_MS', 250, { min: 0 }),
     adminPort,

@@ -325,6 +325,13 @@ export class WorkerPool {
 
     handle.on('message', (msg) => {
       if (msg.type === 'ready') {
+        // A drained slot stays unhealthy. Without this guard a late or duplicate `ready` from a
+        // worker that is finishing its last turns put it back in the routing set, and the pool
+        // handed it new connections while it was shutting down.
+        if (slot.drained) {
+          this.opts.log({ event: 'ready_ignored_draining', id, pid: msg.pid });
+          return;
+        }
         slot.healthy = true;
         this.opts.log({ event: 'worker_ready', id, pid: msg.pid });
         return;

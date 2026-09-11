@@ -208,6 +208,20 @@ describe('WorkerPool restart', () => {
     ]);
   });
 
+  it('does not resurrect a DRAINED worker on a stray ready', () => {
+    // Nothing guarded `ready` against arriving after `draining` had set the slot unhealthy --
+    // a late or duplicate `ready` from a worker that is finishing its last turns would put it
+    // back in the routing set, and the pool would hand it new connections while it is shutting
+    // down. A drained slot stays unhealthy for good.
+    const h = harness();
+    h.forked[0]!.ready();
+    h.pool.drainAll();
+    h.forked[0]!.draining();
+    expect(h.pool.views()[0]!.healthy).toBe(false);
+    h.forked[0]!.ready();
+    expect(h.pool.views()[0]!.healthy).toBe(false);
+  });
+
   it('does not resurrect a worker that exited during drain', () => {
     // On SIGTERM the whole set is going away; re-forking would fight the shutdown.
     const h = harness();
