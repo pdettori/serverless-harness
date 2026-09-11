@@ -54,10 +54,6 @@ export async function startSupervisor(opts: {
     // parsing work at exactly the moment it has none to spare.
     if (isSaturated(pool.views(), config.turnsPerWorker)) {
       pool.noteRefusal();
-      // Drain the socket's readable side before ending it: an unresumed socket never sees the
-      // peer's FIN, so it lingers past `refuse()`'s `end()` and keeps `server.close()` from
-      // ever observing zero connections.
-      socket.resume();
       refuse(socket);
       return;
     }
@@ -76,10 +72,6 @@ export async function startSupervisor(opts: {
     if (chosen === undefined) {
       // Every worker went unhealthy between the check and here — a restart window.
       pool.noteRefusal();
-      // Same drain as the saturated branch above: `readHead` only ran (and paused the socket
-      // again on resolve) when `needsHead` is true, so this path can reach `refuse()` with an
-      // unresumed socket just as easily.
-      socket.resume();
       refuse(socket);
       return;
     }

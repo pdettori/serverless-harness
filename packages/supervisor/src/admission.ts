@@ -31,6 +31,12 @@ const BODY = '{"error":"overloaded"}';
  */
 export function refuse(socket: Socket, opts: { retryAfterSeconds?: number } = {}): void {
   const retryAfter = opts.retryAfterSeconds ?? RETRY_AFTER_SECONDS;
+  // Drain the readable side before ending it: a paused socket (no `'data'` listener) never
+  // observes the peer's FIN, so without this it stays half-open and `server.close()` never
+  // fires its `'close'` event. This runs after the admission decision, so it is not a §3.5
+  // read — no byte here informs the refusal, and with no `'data'` listener the bytes are
+  // discarded, not parsed.
+  socket.resume();
   socket.end(
     `HTTP/1.1 429 Too Many Requests\r\n` +
       `Content-Type: application/json\r\n` +
