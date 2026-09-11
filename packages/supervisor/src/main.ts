@@ -44,7 +44,14 @@ export async function startSupervisor(opts: {
       }) as unknown as WorkerHandle,
   });
 
-  const server: Server = createServer((socket: Socket) => {
+  // pauseOnConnect: without it, Node starts reading each accepted socket into its own
+  // JS-level buffer before this callback even runs (net.Server's default). Those bytes would
+  // never reach the worker: only the OS-level fd is duplicated across the hand-off, not
+  // whatever the parent already pulled into userspace. Staying paused keeps every byte in the
+  // kernel socket buffer until the worker's own reader starts it, which is what makes "the
+  // supervisor reads no byte of the request" (below) actually true for policies that don't
+  // pre-read the head.
+  const server: Server = createServer({ pauseOnConnect: true }, (socket: Socket) => {
     void route(socket);
   });
 
