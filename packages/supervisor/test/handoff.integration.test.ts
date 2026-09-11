@@ -65,6 +65,8 @@ describe('socket hand-off, end to end', () => {
       config: readConfig(env({ SH_WORKERS: '1' })),
       workerEntry: sseWorker,
       log: () => {},
+      // Tests must not wait out a real drain deadline in teardown.
+      shutdownGraceMs: 500,
     });
     await waitReady(sup, 1);
 
@@ -120,6 +122,8 @@ describe('socket hand-off, end to end', () => {
       config: readConfig(env({ SH_WORKERS: '1' })),
       workerEntry: sseWorker,
       log: () => {},
+      // Tests must not wait out a real drain deadline in teardown.
+      shutdownGraceMs: 500,
     });
     await waitReady(sup, 1);
     for (let i = 1; i <= 20; i += 1) {
@@ -137,6 +141,8 @@ describe('socket hand-off, end to end', () => {
       config: readConfig(env({ SH_WORKERS: '2' })),
       workerEntry: sseWorker,
       log: () => {},
+      // Tests must not wait out a real drain deadline in teardown.
+      shutdownGraceMs: 500,
     });
     await waitReady(sup, 2);
     const pids = new Set<number>();
@@ -157,6 +163,8 @@ describe('sticky routing is connection-scoped (§3.4, §7)', () => {
       config: readConfig(env({ SH_WORKERS: '2', SH_ROUTING_POLICY: 'stickyBySession' })),
       workerEntry: sseWorker,
       log: () => {},
+      // Tests must not wait out a real drain deadline in teardown.
+      shutdownGraceMs: 500,
     });
     await waitReady(sup, 2);
     const pidFor = async (sid: string): Promise<number> => {
@@ -190,6 +198,8 @@ describe('sticky routing is connection-scoped (§3.4, §7)', () => {
       config: readConfig(env({ SH_WORKERS: '2', SH_ROUTING_POLICY: 'stickyBySession' })),
       workerEntry: sseWorker,
       log: () => {},
+      // Tests must not wait out a real drain deadline in teardown.
+      shutdownGraceMs: 500,
     });
     await waitReady(sup, 2);
 
@@ -229,6 +239,8 @@ describe('admission control end to end (§3.5)', () => {
       config: readConfig(env({ SH_WORKERS: '1', SH_TURNS_PER_WORKER: '1' })),
       workerEntry: sseWorker,
       log: () => {},
+      // Tests must not wait out a real drain deadline in teardown.
+      shutdownGraceMs: 500,
     });
     await waitReady(sup, 1);
 

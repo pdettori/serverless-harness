@@ -276,6 +276,35 @@ describe('WorkerPool drain', () => {
     }
   });
 
+  it('awaitIdle resolves at once when no worker has a turn in flight', async () => {
+    const h = harness();
+    h.forked[0]!.ready();
+    h.forked[1]!.ready();
+    await expect(h.pool.awaitIdle(50)).resolves.toBe(true);
+  });
+
+  it('awaitIdle resolves when the last in-flight turn reports done', async () => {
+    // §3.9's "in-flight turns run to completion". Shutdown must wait for this, or a SIGTERM
+    // kills every turn the pool was multiplexing.
+    const h = harness();
+    h.forked[0]!.ready();
+    h.forked[1]!.ready();
+    h.forked[0]!.load(2);
+    const idle = h.pool.awaitIdle(5000);
+    h.forked[0]!.load(1);
+    h.forked[0]!.load(0);
+    await expect(idle).resolves.toBe(true);
+  });
+
+  it('awaitIdle gives up at the deadline rather than hanging on a stuck turn', async () => {
+    // The bound matters as much as the wait: without one a single stuck turn would hold the
+    // supervisor open until systemd's TimeoutStopSec SIGKILLed it.
+    const h = harness();
+    h.forked[0]!.ready();
+    h.forked[0]!.load(1);
+    await expect(h.pool.awaitIdle(20)).resolves.toBe(false);
+  });
+
   it('drains every OTHER worker when one channel is already dead', () => {
     // drainAll() is the first thing shutdown does, so a throw from a dead channel here would
     // abandon the drain of every later worker and leave them taking new turns while the

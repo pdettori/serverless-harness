@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { connect } from 'node:net';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
@@ -96,5 +96,87 @@ describe('startSupervisor', () => {
     expect(Buffer.concat(chunks).toString()).toContain('429 Too Many Requests');
     survivor.destroy();
     await sup.close();
+  }, 20_000);
+});
+
+describe('shutdown (§3.9)', () => {
+  function shutdownEnv(): NodeJS.ProcessEnv {
+    return {
+      PORT: '0',
+      SH_ADMIN_PORT: '0',
+      SH_WORKERS: '1',
+      SH_TURNS_PER_WORKER: '2',
+    } as NodeJS.ProcessEnv;
+  }
+
+  it('drains the pool BEFORE it closes either listener', async () => {
+    // The old order awaited the admin server, then the data server, then drainAll() -- so a
+    // worker was still accepting new turns while the listeners came down, and if the admin
+    // close blocked (see the next case) drainAll() never ran at all.
+    const logs: Array<Record<string, unknown>> = [];
+    const sup = await startSupervisor({
+      config: readConfig(shutdownEnv()),
+      workerEntry: inertWorker,
+      log: (l) => logs.push(l),
+      shutdownGraceMs: 250,
+    });
+    await sup.close();
+    expect(logs.filter((l) => l.event === 'shutdown_step').map((l) => l.step)).toEqual([
+      'drained',
+      'accepting_stopped',
+      'turns_finished',
+      'admin_closed',
+      'data_closed',
+    ]);
+  }, 20_000);
+
+  it('a warm /metrics keep-alive connection does not block shutdown', async () => {
+    // A characterisation guard, not a bug reproduction: measured on Node 23.6,
+    // `http.Server.close()` already closes idle keep-alive connections itself (it has since Node
+    // 19), so this does NOT fail without `closeIdleConnections()`. It is here because /metrics
+    // exists to be polled on a warm connection, so "a poller cannot hold shutdown open" is a
+    // property worth stating -- and it would fail loudly if that Node behaviour ever regressed
+    // or if the admin listener grew a long-lived streaming route.
+    const sup = await startSupervisor({
+      config: readConfig(shutdownEnv()),
+      workerEntry: inertWorker,
+      log: () => {},
+      shutdownGraceMs: 250,
+    });
+    const warm = connect(sup.adminPort, '127.0.0.1');
+    await once(warm, 'connect');
+    warm.write('GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n');
+    // Response received and the connection deliberately left open, exactly as an agent would.
+    await once(warm, 'data');
+
+    await sup.close();
+    warm.destroy();
+  }, 20_000);
+
+  it('stops after the grace period when a turn never finishes', async () => {
+    // inert-worker reports `ready` and then never sends `load`, so the estimate below never
+    // reconciles: shutdown must give up at the deadline rather than wait for systemd's SIGKILL.
+    const logs: Array<Record<string, unknown>> = [];
+    const sup = await startSupervisor({
+      config: readConfig(shutdownEnv()),
+      workerEntry: inertWorker,
+      log: (l) => logs.push(l),
+      shutdownGraceMs: 150,
+    });
+    await vi.waitFor(() => expect(sup.pool.views()[0]!.healthy).toBe(true));
+    // Occupy the estimate with no prospect of a reconciling `load`: inert-worker has no
+    // 'message' handler at all, so the fd arrives and is simply never served.
+    const stuck = connect(sup.port, '127.0.0.1');
+    await once(stuck, 'connect');
+    sup.pool.handOff(0, stuck);
+    expect(sup.pool.views()[0]!.inFlight).toBe(1);
+
+    const started = Date.now();
+    await sup.close();
+    const steps = logs.filter((l) => l.event === 'shutdown_step').map((l) => l.step);
+    expect(steps).toContain('grace_expired');
+    expect(steps).not.toContain('turns_finished');
+    // Bounded: nowhere near TimeoutStopSec=120.
+    expect(Date.now() - started).toBeLessThan(10_000);
   }, 20_000);
 });

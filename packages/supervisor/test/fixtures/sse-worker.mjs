@@ -10,6 +10,18 @@ const server = createServer((req, res) => {
   if (req.url === '/stream') {
     inFlight += 1;
     report();
+    // Mirrors the real worker's `res.on('close', end)` with an idempotent end: 'close' covers a
+    // finished response AND a client abort, which is what "no longer occupying this process"
+    // means. Decrementing only on the happy path (n === 3) left inFlight stuck at 1 forever
+    // whenever a client hung up early, which is a turn that never ends as far as the supervisor
+    // can tell -- and shutdown then waits out its whole grace period for it.
+    let ended = false;
+    const end = () => {
+      if (ended) return;
+      ended = true;
+      inFlight -= 1;
+      report();
+    };
     res.writeHead(200, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-cache',
@@ -22,11 +34,12 @@ const server = createServer((req, res) => {
       if (n === 3) {
         clearInterval(timer);
         res.end('data: done\n\n');
-        inFlight -= 1;
-        report();
       }
     }, 20);
-    res.on('close', () => clearInterval(timer));
+    res.on('close', () => {
+      clearInterval(timer);
+      end();
+    });
     return;
   }
   // Echo the worker's pid and the routing header, so a test can tell WHICH worker served it

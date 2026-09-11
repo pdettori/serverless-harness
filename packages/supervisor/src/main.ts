@@ -24,13 +24,28 @@ export const DEFAULT_WORKER_ENTRY = fileURLToPath(
   new URL('../../knative-server/src/worker.ts', import.meta.url),
 );
 
+/**
+ * How long shutdown lets in-flight turns finish before it stops waiting.
+ *
+ * A CHOSEN value, pending a spec sentence: §3.9 requires that in-flight turns run to completion
+ * but names no deadline, and that gap is recorded separately. Deliberately not an env var --
+ * one more knob whose right value nobody knows is worse than one documented constant. The
+ * units' own `TimeoutStopSec=120` is the outer bound, and 20s sits well inside it on purpose,
+ * so systemd's SIGKILL stays a genuine backstop for a supervisor that has hung rather than a
+ * race against this timer.
+ */
+export const SHUTDOWN_GRACE_MS = 20_000;
+
 export async function startSupervisor(opts: {
   config: SupervisorConfig;
   workerEntry?: string;
   log?: (line: Record<string, unknown>) => void;
+  /** Overrides `SHUTDOWN_GRACE_MS`; tests use a short one. Not an env var by design. */
+  shutdownGraceMs?: number;
 }): Promise<Supervisor> {
   const { config } = opts;
   const workerEntry = opts.workerEntry ?? DEFAULT_WORKER_ENTRY;
+  const graceMs = opts.shutdownGraceMs ?? SHUTDOWN_GRACE_MS;
   const log = opts.log ?? ((line: Record<string, unknown>) => console.log(JSON.stringify(line)));
 
   const pool = new WorkerPool({
@@ -114,10 +129,32 @@ export async function startSupervisor(opts: {
     adminPort: admin.port,
     pool,
     async close(): Promise<void> {
-      await admin.close();
-      server.close();
+      // Order is load-bearing. This used to await the admin server, then the data server, then
+      // drainAll() -- so workers kept accepting new turns throughout the teardown, and
+      // `shutdown()` then called process.exit(0) immediately, closing the IPC channels so every
+      // worker's 'disconnect' handler exited it at once. §3.9's "in-flight turns run to
+      // completion" never happened.
+
+      // 1. Stop workers taking NEW turns, before anything closes.
       pool.drainAll();
-      await once(server, 'close');
+      log({ event: 'shutdown_step', step: 'drained' });
+
+      // 2. Stop accepting. Captured eagerly: `server.close()` can emit 'close' before step 5
+      //    gets there, and a `once()` registered afterwards would wait forever. Handed-off
+      //    sockets are unaffected -- the supervisor holds none.
+      const dataClosed = once(server, 'close');
+      server.close();
+      log({ event: 'shutdown_step', step: 'accepting_stopped' });
+
+      // 3. Let in-flight turns finish (§3.9), bounded. See SHUTDOWN_GRACE_MS for why bounded.
+      const drained = await pool.awaitIdle(graceMs);
+      log({ event: 'shutdown_step', step: drained ? 'turns_finished' : 'grace_expired' });
+
+      await admin.close();
+      log({ event: 'shutdown_step', step: 'admin_closed' });
+
+      await dataClosed;
+      log({ event: 'shutdown_step', step: 'data_closed' });
     },
   };
 }
@@ -125,7 +162,13 @@ export async function startSupervisor(opts: {
 const entry = process.argv[1];
 if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
   const supervisor = await startSupervisor({ config: readConfig(process.env) });
+  let stopping = false;
   const shutdown = (): void => {
+    // systemd sends one SIGTERM, but an impatient operator sends a second Ctrl-C. Re-entering
+    // close() would restart the drain wait from zero, which is the opposite of what the second
+    // signal is asking for.
+    if (stopping) return;
+    stopping = true;
     void supervisor.close().then(() => process.exit(0));
   };
   process.on('SIGTERM', shutdown);

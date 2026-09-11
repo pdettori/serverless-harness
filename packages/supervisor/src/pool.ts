@@ -112,6 +112,7 @@ export class WorkerPool {
   > &
     PoolOptions;
   private shuttingDown = false;
+  private idleWaiters: Array<() => void> = [];
   private refusalSeq = 0;
   private refusalCounted = true;
   private tally = {
@@ -240,6 +241,40 @@ export class WorkerPool {
     for (const slot of this.slots) slot.refusalEstimate = slot.inFlight;
   }
 
+  /** True ⇒ no worker's estimate shows a turn in flight. */
+  private get allIdle(): boolean {
+    return this.slots.every((s) => s.inFlight <= 0);
+  }
+
+  private notifyIfIdle(): void {
+    if (!this.allIdle) return;
+    for (const fn of this.idleWaiters.splice(0, this.idleWaiters.length)) fn();
+  }
+
+  /**
+   * Resolves `true` once every worker reports no in-flight turn, or `false` when `timeoutMs`
+   * elapses first. Shutdown awaits this so §3.9's "in-flight turns run to completion" actually
+   * happens: closing the IPC channels first makes every worker's `'disconnect'` handler exit it
+   * at once, killing every turn mid-flight. The bound matters as much as the wait -- one stuck
+   * turn would otherwise hold the supervisor open until systemd SIGKILLed it at
+   * `TimeoutStopSec`.
+   */
+  awaitIdle(timeoutMs: number): Promise<boolean> {
+    if (this.allIdle) return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => {
+      const onIdle = (): void => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      const timer = setTimeout(() => {
+        this.idleWaiters = this.idleWaiters.filter((w) => w !== onIdle);
+        resolve(false);
+      }, timeoutMs);
+      timer.unref?.();
+      this.idleWaiters.push(onIdle);
+    });
+  }
+
   drainAll(): void {
     this.shuttingDown = true;
     for (const slot of this.slots) {
@@ -314,6 +349,10 @@ export class WorkerPool {
 
     handle.on('exit', (code, signal) => {
       slot.healthy = false;
+      // A dead worker holds no turn. Its estimate must not be what a shutdown waits on, or a
+      // worker that crashed mid-turn would burn the whole grace period.
+      slot.inFlight = 0;
+      this.notifyIfIdle();
       if (this.shuttingDown) return; // the whole set is going away
       const ranFor = this.opts.now() - slot.startedAt;
       if (ranFor >= this.opts.healthyRunMs) slot.crashes = 0;
@@ -339,6 +378,8 @@ export class WorkerPool {
   private reconcile(id: number, slot: Slot, actual: number): void {
     const estimate = slot.inFlight;
     slot.inFlight = actual; // the worker is the authority (§3.9)
+    // The only place the estimate can FALL, so the only place a shutdown wait can complete.
+    this.notifyIfIdle();
 
     if (actual > estimate) {
       this.tally.overAdmission += 1;

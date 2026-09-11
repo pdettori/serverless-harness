@@ -101,8 +101,16 @@ export async function startAdminServer(opts: {
   return {
     port,
     async close(): Promise<void> {
+      // Captured BEFORE close() can fire it: `once()` registered after the event has already
+      // been emitted waits for something that will never happen again.
+      const closed = once(server, 'close');
+      // Explicit rather than relying on `http.Server.close()`'s own handling of idle keep-alive
+      // connections (which it has done since Node 19). This listener exists to be polled by a
+      // driver on a warm connection, so being explicit about it is worth one line: it says out
+      // loud that a poller must not be able to hold shutdown open.
+      server.closeIdleConnections();
       server.close();
-      await once(server, 'close');
+      await closed;
     },
   };
 }
