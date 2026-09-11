@@ -14,3 +14,11 @@ export {
   readHead,
   type HeadRead,
 } from './head.js';
+export {
+  WorkerPool,
+  type WorkerHandle,
+  type PoolOptions,
+  type PoolCounters,
+  type SupervisorToWorker,
+  type WorkerToSupervisor,
+} from './pool.js';
