@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { connect } from 'node:net';
+import { connect, createServer } from 'node:net';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { readConfig } from '../src/config.js';
@@ -165,8 +165,14 @@ describe('shutdown (§3.9)', () => {
     });
     await vi.waitFor(() => expect(sup.pool.views()[0]!.healthy).toBe(true));
     // Occupy the estimate with no prospect of a reconciling `load`: inert-worker has no
-    // 'message' handler at all, so the fd arrives and is simply never served.
-    const stuck = connect(sup.port, '127.0.0.1');
+    // 'message' handler at all, so the fd arrives and is simply never served. The socket comes
+    // from a throwaway listener rather than the supervisor's own data port, so that the
+    // supervisor's connection callback does not route a second socket of its own and make the
+    // estimate -- and therefore this assertion -- racy.
+    const scratch = createServer();
+    scratch.listen(0, '127.0.0.1');
+    await once(scratch, 'listening');
+    const stuck = connect((scratch.address() as { port: number }).port, '127.0.0.1');
     await once(stuck, 'connect');
     sup.pool.handOff(0, stuck);
     expect(sup.pool.views()[0]!.inFlight).toBe(1);
@@ -178,5 +184,6 @@ describe('shutdown (§3.9)', () => {
     expect(steps).not.toContain('turns_finished');
     // Bounded: nowhere near TimeoutStopSec=120.
     expect(Date.now() - started).toBeLessThan(10_000);
+    scratch.close();
   }, 20_000);
 });

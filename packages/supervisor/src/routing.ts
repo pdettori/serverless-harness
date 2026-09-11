@@ -50,14 +50,41 @@ export const leastInFlight: RoutingPolicy = {
 };
 
 /**
+ * Cap on one policy's affinity table.
+ *
+ * A MEMORY BOUND against an attacker-supplied key: the table is keyed by `X-SH-Session-Id`,
+ * which the client chooses, on a listener bound `0.0.0.0`. Unbounded, any client can grow it
+ * without limit with a loop of fresh ids. Evicting a pin is correct behaviour rather than a
+ * compromise -- affinity is connection-scoped (§3.4), so an evicted session simply routes again
+ * by least-in-flight, exactly as its first connection did.
+ */
+export const MAX_SESSION_PINS = 10_000;
+
+/**
  * Sweep variant (§3.4): pin a session to a worker so its in-process state is reused. Costs a
  * pre-read of the header block, which is why it is not the default.
  *
  * Each call returns a policy with its OWN affinity table: sharing one would leak pins across
  * E8/E9 arms and quietly change what a rung measures.
  */
-export function stickyBySession(): RoutingPolicy {
+export function stickyBySession(opts: { maxPins?: number } = {}): RoutingPolicy {
+  const maxPins = opts.maxPins ?? MAX_SESSION_PINS;
   const pins = new Map<string, number>();
+
+  /** Insert-or-refresh, then evict oldest-first. `Map` iterates in insertion order. */
+  const remember = (sid: string, id: number): void => {
+    // Delete before set so a refresh moves the key to the most-recently-used end. Without this
+    // an id flood would evict a continuously-used session in insertion order, turning the
+    // memory bound into a lever for denying affinity to real traffic.
+    pins.delete(sid);
+    pins.set(sid, id);
+    while (pins.size > maxPins) {
+      const oldest = pins.keys().next();
+      if (oldest.done) break;
+      pins.delete(oldest.value);
+    }
+  };
+
   return {
     name: 'stickyBySession',
     needsHead: true,
@@ -66,12 +93,13 @@ export function stickyBySession(): RoutingPolicy {
       if (sid === undefined) return pickLeastLoaded(workers);
       const pinned = pins.get(sid);
       if (pinned !== undefined && workers.some((wv) => wv.id === pinned && wv.healthy)) {
+        remember(sid, pinned);
         return pinned;
       }
       const chosen = pickLeastLoaded(workers);
       // Re-pin rather than retry the dead worker; otherwise a crash strands every session
       // that was affine to it (§6).
-      if (chosen !== undefined) pins.set(sid, chosen);
+      if (chosen !== undefined) remember(sid, chosen);
       return chosen;
     },
   };

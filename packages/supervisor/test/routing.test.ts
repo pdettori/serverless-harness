@@ -72,6 +72,32 @@ describe('stickyBySession', () => {
     expect(p.pick([w(first, 0), w(other, 9)], { sessionId: 'sess-1' })).toBe(other);
   });
 
+  it('evicts the oldest pin rather than growing the table without bound', () => {
+    // The table is keyed by the client-supplied `X-SH-Session-Id` on a listener bound 0.0.0.0,
+    // so unbounded means any client can exhaust memory with a loop of fresh ids. Evicting is
+    // correct rather than a compromise: affinity is connection-scoped (§3.4), so an evicted
+    // session simply routes again by least-in-flight.
+    const p = stickyBySession({ maxPins: 2 });
+    expect(p.pick([w(0, 0), w(1, 5)], { sessionId: 'sess-a' })).toBe(0);
+    p.pick([w(0, 0), w(1, 5)], { sessionId: 'sess-b' });
+    p.pick([w(0, 0), w(1, 5)], { sessionId: 'sess-c' }); // third id evicts sess-a
+    // Flip the loads: a session that is still pinned keeps worker 0; an evicted one re-picks.
+    expect(p.pick([w(0, 9), w(1, 0)], { sessionId: 'sess-a' })).toBe(1);
+    expect(p.pick([w(0, 9), w(1, 0)], { sessionId: 'sess-c' })).toBe(0);
+  });
+
+  it('refreshes recency on a hit, so a busy session outlives an id flood', () => {
+    // Without an LRU touch, insertion order alone would evict a continuously-used session in
+    // favour of one-shot ids -- which is precisely what a client supplying random ids produces,
+    // turning a memory bound into an affinity-denial lever.
+    const p = stickyBySession({ maxPins: 2 });
+    expect(p.pick([w(0, 0), w(1, 5)], { sessionId: 'hot' })).toBe(0);
+    p.pick([w(0, 0), w(1, 5)], { sessionId: 'throwaway-1' });
+    p.pick([w(0, 0), w(1, 5)], { sessionId: 'hot' }); // a hit must make 'hot' the newest
+    p.pick([w(0, 0), w(1, 5)], { sessionId: 'throwaway-2' }); // evicts throwaway-1, not 'hot'
+    expect(p.pick([w(0, 9), w(1, 0)], { sessionId: 'hot' })).toBe(0);
+  });
+
   it('has no per-request hook: a policy decides once per connection', () => {
     // §3.4 / §7. A second session id on an already-routed keep-alive socket is neither seen
     // nor re-routable, and the SHAPE of this interface is what makes that true — there is no
