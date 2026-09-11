@@ -79,4 +79,58 @@ describe('refuse', () => {
     const wire = await refusalWire({ retryAfterSeconds: 7 });
     expect(wire.toLowerCase()).toContain('retry-after: 7');
   });
+
+  it('does not keep the server open when the refused peer never closes', async () => {
+    // refuse() sends FIN and relies on the peer to close -- but it fires under exactly the
+    // overload that makes peers misbehave. A peer that never closes left the fd open
+    // indefinitely, held the server's connection count above zero, and made
+    // `once(server, 'close')` never resolve, so shutdown hung until systemd SIGKILLed the unit
+    // at TimeoutStopSec=120.
+    const listener = createServer();
+    listener.listen(0, '127.0.0.1');
+    await once(listener, 'listening');
+    const { port } = listener.address() as { port: number };
+    const client = connect(port, '127.0.0.1');
+    const clientConnected = once(client, 'connect');
+    const [server] = (await once(listener, 'connection')) as [Socket];
+    await clientConnected;
+
+    // Captured before close() can fire it.
+    const listenerClosed = once(listener, 'close');
+    refuse(server, { lingerMs: 50 });
+    // The client deliberately never reads and never closes: the misbehaving peer.
+    listener.close();
+    await listenerClosed;
+    expect(server.destroyed).toBe(true);
+    client.destroy();
+  }, 5000);
+
+  it('clears the linger timer when a well-behaved peer closes first', async () => {
+    // The timer holds a reference to the socket, so under a refusal storm an uncleared one
+    // would retain every refused socket for the whole linger window.
+    const listener = createServer();
+    listener.listen(0, '127.0.0.1');
+    await once(listener, 'listening');
+    const { port } = listener.address() as { port: number };
+    const client = connect(port, '127.0.0.1');
+    const clientConnected = once(client, 'connect');
+    const [server] = (await once(listener, 'connection')) as [Socket];
+    await clientConnected;
+    listener.close();
+
+    // In production `main.ts`'s connection callback attaches this to every accepted socket;
+    // without it the RST below is an unhandled 'error' that kills the process. Attached here
+    // because this test drives `refuse()` directly rather than through the server.
+    server.on('error', () => {});
+    // A plain listener rather than `events.once()`: that helper attaches its own 'error' handler
+    // and REJECTS the promise, so the RST below would surface as a failure rather than being the
+    // ordinary peer departure it is.
+    const serverClosed = new Promise<void>((resolve) => server.once('close', () => resolve()));
+    refuse(server, { lingerMs: 60_000 });
+    // A hard destroy: the 429 is still unread, so the peer's stack answers with RST.
+    client.destroy();
+    // Destroyed by the peer's departure, long before a 60s linger could have done it.
+    await serverClosed;
+    expect(server.destroyed).toBe(true);
+  }, 5000);
 });

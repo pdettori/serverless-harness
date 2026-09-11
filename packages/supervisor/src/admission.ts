@@ -22,6 +22,20 @@ export function isSaturated(workers: readonly WorkerView[], turnsPerWorker: numb
 const BODY = '{"error":"overloaded"}';
 
 /**
+ * How long a refused socket may linger after its FIN before it is destroyed.
+ *
+ * `refuse()` ends the socket and relies on the peer to close, and with `allowHalfOpen` false a
+ * well-behaved peer's FIN destroys it within a round trip. But `refuse()` fires under exactly
+ * the overload that makes peers misbehave: one that never closes left the fd open indefinitely,
+ * held the server's connection count above zero, and made `once(server, 'close')` never
+ * resolve -- so shutdown hung until systemd SIGKILLed the unit at `TimeoutStopSec=120`.
+ *
+ * Generous enough that a slow or lossy peer still reads its 429 and closes on its own terms,
+ * short enough that the leak is bounded by rate x this window rather than unbounded.
+ */
+export const REFUSAL_LINGER_MS = 5_000;
+
+/**
  * Refuse a connection with `429` + `Retry-After`, **before** hand-off (§3.5, #55).
  *
  * Written straight onto the socket because the supervisor's listener is a `net.Server`: it
@@ -29,7 +43,10 @@ const BODY = '{"error":"overloaded"}';
  * inside a worker instead would turn clean back-pressure into a mid-turn error and would
  * corrupt E8's rungs by counting admitted-but-doomed turns.
  */
-export function refuse(socket: Socket, opts: { retryAfterSeconds?: number } = {}): void {
+export function refuse(
+  socket: Socket,
+  opts: { retryAfterSeconds?: number; lingerMs?: number } = {},
+): void {
   const retryAfter = opts.retryAfterSeconds ?? RETRY_AFTER_SECONDS;
   // Drain the readable side before ending it: a paused socket (no `'data'` listener) never
   // observes the peer's FIN, so without this it stays half-open and `server.close()` never
@@ -45,4 +62,13 @@ export function refuse(socket: Socket, opts: { retryAfterSeconds?: number } = {}
       `Connection: close\r\n` +
       `\r\n${BODY}`,
   );
+  // Bound the half-open window (see REFUSAL_LINGER_MS). Kept here rather than at each call site
+  // so the whole refusal -- drain, 429, and teardown -- lives in one place.
+  const linger = setTimeout(() => socket.destroy(), opts.lingerMs ?? REFUSAL_LINGER_MS);
+  // unref'd: a pending refusal must never be the reason the process stays alive. Cleared on
+  // 'close' so a well-behaved peer's socket is released immediately instead of being retained
+  // by the timer for the whole window -- which under a refusal storm is the difference between
+  // holding rate x window sockets and holding none.
+  linger.unref?.();
+  socket.once('close', () => clearTimeout(linger));
 }
