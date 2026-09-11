@@ -219,6 +219,22 @@ describe('WorkerPool restart', () => {
   });
 });
 
+describe('WorkerPool head-truncation accounting', () => {
+  it('counts a truncated head, so a cap hit is never invisible', () => {
+    // A cap hit costs the connection its session affinity. Unrecorded, that shows up on E8's
+    // sticky arm as a low hit rate with nothing in the data separating it from a genuine null
+    // result -- a measurement effect indistinguishable from the measurement.
+    const h = harness();
+    expect(h.pool.counters.headTruncations).toBe(0);
+    h.pool.noteHeadTruncated(9000);
+    h.pool.noteHeadTruncated(9000);
+    expect(h.pool.counters.headTruncations).toBe(2);
+    expect(h.logs).toContainEqual(
+      expect.objectContaining({ event: 'head_truncated', bytes: 9000 }),
+    );
+  });
+});
+
 describe('WorkerPool refusal accounting', () => {
   it('convicts a refusal that the next load shows was unnecessary', () => {
     // §3.9's dangerous direction: the estimate was stale HIGH, so the 429 refused

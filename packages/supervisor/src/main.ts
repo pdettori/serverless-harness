@@ -99,6 +99,11 @@ export async function startSupervisor(opts: {
       // An incomplete head still routes: the supervisor does not adjudicate HTTP, so the
       // worker's parser issues the 400 (or completes the request) as it would have anyway.
       sessionId = read.complete ? sessionIdFromHead(read.bytes) : undefined;
+      // A cap hit means this connection routes with NO affinity. Counted, not silent: on the
+      // sticky arm an unrecorded one reads as a low hit rate with nothing in the data to
+      // separate it from a genuine null result. Only 'cap' -- a timeout or a hang-up is the
+      // client's behaviour, not a measurement effect of ours.
+      if (read.outcome === 'cap') pool.noteHeadTruncated(read.bytes.length);
     }
 
     const chosen = config.policy.pick(pool.views(), { sessionId });

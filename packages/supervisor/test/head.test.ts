@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createServer, connect, type Socket } from 'node:net';
 import { once } from 'node:events';
+import { maxHeaderSize } from 'node:http';
 import { headerBlockEnd, sessionIdFromHead, readHead, MAX_HEAD_BYTES } from '../src/head.js';
 
 async function socketPair(): Promise<[Socket, Socket, () => void]> {
@@ -70,6 +71,7 @@ describe('readHead', () => {
     client.write(wire);
     const head = await readHead(server);
     expect(head.complete).toBe(true);
+    expect(head.outcome).toBe('complete');
     expect(head.bytes.toString('utf8')).toBe(wire);
     cleanup();
   });
@@ -102,6 +104,11 @@ describe('readHead', () => {
     const head = await readHead(server, { maxBytes: 64 });
     expect(head.complete).toBe(false);
     expect(head.bytes.length).toBeGreaterThan(0);
+    // WHY it stopped, not just that it did. A cap hit costs the connection its affinity, and
+    // `complete: false` alone cannot be told apart from a peer that timed out or hung up -- so
+    // on the sticky arm a truncating workload reads as a low hit rate with nothing in the data
+    // distinguishing it from a genuine null result.
+    expect(head.outcome).toBe('cap');
     // No 431 from here: the supervisor does not adjudicate HTTP, the worker's parser does.
     cleanup();
   });
@@ -109,11 +116,15 @@ describe('readHead', () => {
   it('gives up on a silent client and forwards nothing', async () => {
     const [server, , cleanup] = await socketPair();
     const head = await readHead(server, { timeoutMs: 25 });
-    expect(head).toEqual({ bytes: Buffer.alloc(0), complete: false });
+    expect(head).toEqual({ bytes: Buffer.alloc(0), complete: false, outcome: 'timeout' });
     cleanup();
   });
 
-  it('caps at 8 KiB by default', () => {
-    expect(MAX_HEAD_BYTES).toBe(8192);
+  it("caps at exactly Node's maxHeaderSize, which is what the comment claims", () => {
+    // It was 8192 while the comment said it matched `maxHeaderSize`. The gap was a class of
+    // requests the worker's parser would have served but the router structurally could not see
+    // a session id in, so they routed with no affinity and nothing said so.
+    expect(MAX_HEAD_BYTES).toBe(maxHeaderSize);
+    expect(MAX_HEAD_BYTES).toBe(16384);
   });
 });

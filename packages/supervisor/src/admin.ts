@@ -35,6 +35,8 @@ export interface MetricsBody {
     readonly handoff_failures: number;
     readonly over_admission: number;
     readonly spurious_refusals: number;
+    /** Header blocks that exceeded the pre-read cap, so those connections lost affinity. */
+    readonly head_truncations: number;
   };
   readonly lease_saturation: number | 'NaN';
   readonly file_op_p95_ms: number | 'NaN';
@@ -68,6 +70,7 @@ export function metricsBody(pool: WorkerPool, env: NodeJS.ProcessEnv): MetricsBo
       handoff_failures: c.handoffFailures,
       over_admission: c.overAdmission,
       spurious_refusals: c.spuriousRefusals,
+      head_truncations: c.headTruncations,
     },
     lease_saturation: num(agg.leaseSaturation),
     file_op_p95_ms: num(agg.fileOpP95Ms),

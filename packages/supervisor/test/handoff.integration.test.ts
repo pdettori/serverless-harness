@@ -189,6 +189,32 @@ describe('sticky routing is connection-scoped (§3.4, §7)', () => {
     socket.destroy();
   }, 20_000);
 
+  it('counts a head that overruns the cap, and still routes the connection', async () => {
+    // The cap costs this connection its affinity, so it must be visible in `/metrics` rather
+    // than showing up only as a lower sticky hit rate.
+    sup = await startSupervisor({
+      config: readConfig(env({ SH_WORKERS: '1', SH_ROUTING_POLICY: 'stickyBySession' })),
+      workerEntry: sseWorker,
+      log: () => {},
+      shutdownGraceMs: 500,
+    });
+    await waitReady(sup, 1);
+    expect(sup.pool.counters.headTruncations).toBe(0);
+
+    // A header block that overruns MAX_HEAD_BYTES (= Node's maxHeaderSize) BEFORE terminating.
+    // The terminator is deliberately absent: `readHead` checks for CRLFCRLF before the cap, and
+    // on loopback a 20 KB write can arrive as a single chunk, in which case a terminated block
+    // resolves 'complete' in one pass and never reaches the cap at all.
+    const socket = connect(sup.port, '127.0.0.1');
+    await once(socket, 'connect');
+    socket.on('error', () => {});
+    socket.write(`GET /ping HTTP/1.1\r\nHost: x\r\nX-Pad: ${'y'.repeat(20_000)}\r\n`);
+    await vi.waitFor(() => expect(sup!.pool.counters.headTruncations).toBe(1));
+    socket.destroy();
+    // Still handed off, not dropped: the supervisor does not adjudicate HTTP.
+    expect(sup.pool.counters.handoffFailures).toBe(0);
+  }, 20_000);
+
   it('does NOT re-route a second request on the same connection', async () => {
     // §7 requires this pinned by test. Affinity is decided ONCE per connection, keyed by the
     // first request; a second session id on the same socket is neither seen nor re-routable,

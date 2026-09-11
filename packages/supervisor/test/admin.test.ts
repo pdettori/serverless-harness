@@ -76,6 +76,14 @@ describe('metricsBody', () => {
     expect(body.counters).toHaveProperty('restarts');
   });
 
+  it('reports head truncations, so E8 can see the sticky arm losing affinity', () => {
+    // Additive: a new key alongside the existing snake_case counters, never a rename -- plan 2's
+    // `worker_metrics()` parses these names and anything that renames them breaks it.
+    const h = ready();
+    h.pool.noteHeadTruncated(20_000);
+    expect(metricsBody(h.pool, {}).counters.head_truncations).toBe(1);
+  });
+
   it('echoes only the env vars a run record needs, never the whole environment', () => {
     const body = metricsBody(ready().pool, {
       SH_WORKERS: '4',

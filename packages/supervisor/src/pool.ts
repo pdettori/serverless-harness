@@ -79,6 +79,8 @@ export interface PoolCounters {
   readonly handoffFailures: number;
   readonly overAdmission: number;
   readonly spuriousRefusals: number;
+  /** Connections whose header block exceeded MAX_HEAD_BYTES, so they routed with no affinity. */
+  readonly headTruncations: number;
 }
 
 const MAX_BACKOFF_MS = 30_000;
@@ -121,6 +123,7 @@ export class WorkerPool {
     handoffFailures: 0,
     overAdmission: 0,
     spuriousRefusals: 0,
+    headTruncations: 0,
   };
 
   constructor(opts: PoolOptions) {
@@ -229,6 +232,17 @@ export class WorkerPool {
     this.opts.log({ event: 'handoff_failed', preferred });
     socket.destroy();
     return undefined;
+  }
+
+  /**
+   * Record that a connection's header block hit the cap, so it routed with NO session affinity
+   * (see `head.ts`'s MAX_HEAD_BYTES). Counted rather than merely logged because it is a
+   * measurement effect on E8's sticky arm: unrecorded it reads as a low hit rate with nothing in
+   * the data to distinguish it from a genuine null result.
+   */
+  noteHeadTruncated(bytes: number): void {
+    this.tally.headTruncations += 1;
+    this.opts.log({ event: 'head_truncated', bytes });
   }
 
   /**
