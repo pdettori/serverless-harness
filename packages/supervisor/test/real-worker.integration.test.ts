@@ -25,14 +25,26 @@ import { startSupervisor, DEFAULT_WORKER_ENTRY, type Supervisor } from '../src/m
  * adding a test-only option to `startSupervisor`.
  */
 async function withRealWorker(
-  extraEnv: Record<string, string>,
+  config: Record<string, string>,
+  /**
+   * Variables the WORKER reads. `main.ts` forks with `{ ...process.env }`, so `readConfig`'s
+   * argument below reaches the supervisor only -- anything the worker itself reads has to be on
+   * `process.env`.
+   */
+  workerEnv: Record<string, string> = {},
 ): Promise<{ sup: Supervisor; restore: () => void }> {
-  const saved = process.execArgv;
+  const savedArgv = process.execArgv;
+  const savedEnv = Object.keys(workerEnv).map((k) => [k, process.env[k]] as const);
   process.execArgv = ['--import', 'tsx'];
+  for (const [k, v] of Object.entries(workerEnv)) process.env[k] = v;
   // Restored in afterEach rather than here: a worker restart mid-test forks again and must
   // inherit the loader too.
   const restore = (): void => {
-    process.execArgv = saved;
+    process.execArgv = savedArgv;
+    for (const [k, v] of savedEnv) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
   };
   try {
     const sup = await startSupervisor({
@@ -40,9 +52,7 @@ async function withRealWorker(
         PORT: '0',
         SH_ADMIN_PORT: '0',
         SH_WORKERS: '1',
-        // Keep the advisory stats row quiet enough not to interleave with the assertions.
-        SH_STATS_INTERVAL_MS: '60000',
-        ...extraEnv,
+        ...config,
       } as NodeJS.ProcessEnv),
       // workerEntry deliberately OMITTED: this is the point of the file.
       log: () => {},
@@ -52,6 +62,13 @@ async function withRealWorker(
     restore();
     throw err;
   }
+}
+
+/** Waits for the single worker to report `ready`. */
+async function waitReady(sup: Supervisor): Promise<void> {
+  await vi.waitFor(() => expect(sup.pool.views().filter((v) => v.healthy)).toHaveLength(1), {
+    timeout: 30_000,
+  });
 }
 
 /** One request on its own connection, read to completion. */
@@ -78,14 +95,62 @@ afterEach(async () => {
 });
 
 describe('the real worker, forked from DEFAULT_WORKER_ENTRY', () => {
+  it('is the default entry, and forking it brings a worker up over IPC', async () => {
+    // `DEFAULT_WORKER_ENTRY` had ZERO test references, so the highest-risk integration in the
+    // slice ran only on a real VM.
+    expect(DEFAULT_WORKER_ENTRY).toMatch(/knative-server[/\\]src[/\\]worker\.ts$/);
+
+    ({ sup, restore } = await withRealWorker({ SH_TURNS_PER_WORKER: '8' }));
+    await waitReady(sup!);
+
+    // `ready` arriving at all is the conjunction of four things the fixtures never test:
+    // execArgv inheritance loaded the TypeScript loader; `pathToFileURL(process.argv[1]).href`
+    // matched `import.meta.url`, so the main-module block ran at all; `--role=turn` parsed
+    // (any other role exits 2); and `process.send` was present (its absence exits 2). It also
+    // means `handler`'s whole import graph resolved from a foreign package root.
+    const [w] = sup!.pool.telemetry();
+    expect(w!.pid).toBeGreaterThan(0);
+    expect(w!.pid).not.toBe(process.pid);
+  }, 60_000);
+
   it('serves a non-turn request through a handed-off socket', async () => {
     ({ sup, restore } = await withRealWorker({ SH_TURNS_PER_WORKER: '8' }));
-    await vi.waitFor(() => expect(sup!.pool.views().filter((v) => v.healthy)).toHaveLength(1), {
-      timeout: 30_000,
-    });
+    await waitReady(sup!);
     // `GET /health` is the furthest a test can drive the real handler with no infrastructure:
     // it answers from `server.ts` directly, touching neither Redis nor a sandbox nor a model.
+    // A real `POST /turn` would need Redis, a sandbox and a model endpoint, so it stays a live
+    // smoke concern -- see the report for exactly what this does and does not protect.
     expect(await speak(sup!.port, HEALTH)).toContain('200 OK');
+  }, 60_000);
+
+  it('agrees with the supervisor on all four IPC rows', async () => {
+    // `WorkerToSupervisor` is duplicated verbatim in `supervisor/src/pool.ts` and
+    // `knative-server/src/worker.ts`, deliberately (spec §9). The recorded justification says
+    // drift "fails a test rather than rotting" -- which only became true once something forked
+    // a real worker. This is that test: every row crosses the boundary here.
+    ({ sup, restore } = await withRealWorker(
+      { SH_TURNS_PER_WORKER: '8' },
+      { SH_STATS_INTERVAL_MS: '50' },
+    ));
+
+    // 'ready'
+    await waitReady(sup!);
+
+    // 'stats' -- the advisory fourth row: recorded for /metrics, never routed on.
+    await vi.waitFor(() => expect(Number.isFinite(sup!.pool.telemetry()[0]!.rssBytes)).toBe(true), {
+      timeout: 15_000,
+    });
+    // ...and `views()` is still exactly §3.9's three fields, whatever telemetry arrived.
+    expect(sup!.pool.views()[0]).toEqual({ id: 0, inFlight: 0, healthy: true });
+
+    // 'load' -- from the served connection's close report.
+    expect(await speak(sup!.port, HEALTH)).toContain('200 OK');
+    await vi.waitFor(() => expect(sup!.pool.views()[0]!.inFlight).toBe(0));
+
+    // 'draining' -- the supervisor sends `drain`, the real worker answers `draining`, and the
+    // pool stops routing to it without killing it.
+    sup!.pool.drainAll();
+    await vi.waitFor(() => expect(sup!.pool.views()[0]!.healthy).toBe(false), { timeout: 15_000 });
   }, 60_000);
 
   it('does not wedge into permanent 429s after non-turn connections at S=1', async () => {
@@ -99,9 +164,7 @@ describe('the real worker, forked from DEFAULT_WORKER_ENTRY', () => {
     // Driven against the REAL worker on purpose: the `.mjs` fixtures re-implement the IPC
     // contract by hand and papered this over.
     ({ sup, restore } = await withRealWorker({ SH_TURNS_PER_WORKER: '1' }));
-    await vi.waitFor(() => expect(sup!.pool.views().filter((v) => v.healthy)).toHaveLength(1), {
-      timeout: 30_000,
-    });
+    await waitReady(sup!);
 
     for (let i = 1; i <= 4; i += 1) {
       expect(await speak(sup!.port, HEALTH), `connection ${i}`).toContain('200 OK');

@@ -4,8 +4,11 @@ import { pickLeastLoaded, type WorkerView } from './routing.js';
 /**
  * Duplicated from `@sh/knative-server/src/worker.ts` deliberately (spec §9): the supervisor
  * forks the worker as a PROCESS, and a shared type module would advertise an in-process
- * coupling that does not exist. Task 9's integration test forks a real worker, so drift
- * fails a test rather than rotting.
+ * coupling that does not exist. Drift fails a test rather than rotting, because
+ * `test/real-worker.integration.test.ts` forks the REAL worker and drives all four rows across
+ * the boundary. Until that test existed the duplication was protected by nothing: every other
+ * integration test substitutes an untyped `.mjs` fixture that re-implements the contract by
+ * hand, so a divergence between the two copies would have gone unnoticed.
  */
 export type SupervisorToWorker = { type: 'conn'; head?: string } | { type: 'drain' };
 /**
