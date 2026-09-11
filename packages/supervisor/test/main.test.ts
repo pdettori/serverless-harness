@@ -49,4 +49,52 @@ describe('startSupervisor', () => {
     client.destroy();
     await sup.close();
   });
+
+  it('survives refusing a connection whose peer is already gone', async () => {
+    // `net.Server`, unlike `http.Server`, attaches no 'error' handler to accepted sockets. So
+    // refuse()'s resume()+write against a departed peer raised an UNHANDLED 'error' and took
+    // the whole supervisor down -- and with it every worker, each of which exits on
+    // 'disconnect'. refuse() is reached only under overload, which is exactly when clients
+    // time out and abandon connections sitting in the accept backlog: a self-inflicted total
+    // outage at the moment E8 is measuring the knee.
+    //
+    // Driven with REAL sockets rather than a synthetic emit: `resetAndDestroy()` sends an RST,
+    // which is what an abandoned connection looks like on the wire, and the accepted socket
+    // has no listener of ours on it at all -- a synthetic emit would need a handle to the
+    // server-side socket that nothing outside `startSupervisor` has.
+    //
+    // The pin has two halves, because in-process the harness survives what a real process
+    // would not: the assertions below prove the listener still serves, and vitest's
+    // unhandled-error detection fails the RUN (nonzero exit) if the 'error' listener goes
+    // away. Unfixed, this produced 25 uncaught `Error: write EPIPE` from `refuse()`.
+    const sup = await startSupervisor({
+      config: readConfig({
+        PORT: '0',
+        SH_ADMIN_PORT: '0',
+        SH_WORKERS: '1',
+        SH_TURNS_PER_WORKER: '1',
+        // silent-worker never reports ready, so isSaturated() is true and EVERY connection
+        // below takes the refuse() path.
+      } as NodeJS.ProcessEnv),
+      workerEntry: fileURLToPath(new URL('./fixtures/silent-worker.mjs', import.meta.url)),
+      log: () => {},
+    });
+
+    for (let i = 0; i < 25; i += 1) {
+      const c = connect(sup.port, '127.0.0.1');
+      await once(c, 'connect');
+      c.resetAndDestroy();
+    }
+
+    // The supervisor must still be here and the listener must still serve.
+    const survivor = connect(sup.port, '127.0.0.1');
+    await once(survivor, 'connect');
+    survivor.write('POST /turn HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n');
+    const chunks: Buffer[] = [];
+    survivor.on('data', (c: Buffer) => chunks.push(c));
+    await once(survivor, 'end');
+    expect(Buffer.concat(chunks).toString()).toContain('429 Too Many Requests');
+    survivor.destroy();
+    await sup.close();
+  }, 20_000);
 });

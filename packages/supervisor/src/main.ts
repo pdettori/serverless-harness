@@ -54,6 +54,15 @@ export async function startSupervisor(opts: {
   // supervisor reads no byte of the request" (below) actually true for policies that don't
   // pre-read the head.
   const server: Server = createServer({ pauseOnConnect: true }, (socket: Socket) => {
+    // net.Server, unlike http.Server, attaches no 'error' handler to accepted sockets. Without
+    // this a write to a departed peer -- which is what refuse() does, under exactly the
+    // overload that makes peers depart -- raises an unhandled 'error' and takes the whole
+    // supervisor down with every worker it owns. An error listener reads no request bytes, so
+    // GC9 is untouched. It also covers the window between readHead() resolving (head.ts's
+    // finish() removes its own 'error' listener) and the fd reaching a worker.
+    socket.on('error', () => {
+      /* peer gone; there is nothing to write and nothing useful to log per connection */
+    });
     void route(socket);
   });
 
