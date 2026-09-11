@@ -1,83 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { EventEmitter } from 'node:events';
-import type { Socket } from 'node:net';
-import {
-  WorkerPool,
-  type WorkerHandle,
-  type SupervisorToWorker,
-  type PoolOptions,
-} from '../src/pool.js';
-
-let nextPid = 1000;
-
-class FakeWorker extends EventEmitter implements WorkerHandle {
-  readonly pid = nextPid++;
-  readonly sent: Array<{ msg: SupervisorToWorker; hasHandle: boolean }> = [];
-  sendOk = true;
-  killed: NodeJS.Signals | undefined;
-
-  send(msg: SupervisorToWorker, handle?: Socket): boolean {
-    // A dead child's send() returns false (and emits an error asynchronously) — the exact
-    // shape of the hand-off race in §6.
-    if (!this.sendOk) return false;
-    this.sent.push({ msg, hasHandle: handle !== undefined });
-    return true;
-  }
-  kill(signal?: NodeJS.Signals): boolean {
-    this.killed = signal ?? 'SIGTERM';
-    return true;
-  }
-  ready(): void {
-    this.emit('message', { type: 'ready', pid: this.pid });
-  }
-  load(inFlight: number): void {
-    this.emit('message', { type: 'load', inFlight });
-  }
-  draining(): void {
-    this.emit('message', { type: 'draining' });
-  }
-  exit(code: number | null = 1): void {
-    this.emit('exit', code, null);
-  }
-  get conns(): number {
-    return this.sent.filter((s) => s.msg.type === 'conn').length;
-  }
-}
-
-interface Harness {
-  pool: WorkerPool;
-  forked: FakeWorker[];
-  timers: Array<{ fn: () => void; ms: number }>;
-  logs: Array<Record<string, unknown>>;
-  clock: { t: number };
-  runTimers: () => void;
-}
-
-function harness(overrides: Partial<PoolOptions> = {}, workers = 2): Harness {
-  const forked: FakeWorker[] = [];
-  const timers: Array<{ fn: () => void; ms: number }> = [];
-  const logs: Array<Record<string, unknown>> = [];
-  const clock = { t: 0 };
-  const pool = new WorkerPool({
-    workers,
-    fork: () => {
-      const w = new FakeWorker();
-      forked.push(w);
-      return w;
-    },
-    now: () => clock.t,
-    setTimer: (fn, ms) => timers.push({ fn, ms }),
-    log: (line) => logs.push(line),
-    ...overrides,
-  });
-  const runTimers = (): void => {
-    const due = timers.splice(0, timers.length);
-    for (const t of due) t.fn();
-  };
-  return { pool, forked, timers, logs, clock, runTimers };
-}
-
-const fakeSocket = () => ({ destroy: vi.fn(), pause: vi.fn() }) as unknown as Socket;
+import { describe, it, expect } from 'vitest';
+import { harness, fakeSocket } from './helpers/fake-worker.js';
 
 describe('WorkerPool lifecycle', () => {
   it('forks the configured number of workers, none healthy until ready', () => {
@@ -124,6 +46,20 @@ describe('WorkerPool lifecycle', () => {
     h.forked[0]!.draining();
     expect(h.pool.views()[0]!.healthy).toBe(false);
     expect(h.forked[0]!.killed).toBeUndefined(); // in-flight turns must finish
+  });
+
+  it('records a stats message as advisory telemetry, never in views()', () => {
+    // Before pool.ts grew the `stats` branch, `WorkerPool` had no `telemetry()` method, so
+    // this failed to compile ("telemetry is not a function") rather than throwing at runtime
+    // -- the right kind of RED per GC2.
+    const h = harness();
+    h.forked[0]!.ready();
+    h.forked[0]!.stats({ loopLagP99Ms: 12.5, rssBytes: 90_000_000 });
+    expect(h.pool.telemetry()[0]).toEqual(
+      expect.objectContaining({ loopLagP99Ms: 12.5, rssBytes: 90_000_000 }),
+    );
+    // Advisory: `views()` is the whole of what a routing policy sees, and it must not change.
+    expect(h.pool.views()[0]).toEqual({ id: 0, inFlight: 0, healthy: true });
   });
 });
 

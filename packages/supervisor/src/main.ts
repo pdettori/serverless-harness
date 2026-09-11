@@ -1,14 +1,16 @@
 import { fork } from 'node:child_process';
 import { createServer, type Server, type Socket } from 'node:net';
 import { once } from 'node:events';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isSaturated, refuse } from './admission.js';
+import { startAdminServer } from './admin.js';
 import { readConfig, type SupervisorConfig } from './config.js';
 import { readHead, sessionIdFromHead } from './head.js';
 import { WorkerPool, type WorkerHandle } from './pool.js';
 
 export interface Supervisor {
   readonly port: number;
+  readonly adminPort: number;
   readonly pool: WorkerPool;
   close(): Promise<void>;
 }
@@ -93,10 +95,17 @@ export async function startSupervisor(opts: {
   const port = typeof address === 'object' && address !== null ? address.port : config.port;
   log({ event: 'supervisor_listening', port, workers: config.workers, policy: config.policy.name });
 
+  // Separate listener from the data-path `net.Server` above: an `http.Server` here would add
+  // per-connection HTTP parsing to the hot path for every worker connection, not just /metrics.
+  const admin = await startAdminServer({ pool, port: config.adminPort, env: process.env });
+  log({ event: 'admin_listening', port: admin.port });
+
   return {
     port,
+    adminPort: admin.port,
     pool,
     async close(): Promise<void> {
+      await admin.close();
       server.close();
       pool.drainAll();
       await once(server, 'close');
@@ -105,7 +114,7 @@ export async function startSupervisor(opts: {
 }
 
 const entry = process.argv[1];
-if (entry !== undefined && import.meta.url === new URL(`file://${entry}`).href) {
+if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
   const supervisor = await startSupervisor({ config: readConfig(process.env) });
   const shutdown = (): void => {
     void supervisor.close().then(() => process.exit(0));

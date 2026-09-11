@@ -8,8 +8,46 @@ import { pickLeastLoaded, type WorkerView } from './routing.js';
  * fails a test rather than rotting.
  */
 export type SupervisorToWorker = { type: 'conn'; head?: string } | { type: 'drain' };
+/**
+ * §3.9 defines the first three rows; the pool's routing decisions are built on exactly those.
+ * `stats` is a fourth, deliberately advisory row (not in §3.9): it carries telemetry for
+ * `/metrics` and must never be routed on or merged into `WorkerView` (see `telemetry()` and
+ * `aggregates()` below, and note B.1-B.3 in this task's controller notes).
+ */
 export type WorkerToSupervisor =
-  { type: 'ready'; pid: number } | { type: 'load'; inFlight: number } | { type: 'draining' };
+  | { type: 'ready'; pid: number }
+  | { type: 'load'; inFlight: number }
+  | { type: 'draining' }
+  | {
+      type: 'stats';
+      loopLagP99Ms?: number;
+      rssBytes?: number;
+      leasesHeld?: number;
+      leasePoolSize?: number;
+      fileOpP95Ms?: number;
+    };
+
+/**
+ * Advisory per-worker telemetry (§5.2's `/metrics`), kept deliberately separate from
+ * `WorkerView`: nothing here may influence a routing decision. `id`/`inFlight`/`healthy`
+ * duplicate `WorkerView`'s fields (for a single self-describing row on the wire), but this
+ * type is never fed back into routing and `WorkerView` is never extended with the rest.
+ * Missing readings are NaN, never a fabricated number — see `aggregates()`.
+ */
+export interface WorkerTelemetry {
+  readonly id: number;
+  readonly pid: number | undefined;
+  readonly inFlight: number;
+  readonly healthy: boolean;
+  readonly loopLagP99Ms: number;
+  readonly rssBytes: number;
+}
+
+/** Pool-wide rollup of telemetry not carried per-worker, for `/metrics`'s top-level fields. */
+export interface TelemetryAggregates {
+  readonly leaseSaturation: number;
+  readonly fileOpP95Ms: number;
+}
 
 /** The narrow slice of `ChildProcess` the pool uses, so tests can hand it a fake. */
 export interface WorkerHandle {
@@ -50,6 +88,16 @@ interface Slot {
   drained: boolean;
   /** Estimate for this slot at the moment of the pending refusal, if any. */
   refusalEstimate?: number;
+  /**
+   * Advisory telemetry (`stats`, §5.2). NaN until a worker actually reports a reading -- 0
+   * would read as "no lag" / "no leases held" and would exonerate whichever tier actually
+   * saturated (see task-11-controller-notes.md section D).
+   */
+  loopLagP99Ms: number;
+  rssBytes: number;
+  leasesHeld: number;
+  leasePoolSize: number;
+  fileOpP95Ms: number;
 }
 
 export class WorkerPool {
@@ -95,6 +143,42 @@ export class WorkerPool {
 
   views(): readonly WorkerView[] {
     return this.slots.map((s, id) => ({ id, inFlight: s.inFlight, healthy: s.healthy }));
+  }
+
+  /** Advisory per-worker telemetry for `/metrics`. Never consulted by routing. */
+  telemetry(): readonly WorkerTelemetry[] {
+    return this.slots.map((s, id) => ({
+      id,
+      pid: s.handle.pid,
+      inFlight: s.inFlight,
+      healthy: s.healthy,
+      loopLagP99Ms: s.loopLagP99Ms,
+      rssBytes: s.rssBytes,
+    }));
+  }
+
+  /**
+   * Pool-wide rollup of the telemetry `telemetry()` does not carry per-worker. Lease
+   * saturation is held-over-pool-size, with pool size taken as the MAX any worker reported:
+   * every worker leases from the SAME pool, so summing would report it W times its real size
+   * and hide saturation entirely. File-op p95 is the WORST worker's, not the mean -- an
+   * averaged p95 is not a p95 of anything and would hide the one relay that is the reason a
+   * rung degraded.
+   */
+  aggregates(): TelemetryAggregates {
+    const held = this.slots.filter((s) => Number.isFinite(s.leasesHeld));
+    const size = Math.max(
+      ...this.slots.map((s) => (Number.isFinite(s.leasePoolSize) ? s.leasePoolSize : 0)),
+      0,
+    );
+    const leaseSaturation =
+      held.length === 0 || size <= 0
+        ? Number.NaN
+        : held.reduce((a, s) => a + s.leasesHeld, 0) / size;
+
+    const ops = this.slots.map((s) => s.fileOpP95Ms).filter((n) => Number.isFinite(n));
+    const fileOpP95Ms = ops.length === 0 ? Number.NaN : Math.max(...ops);
+    return { leaseSaturation, fileOpP95Ms };
   }
 
   handOff(preferred: number, socket: Socket, head?: Buffer): number | undefined {
@@ -157,6 +241,11 @@ export class WorkerPool {
       startedAt: this.opts.now(),
       crashes: previous?.crashes ?? 0,
       drained: false,
+      loopLagP99Ms: NaN,
+      rssBytes: NaN,
+      leasesHeld: NaN,
+      leasePoolSize: NaN,
+      fileOpP95Ms: NaN,
     };
     this.slots[id] = slot;
 
@@ -171,6 +260,19 @@ export class WorkerPool {
         slot.healthy = false;
         return;
       }
+      if (msg.type === 'stats') {
+        // Advisory only (§5.2): recorded for `/metrics`, never merged into `WorkerView` and
+        // never consulted by `reconcile()` or any routing policy.
+        if (msg.loopLagP99Ms !== undefined) slot.loopLagP99Ms = msg.loopLagP99Ms;
+        if (msg.rssBytes !== undefined) slot.rssBytes = msg.rssBytes;
+        if (msg.leasesHeld !== undefined) slot.leasesHeld = msg.leasesHeld;
+        if (msg.leasePoolSize !== undefined) slot.leasePoolSize = msg.leasePoolSize;
+        if (msg.fileOpP95Ms !== undefined) slot.fileOpP95Ms = msg.fileOpP95Ms;
+        return;
+      }
+      // Exhaustively narrowed to `{ type: 'load'; inFlight: number }` by the four returns
+      // above -- this IS the load handler (§3.9), not a fallthrough. A fifth row added to the
+      // union without a branch above will fail to compile here, not silently no-op.
       this.reconcile(id, slot, msg.inFlight);
     });
 

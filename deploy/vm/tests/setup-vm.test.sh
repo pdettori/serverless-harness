@@ -146,6 +146,32 @@ if PATH="/nonexistent" require_cmds podman 2>/dev/null; then
 fi
 pass "require_cmds reports missing tools"
 
+# --- admin listener (Task 11): loopback only -------------------------------------------------
+# Unauthenticated, and it echoes configuration. Bound to 0.0.0.0 on a cloud VM it is a
+# configuration disclosure to the whole subnet, and no unit test can see the difference.
+ADMIN_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/packages/supervisor/src/admin.ts"
+if grep -q "listen(.*'127\.0\.0\.1'" "$ADMIN_SRC"; then
+  pass "admin listener binds 127.0.0.1"
+else
+  fail "admin /metrics must bind 127.0.0.1 explicitly (found: $(grep -n 'listen(' "$ADMIN_SRC"))"
+fi
+
+# The unit file must not publish the admin port, and must not set it equal to PORT -- readConfig
+# throws on the latter, which would be a boot failure discovered on the VM rather than here.
+if grep -q 'SH_ADMIN_PORT' "$UNIT_SUPERVISOR" || grep -q 'SH_ADMIN_PORT' "$ENV_SRC_DIR/supervisor.env.example"; then
+  ADMIN_PORT="$(grep -ho 'SH_ADMIN_PORT=[0-9]*' "$UNIT_SUPERVISOR" "$ENV_SRC_DIR/supervisor.env.example" |
+    head -1 | cut -d= -f2)"
+  DATA_PORT="$(grep -ho '\bPORT=[0-9]*' "$UNIT_SUPERVISOR" "$ENV_SRC_DIR/supervisor.env.example" |
+    head -1 | cut -d= -f2)"
+  if [ "$ADMIN_PORT" != "$DATA_PORT" ]; then
+    pass "SH_ADMIN_PORT=$ADMIN_PORT differs from PORT=$DATA_PORT"
+  else
+    fail "SH_ADMIN_PORT equals PORT ($DATA_PORT): readConfig throws at boot"
+  fi
+else
+  pass "unit file leaves SH_ADMIN_PORT at its 8081 default"
+fi
+
 # --- main(), end to end, against mocks (last: exercises the real call order) ---------------
 # require_cmds also needs `install` and `node`, which are on the real PATH (appended after the
 # mock dir above) and deliberately not mocked here.

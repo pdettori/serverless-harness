@@ -9,7 +9,7 @@ import { startSupervisor, type Supervisor } from '../src/main.js';
 const sseWorker = fileURLToPath(new URL('./fixtures/sse-worker.mjs', import.meta.url));
 
 function env(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
-  return { PORT: '0', SH_TURNS_PER_WORKER: '8', ...extra } as NodeJS.ProcessEnv;
+  return { PORT: '0', SH_ADMIN_PORT: '0', SH_TURNS_PER_WORKER: '8', ...extra } as NodeJS.ProcessEnv;
 }
 
 async function waitReady(sup: Supervisor, n: number): Promise<void> {

@@ -8,6 +8,8 @@ export interface SupervisorConfig {
   readonly turnsPerWorker: number;
   readonly policy: RoutingPolicy;
   readonly restartBackoffMs: number;
+  /** Loopback-only /metrics listener (§5.2, Task 11) — a separate port from the data path. */
+  readonly adminPort: number;
 }
 
 function readInt(
@@ -37,11 +39,19 @@ export function readConfig(env: NodeJS.ProcessEnv): SupervisorConfig {
         'in-flight turns (S), and its right value is an output of E8, not a guess',
     );
   }
+  const port = readInt(env, 'PORT', 8080, { min: 0, max: 65535 });
+  const adminPort = readInt(env, 'SH_ADMIN_PORT', 8081, { min: 0, max: 65535 });
+  if (adminPort !== 0 && adminPort === port) {
+    // Two listeners on one port is an EADDRINUSE at boot in the best case; 0 is exempt
+    // because the kernel hands out a distinct ephemeral port each time it is asked.
+    throw new Error(`SH_ADMIN_PORT='${adminPort}' must differ from PORT='${port}'`);
+  }
   return {
-    port: readInt(env, 'PORT', 8080, { min: 0, max: 65535 }),
+    port,
     workers: readInt(env, 'SH_WORKERS', cpus().length, { min: 1 }),
     turnsPerWorker: readInt(env, 'SH_TURNS_PER_WORKER', 0, { min: 1 }),
     policy: policyFromName(env.SH_ROUTING_POLICY),
     restartBackoffMs: readInt(env, 'SH_WORKER_RESTART_BACKOFF_MS', 250, { min: 0 }),
+    adminPort,
   };
 }

@@ -1,11 +1,26 @@
 import { createServer, type RequestListener, type Server } from 'node:http';
 import type { Socket } from 'node:net';
 import { pathToFileURL } from 'node:url';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { handler } from './server.js';
 
-/** Worker → supervisor. Exactly the three rows in P6 §3.9. */
+/**
+ * Worker → supervisor. Four rows: the first three are exactly P6 §3.9's; the fourth, `stats`,
+ * is deliberately advisory (added by Task 11, not §3.9) — never routed on, never merged into
+ * the supervisor's `WorkerView` (see `packages/supervisor/src/pool.ts`).
+ */
 export type WorkerToSupervisor =
-  { type: 'ready'; pid: number } | { type: 'load'; inFlight: number } | { type: 'draining' };
+  | { type: 'ready'; pid: number }
+  | { type: 'load'; inFlight: number }
+  | { type: 'draining' }
+  | {
+      type: 'stats';
+      loopLagP99Ms?: number;
+      rssBytes?: number;
+      leasesHeld?: number;
+      leasePoolSize?: number;
+      fileOpP95Ms?: number;
+    };
 
 /**
  * Supervisor → worker. A `conn` rides in `child.send(msg, socket)`'s handle slot; `head`
@@ -106,6 +121,37 @@ export function createWorkerRuntime(opts: {
   };
 }
 
+/**
+ * Advisory telemetry for `/metrics` (§5.2, Task 11). `monitorEventLoopDelay` is a *cumulative*
+ * histogram: left un-reset it reports the p99 since process boot, so a late rung's reading
+ * would carry every earlier rung's and no rung would be individually attributable.
+ */
+export function startStatsReporter(opts: {
+  send: (msg: WorkerToSupervisor) => void;
+  intervalMs: number;
+  lag?: () => number;
+  rss?: () => number;
+}): () => void {
+  const h = opts.lag ? undefined : monitorEventLoopDelay({ resolution: 10 });
+  h?.enable();
+  const timer = setInterval(() => {
+    const lag = opts.lag ? opts.lag() : h!.percentile(99) / 1e6; // ns -> ms
+    // Reset per interval: an un-reset histogram reports the p99 since boot, so rung 32's
+    // reading would carry rung 1's and no rung would be attributable.
+    h?.reset();
+    opts.send({
+      type: 'stats',
+      loopLagP99Ms: lag,
+      rssBytes: opts.rss ? opts.rss() : process.memoryUsage.rss(),
+    });
+  }, opts.intervalMs);
+  timer.unref(); // telemetry must never be the reason a worker refuses to exit
+  return () => {
+    clearInterval(timer);
+    h?.disable();
+  };
+}
+
 /** `--role=turn` / `--role turn`. Round one drives turns only (§3.3, §8). */
 export function parseRole(argv: string[]): string {
   for (let i = 0; i < argv.length; i += 1) {
@@ -134,17 +180,25 @@ if (isMainModule) {
   // process.send is overloaded three ways in @types/node; pin the signature we actually use
   // before .call() so tsc doesn't resolve .call to a differently-shaped overload.
   const sendToSupervisor = channel as (this: NodeJS.Process, msg: WorkerToSupervisor) => boolean;
-  const runtime = createWorkerRuntime({
-    send: (msg) => {
-      sendToSupervisor.call(process, msg);
-    },
+  const send = (msg: WorkerToSupervisor): void => {
+    sendToSupervisor.call(process, msg);
+  };
+  const runtime = createWorkerRuntime({ send });
+  const stopStats = startStatsReporter({
+    send,
+    intervalMs: Number(process.env.SH_STATS_INTERVAL_MS ?? 1000),
   });
   process.on('message', (msg: SupervisorToWorker, handle) => {
     if (msg.type === 'conn') {
       runtime.accept(handle as Socket, msg.head ? Buffer.from(msg.head, 'base64') : undefined);
       return;
     }
-    if (msg.type === 'drain') runtime.drain();
+    if (msg.type === 'drain') {
+      // A draining worker goes quiet rather than keep reporting lag for work it is no
+      // longer taking.
+      stopStats();
+      runtime.drain();
+    }
   });
   // Supervisor crash ⇒ the IPC channel closes ⇒ we exit, so systemd restarts the whole set
   // rather than leaving orphaned workers holding sockets nobody routes to (§6).

@@ -7,6 +7,7 @@ import {
   TurnCounter,
   createWorkerRuntime,
   parseRole,
+  startStatsReporter,
   type WorkerToSupervisor,
 } from '../src/worker.js';
 
@@ -182,6 +183,39 @@ describe('createWorkerRuntime', () => {
     expect(send.mock.calls.map(([m]) => m).filter((m) => m.type === 'draining')).toEqual([
       { type: 'draining' },
     ]);
+  });
+});
+
+describe('startStatsReporter', () => {
+  it('reports stats on an interval, and load stays exactly §3.9 s three rows', async () => {
+    const sent: unknown[] = [];
+    const stop = startStatsReporter({
+      send: (m) => sent.push(m),
+      intervalMs: 5,
+      lag: () => 3.5,
+      rss: () => 1_000,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    stop();
+    const stats = sent.filter((m) => (m as { type: string }).type === 'stats');
+    expect(stats.length).toBeGreaterThan(0);
+    expect(stats[0]).toMatchObject({ type: 'stats', loopLagP99Ms: 3.5, rssBytes: 1_000 });
+    // The hot message is untouched: no percentile is computed per turn edge.
+    expect(sent.some((m) => (m as { type: string }).type === 'load')).toBe(false);
+  });
+
+  it('stops reporting after stop(), so a draining worker goes quiet', async () => {
+    const sent: unknown[] = [];
+    const stop = startStatsReporter({
+      send: (m) => sent.push(m),
+      intervalMs: 5,
+      lag: () => 1,
+      rss: () => 1,
+    });
+    stop();
+    const n = sent.length;
+    await new Promise((r) => setTimeout(r, 20));
+    expect(sent.length).toBe(n);
   });
 });
 

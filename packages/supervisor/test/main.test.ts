@@ -14,6 +14,7 @@ describe('startSupervisor', () => {
     const sup = await startSupervisor({
       config: readConfig({
         PORT: '0',
+        SH_ADMIN_PORT: '0',
         SH_WORKERS: '1',
         SH_TURNS_PER_WORKER: '1',
       } as NodeJS.ProcessEnv),
@@ -31,6 +32,7 @@ describe('startSupervisor', () => {
     const sup = await startSupervisor({
       config: readConfig({
         PORT: '0',
+        SH_ADMIN_PORT: '0',
         SH_WORKERS: '1',
         SH_TURNS_PER_WORKER: '1',
       } as NodeJS.ProcessEnv),

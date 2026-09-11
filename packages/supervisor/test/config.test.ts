@@ -68,4 +68,18 @@ describe('readConfig', () => {
       /SH_ROUTING_POLICY='random'/,
     );
   });
+
+  it('defaults the admin port beside the data port and allows 0 for tests', () => {
+    expect(readConfig(env()).adminPort).toBe(8081);
+    expect(readConfig(env({ SH_ADMIN_PORT: '0' })).adminPort).toBe(0);
+    expect(() => readConfig(env({ SH_ADMIN_PORT: 'x' }))).toThrow(/SH_ADMIN_PORT/);
+  });
+
+  it('refuses an admin port equal to the data port', () => {
+    // Two listeners on one port is an EADDRINUSE at boot in the best case and, if the data
+    // listener wins the race, a supervisor that silently has no telemetry at all.
+    expect(() => readConfig(env({ PORT: '9000', SH_ADMIN_PORT: '9000' }))).toThrow(/SH_ADMIN_PORT/);
+    // 0 twice is not a collision: the kernel picks two different ephemeral ports.
+    expect(readConfig(env({ PORT: '0', SH_ADMIN_PORT: '0' })).adminPort).toBe(0);
+  });
 });
