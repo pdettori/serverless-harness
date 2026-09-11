@@ -91,7 +91,7 @@ interface Slot {
   /**
    * Advisory telemetry (`stats`, §5.2). NaN until a worker actually reports a reading -- 0
    * would read as "no lag" / "no leases held" and would exonerate whichever tier actually
-   * saturated (see task-11-controller-notes.md section D).
+   * saturated, defeating the point of carrying this telemetry at all.
    */
   loopLagP99Ms: number;
   rssBytes: number;
@@ -273,6 +273,17 @@ export class WorkerPool {
       // Exhaustively narrowed to `{ type: 'load'; inFlight: number }` by the four returns
       // above -- this IS the load handler (§3.9), not a fallthrough. A fifth row added to the
       // union without a branch above will fail to compile here, not silently no-op.
+      //
+      // A worker from a different build can still send a type this union does not know. Do not
+      // reconcile on it: `reconcile` trusts the worker and would assign `undefined`, and because
+      // every comparison against `undefined` is false, `pickLeastLoaded` would then pin this
+      // slot as `best` until the next real `load`. Guard the VALUE, not the type -- reading
+      // `msg.inFlight` here is what makes a fifth row a compile error, so the guard must keep
+      // reading it.
+      if (!Number.isFinite(msg.inFlight)) {
+        this.opts.log({ event: 'unrecognised_message', id, type: (msg as { type: unknown }).type });
+        return;
+      }
       this.reconcile(id, slot, msg.inFlight);
     });
 

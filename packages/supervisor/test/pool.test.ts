@@ -61,6 +61,21 @@ describe('WorkerPool lifecycle', () => {
     // Advisory: `views()` is the whole of what a routing policy sees, and it must not change.
     expect(h.pool.views()[0]).toEqual({ id: 0, inFlight: 0, healthy: true });
   });
+
+  it('ignores an unrecognised IPC message', () => {
+    const h = harness();
+    h.forked[0]!.ready();
+    h.forked[0]!.load(3);
+    expect(h.pool.views()[0]!.inFlight).toBe(3);
+    // Off-contract on purpose: a worker from a different build sending a type this union does
+    // not know. No `@ts-expect-error` here -- `FakeWorker.emit` is inherited straight from
+    // `EventEmitter` (`emit(eventName: string | symbol, ...args: any[]): boolean`), which does
+    // not check its payload against `WorkerToSupervisor`, so there is no type error to suppress.
+    h.forked[0]!.emit('message', { type: 'from-the-future' });
+    expect(h.pool.views()[0]!.inFlight).toBe(3); // unchanged -- an unknown type must be inert
+    expect(h.pool.views()[0]!.healthy).toBe(true);
+    expect(h.logs.some((l) => l.event === 'crash')).toBe(false);
+  });
 });
 
 describe('WorkerPool hand-off', () => {
