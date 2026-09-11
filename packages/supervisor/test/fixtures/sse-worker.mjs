@@ -47,6 +47,11 @@ process.send({ type: 'ready', pid: process.pid });
 process.on('message', (msg, handle) => {
   if (msg.type === 'conn') {
     if (msg.head) handle.unshift(Buffer.from(msg.head, 'base64'));
+    // Part of the §3.9 contract this fixture claims to implement (see worker.ts's accept()):
+    // the supervisor credits +1 per handed-off CONNECTION, so a connection that carries no
+    // turn must still report on close or the estimate ratchets up permanently and the pool
+    // wedges into 429s. Absolute count, never a decrement.
+    handle.once('close', () => report());
     server.emit('connection', handle);
     return;
   }

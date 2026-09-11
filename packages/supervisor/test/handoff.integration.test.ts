@@ -92,9 +92,16 @@ describe('socket hand-off, end to end', () => {
       await waitReady(sup, 1);
       const before = await openFdCount();
       for (let i = 0; i < 20; i += 1) {
-        const { socket } = await speak(sup.port, 'GET /ping HTTP/1.1\r\nHost: x\r\n\r\n', (t) =>
-          t.includes('"pid"'),
+        const { socket, text } = await speak(
+          sup.port,
+          'GET /ping HTTP/1.1\r\nHost: x\r\n\r\n',
+          (t) => t.includes('"pid"'),
         );
+        // Assert it was SERVED, not refused. Without this the case measured only descriptors,
+        // and `speak` resolves on 'end' -- which a 429 produces too. It therefore passed green
+        // over twelve refusals while the monotonic-estimate defect wedged the pool at S=8: the
+        // fd count is a valid measurement only if the connections it counts were handed off.
+        expect(text, `connection ${i + 1}`).not.toContain('429');
         socket.destroy();
       }
       // Allow for a handful of transient descriptors; a leak shows up as ~20.
@@ -102,6 +109,28 @@ describe('socket hand-off, end to end', () => {
     },
     20_000,
   );
+
+  it('serves 20 sequential non-turn connections at S=8 without refusing one', async () => {
+    // The platform-independent half of the case below, which is Linux-only because it reads
+    // /proc/self/fd. This is the arrangement that used to wedge: W=1, S=8, and 20 connections
+    // carrying a request the worker serves but does not count as a turn. The estimate rose by
+    // one per connection with nothing ever bringing it down, so connections 9-20 were all
+    // refused before hand-off -- and no turn could then arrive to reconcile.
+    sup = await startSupervisor({
+      config: readConfig(env({ SH_WORKERS: '1' })),
+      workerEntry: sseWorker,
+      log: () => {},
+    });
+    await waitReady(sup, 1);
+    for (let i = 1; i <= 20; i += 1) {
+      const { socket, text } = await speak(sup.port, 'GET /ping HTTP/1.1\r\nHost: x\r\n\r\n', (t) =>
+        t.includes('"pid"'),
+      );
+      expect(text, `connection ${i}`).toContain('"pid"');
+      socket.destroy();
+      await vi.waitFor(() => expect(sup!.pool.views()[0]!.inFlight).toBe(0));
+    }
+  }, 30_000);
 
   it('spreads connections across workers by least-in-flight', async () => {
     sup = await startSupervisor({

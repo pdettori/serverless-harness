@@ -175,6 +175,75 @@ describe('createWorkerRuntime', () => {
     cleanup();
   });
 
+  it('reports load when a handed-off connection CLOSES, so non-turn traffic reconciles', async () => {
+    // The supervisor credits its estimate +1 for every connection it hands off, but `load` is
+    // only ever sent from the turn counter -- and a non-turn request never touches it. Without
+    // a close report the estimate rose by one PERMANENTLY per non-turn connection, so after S
+    // of them the pool refused everything BEFORE hand-off, no turn could arrive to reconcile,
+    // and it stayed wedged in 429s until a worker crashed.
+    const send = vi.fn<(msg: WorkerToSupervisor) => void>();
+    const loads = (): WorkerToSupervisor[] =>
+      send.mock.calls.map(([m]) => m).filter((m) => m.type === 'load');
+    const rt = createWorkerRuntime({
+      send,
+      requestHandler: (_req: IncomingMessage, res: ServerResponse) => {
+        res.writeHead(200).end('ok');
+      },
+    });
+    const [server, client, cleanup] = await socketPair();
+    rt.accept(server);
+    client.write('GET /health HTTP/1.1\r\nHost: x\r\n\r\n');
+    const received: Buffer[] = [];
+    client.on('data', (c: Buffer) => received.push(c));
+    await vi.waitFor(() => expect(Buffer.concat(received).toString()).toContain('200'));
+    // Still not a turn: §3.5 caps TURNS, and "served but not counted" stays correct.
+    expect(loads()).toEqual([]);
+
+    client.destroy();
+    // ...but the connection ending IS a reconciliation point.
+    await vi.waitFor(() => expect(loads()).toEqual([{ type: 'load', inFlight: 0 }]));
+    cleanup();
+  });
+
+  it('reports the ABSOLUTE in-flight count on close, never a decrement', async () => {
+    // A connection closing while a turn is still running on ANOTHER socket must report the
+    // truth. A decrement would erase turns the worker is really executing and bias the
+    // supervisor's estimate low -- §3.9's dangerous direction, i.e. silent over-admission.
+    const send = vi.fn<(msg: WorkerToSupervisor) => void>();
+    const loads = (): WorkerToSupervisor[] =>
+      send.mock.calls.map(([m]) => m).filter((m) => m.type === 'load');
+    const rt = createWorkerRuntime({
+      send,
+      requestHandler: (req: IncomingMessage, res: ServerResponse) => {
+        // A turn that never answers, so it stays in flight for the whole test.
+        if (req.url === '/turn') return;
+        res.writeHead(200).end('ok');
+      },
+    });
+
+    const [turnServer, turnClient, cleanupTurn] = await socketPair();
+    rt.accept(turnServer);
+    turnClient.write('POST /turn HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n');
+    await vi.waitFor(() => expect(loads()).toEqual([{ type: 'load', inFlight: 1 }]));
+
+    const [probeServer, probeClient, cleanupProbe] = await socketPair();
+    rt.accept(probeServer);
+    probeClient.write('GET /health HTTP/1.1\r\nHost: x\r\n\r\n');
+    const received: Buffer[] = [];
+    probeClient.on('data', (c: Buffer) => received.push(c));
+    await vi.waitFor(() => expect(Buffer.concat(received).toString()).toContain('200'));
+
+    probeClient.destroy();
+    await vi.waitFor(() =>
+      expect(loads()).toEqual([
+        { type: 'load', inFlight: 1 },
+        { type: 'load', inFlight: 1 }, // the turn on the OTHER socket survives the report
+      ]),
+    );
+    cleanupProbe();
+    cleanupTurn();
+  });
+
   it('ignores a conn that arrives with NO handle instead of dying', () => {
     // Defence against a handle-less `conn`. Node delivers a QUEUED handle-send with no handle
     // when the descriptor was already consumed elsewhere (measured: send #3 in a tick returns

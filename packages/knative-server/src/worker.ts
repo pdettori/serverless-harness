@@ -110,6 +110,21 @@ export function createWorkerRuntime(opts: {
       // object` out of the message handler, uncaught -- killing a worker that may be
       // multiplexing S turns. A supervisor bug must cost one connection, not the process.
       if (socket === undefined || socket === null) return;
+      // The supervisor credits its estimate +1 for EVERY connection it hands off (§3.9's
+      // optimistic increment), but `load` is only ever sent from the turn counter above, and a
+      // non-turn request -- GET /health, POST /runs, a monitoring probe, a port scan -- returns
+      // early there. So without a report here the estimate rose by one PERMANENTLY per non-turn
+      // connection: after S of them every worker read as saturated, every later connection was
+      // refused BEFORE hand-off, so no turn could arrive to reconcile, and the pool stayed
+      // wedged in 429s until a worker happened to crash.
+      //
+      // Once per CONNECTION, not per request: the turn counter already reports both edges of
+      // every turn, so a keep-alive socket carrying many turns adds exactly one message here,
+      // at the end. The value is the ABSOLUTE current count rather than a decrement, so a
+      // connection closing while turns are still in flight on other sockets reports the truth
+      // instead of erasing them. Non-turn requests are still not counted as turns (§3.5) --
+      // what this adds is a reconciliation signal, not a second count.
+      socket.once('close', () => send({ type: 'load', inFlight: counter.inFlight }));
       // The socket arrived as a file descriptor, which carries no JS-side buffer: bytes the
       // supervisor read to make its routing decision are gone from the kernel buffer too.
       // They must be unshifted HERE, onto the stream this process is about to read.
