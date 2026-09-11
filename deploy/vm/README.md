@@ -8,20 +8,34 @@ containers as podman containers alongside them. `setup-vm.sh` is the sibling of
 ## Prerequisites
 
 - A Linux VM with systemd and [podman](https://podman.io/) installed
-- Node.js 22+ on the VM (the supervisor and relay run directly via `node --import tsx`, not
-  containerized)
-- A user able to install systemd units under `/etc/systemd/system` (typically via `sudo`)
+- Node.js 22+ and pnpm 9+ on the VM (the supervisor and relay run directly via
+  `node --import tsx`, not containerized)
+- A user able to install systemd units under `/etc/systemd/system` and run as root (see
+  "Bring it up" below)
 - A system user and group named `harness` (both units run as `User=harness`/`Group=harness`):
   e.g. `sudo useradd --system --no-create-home --shell /usr/sbin/nologin harness`
+- **The workspace built.** `ExecStart=node --import tsx src/main.ts` needs `tsx` (a
+  devDependency) and the workspace's `link:` targets resolved, and those only exist after the
+  checkout is built. Run, in order (spec §9), once per checkout:
+
+  ```bash
+  git submodule update --init --recursive
+  cd pi-fork && npm ci && npm run build && cd ..
+  pnpm install
+  ```
+
+  `setup-vm.sh` checks for this and refuses to continue with a clear message if it is missing —
+  it does **not** run the build itself, since it can take minutes and does not belong inside a
+  bring-up script.
 
 ## Bring it up
 
 ```bash
-cd /opt/serverless-harness   # this checkout, on the VM
-./deploy/vm/setup-vm.sh
+cd /opt/serverless-harness   # this checkout, on the VM, already built (see Prerequisites)
+sudo ./deploy/vm/setup-vm.sh
 ```
 
-That one command:
+That one command — run *after* the build above, not instead of it — does the following:
 
 1. Writes `/etc/serverless-harness/supervisor.env` and `relay.env` from their `env/*.example`
    templates — only the first time each; an operator-edited env file is never clobbered on a

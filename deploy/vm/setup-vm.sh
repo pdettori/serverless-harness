@@ -39,6 +39,32 @@ require_cmds() {
 # policy, shell, and home are an operator decision, not this script's to make). Fail loudly
 # before install_units, naming the account and the units that need it, instead of letting
 # systemd fail later with a confusing "user harness does not exist".
+# ExecStart is `node --import tsx src/main.ts`; tsx is a devDependency and the workspace's
+# link: targets (harness -> pi-fork) only resolve after root `pnpm install`, and pi-fork's own
+# type/JS output only exists after its own build (spec §9). A fresh VM checkout has run neither,
+# so both units would die with ERR_MODULE_NOT_FOUND. Building here would take minutes inside a
+# bring-up script that is supposed to be fast and idempotent -- fail loudly instead, naming the
+# exact commands, and let the operator run them once.
+#
+# root defaults to the repo root two levels above this script (deploy/vm/../..); a caller may
+# override it, which is what makes this testable without a second real checkout.
+require_build() {
+  local root="${1:-$SCRIPT_DIR/../..}"
+  local missing=()
+  [[ -d "$root/packages/supervisor/node_modules" ]] ||
+    missing+=("pnpm install has not run (packages/supervisor/node_modules is missing)")
+  if [[ ! -d "$root/pi-fork/packages/ai/dist" || ! -d "$root/pi-fork/packages/coding-agent/dist" ]]; then
+    missing+=("pi-fork is not built (pi-fork/packages/{ai,coding-agent}/dist is missing)")
+  fi
+  if ((${#missing[@]})); then
+    printf 'workspace is not built:\n' >&2
+    printf '  - %s\n' "${missing[@]}" >&2
+    echo "run, in order (spec §9): git submodule update --init --recursive; " \
+      "cd pi-fork && npm ci && npm run build && cd ..; pnpm install" >&2
+    return 1
+  fi
+}
+
 require_user() {
   local user="$1"
   if ! getent passwd "$user" >/dev/null 2>&1; then
@@ -96,7 +122,8 @@ start_services() {
 }
 
 main() {
-  require_cmds podman systemctl install node getent
+  require_cmds podman systemctl install node getent pnpm
+  require_build
   require_user harness
   install_env
   install_units

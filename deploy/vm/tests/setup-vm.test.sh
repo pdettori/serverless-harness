@@ -155,6 +155,30 @@ if PATH="/nonexistent" require_cmds podman 2>/dev/null; then
 fi
 pass "require_cmds reports missing tools"
 
+# --- pnpm is a required command (B2) ---------------------------------------------------------
+# node --import tsx src/main.ts needs tsx (a devDependency) and the workspace link: targets
+# resolved -- both are products of `pnpm install`, which require_cmds never checked for.
+grep -qE '^ {2}require_cmds .*\bpnpm\b' "$SCRIPT" ||
+  fail "main() must require_cmds pnpm -- ExecStart needs a pnpm-installed workspace"
+pass "require_cmds includes pnpm"
+
+# --- require_build fails loudly on an unbuilt workspace, and passes on this one (B2) ---------
+# Spec §9's build sequence (submodule init, pi-fork build, root pnpm install) is exactly what a
+# fresh VM checkout has not run yet. require_build takes an optional root override so this test
+# can point it at an empty tree without needing to break anything real.
+EMPTY_ROOT="$TMP/empty-workspace"
+mkdir -p "$EMPTY_ROOT"
+if build_err=$(require_build "$EMPTY_ROOT" 2>&1); then
+  fail "require_build should fail against an unbuilt workspace root"
+fi
+echo "$build_err" | grep -q 'pnpm install' || fail "require_build's message must name pnpm install (spec §9): $build_err"
+echo "$build_err" | grep -q 'npm run build' || fail "require_build's message must name pi-fork's npm run build (spec §9): $build_err"
+pass "require_build fails loudly and names spec §9's commands"
+
+require_build "$(cd "$VM_DIR/../.." && pwd)" ||
+  fail "require_build must pass against this worktree, which is already built"
+pass "require_build passes against a built workspace"
+
 # --- admin listener (Task 11): loopback only -------------------------------------------------
 # Unauthenticated, and it echoes configuration. Bound to 0.0.0.0 on a cloud VM it is a
 # configuration disclosure to the whole subnet, and no unit test can see the difference.
