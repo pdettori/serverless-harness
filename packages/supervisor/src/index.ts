@@ -22,3 +22,4 @@ export {
   type SupervisorToWorker,
   type WorkerToSupervisor,
 } from './pool.js';
+export { isSaturated, refuse, RETRY_AFTER_SECONDS } from './admission.js';
