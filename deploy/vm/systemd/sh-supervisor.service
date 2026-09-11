@@ -1,0 +1,38 @@
+[Unit]
+Description=Serverless harness supervisor (P6 VM process manager)
+After=network-online.target redis.service
+Wants=network-online.target
+Requires=redis.service
+
+[Service]
+Type=simple
+User=harness
+Group=harness
+WorkingDirectory=/opt/serverless-harness
+EnvironmentFile=/etc/serverless-harness/supervisor.env
+ExecStart=/usr/bin/node --import tsx packages/supervisor/src/main.ts
+Restart=always
+RestartSec=2
+# The supervisor forks W workers; systemd must account for the whole tree.
+KillMode=control-group
+# §3.7: SIGTERM starts the drain. The deadline must exceed the longest turn E6 measured.
+TimeoutStopSec=120
+
+# §4.3 — the VM analogue of the pod securityContext. PRESENT, not equivalent: this narrows
+# the filesystem and syscall surface, and it is deliberately NOT claimed as parity in the
+# round-one report. What round one genuinely loses versus Kubernetes is NetworkPolicy egress
+# control (Z2/Z5 work), which has no systemd analogue at all.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/serverless-harness
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+
+[Install]
+WantedBy=multi-user.target
