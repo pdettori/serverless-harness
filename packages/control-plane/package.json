@@ -1,19 +1,16 @@
 {
-  "name": "@sh/knative-server",
+  "name": "@sh/control-plane",
   "type": "module",
   "version": "0.0.0",
   "exports": {
     ".": "./src/index.ts"
   },
   "scripts": {
-    "start": "node --import tsx src/server.ts",
+    "start": "node --import tsx src/main.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@sh/control-plane": "workspace:*",
-    "@sh/harness": "workspace:*",
-    "@sh/work-queue": "workspace:*",
     "redis": "^6.2.1"
   },
   "devDependencies": {
