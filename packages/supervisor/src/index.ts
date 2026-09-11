@@ -23,3 +23,5 @@ export {
   type WorkerToSupervisor,
 } from './pool.js';
 export { isSaturated, refuse, RETRY_AFTER_SECONDS } from './admission.js';
+export { readConfig, type SupervisorConfig } from './config.js';
+export { startSupervisor, DEFAULT_WORKER_ENTRY, type Supervisor } from './main.js';
