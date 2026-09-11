@@ -14,7 +14,7 @@
 #   SH_ENV_DIR        Where the supervisor/relay env files live (default /etc/serverless-harness)
 #   SH_INSTALL_DIR    Where the harness checkout lives on the VM (default /opt/serverless-harness)
 #   SH_SANDBOX_COUNT  Number of sandbox containers to start (default 2)
-#   SANDBOX_IMAGE     Sandbox container image (default ghcr.io/rossoctl/sandbox:latest)
+#   SANDBOX_IMAGE     Sandbox container image (default ghcr.io/rossoctl/serverless-harness-sandbox:latest)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,7 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${SH_ENV_DIR:=/etc/serverless-harness}"
 : "${SH_INSTALL_DIR:=/opt/serverless-harness}"
 : "${SH_SANDBOX_COUNT:=2}"
-: "${SANDBOX_IMAGE:=ghcr.io/rossoctl/sandbox:latest}"
+: "${SANDBOX_IMAGE:=ghcr.io/rossoctl/serverless-harness-sandbox:latest}"
 
 log() { printf '==> %s\n' "$*"; }
 

@@ -133,6 +133,15 @@ fi
     "SH_RELAY_ADDR ($addr_port) in supervisor.env.example -- they describe the same wire"
 pass "relay bind port and supervisor dial port agree"
 
+# --- SANDBOX_IMAGE default matches the rest of the repo (B1) --------------------------------
+# deploy/knative/setup-ocp.sh:42 and setup-k8s.sh:30 both default to
+# ghcr.io/rossoctl/serverless-harness-sandbox:latest -- the repo-name segment, not just the
+# namespace, was dropped here. ghcr.io/rossoctl/sandbox:latest exists nowhere else in the repo.
+[[ "$SANDBOX_IMAGE" == "ghcr.io/rossoctl/serverless-harness-sandbox:latest" ]] ||
+  fail "SANDBOX_IMAGE default is '$SANDBOX_IMAGE', expected" \
+    "ghcr.io/rossoctl/serverless-harness-sandbox:latest (matching setup-ocp.sh/setup-k8s.sh)"
+pass "SANDBOX_IMAGE defaults to the image the rest of the repo actually publishes"
+
 # --- sandbox count is honoured --------------------------------------------------------------
 : >"$MOCK_LOG"
 start_sandboxes
