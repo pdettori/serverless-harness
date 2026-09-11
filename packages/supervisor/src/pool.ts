@@ -52,6 +52,8 @@ export interface TelemetryAggregates {
 /** The narrow slice of `ChildProcess` the pool uses, so tests can hand it a fake. */
 export interface WorkerHandle {
   readonly pid?: number;
+  /** `ChildProcess.connected`: false once the IPC channel is gone. A real failure signal. */
+  readonly connected: boolean;
   send(msg: SupervisorToWorker, handle?: Socket): boolean;
   kill(signal?: NodeJS.Signals): boolean;
   on(event: 'message', listener: (msg: WorkerToSupervisor) => void): this;
@@ -191,10 +193,25 @@ export class WorkerPool {
         head && head.length > 0
           ? { type: 'conn', head: head.toString('base64') }
           : { type: 'conn' };
-      if (slot !== undefined && slot.healthy && slot.handle.send(msg, socket)) {
-        // Optimistic: the worker's own `load` will correct this within one round trip (§3.9).
-        slot.inFlight += 1;
-        return target;
+      if (slot !== undefined && slot.healthy && slot.handle.connected) {
+        try {
+          // NEVER branch on send()'s return value. While a handle is in flight awaiting Node's
+          // internal NODE_HANDLE_ACK, further sends are QUEUED AND STILL DELIVERED, and the
+          // boolean reports queue position rather than success: the third and later handle sent
+          // inside one tick returns false (measured `[true,true,false,false,false,false]` for
+          // six sends, all six delivered with their handle). Treating that as failure retries a
+          // socket that has already been handed over -- and because the fd hand-off is
+          // destructive, exactly one worker ends up with the descriptor while the other gets a
+          // handle-less `conn` and dies. The real failure signals are an unhealthy slot, a
+          // disconnected channel, and a thrown exception; those are the three consulted here.
+          slot.handle.send(msg, socket);
+          // Optimistic: the worker's own `load` will correct this within one round trip (§3.9).
+          slot.inFlight += 1;
+          return target;
+        } catch {
+          // The channel closed between the `connected` check above and the send. Fall through
+          // to the retry rather than throw out of the connection callback.
+        }
       }
       this.tally.handoffRetries += 1;
       this.opts.log({ event: 'handoff_retry', from: target });
@@ -225,7 +242,12 @@ export class WorkerPool {
     for (const slot of this.slots) {
       if (slot.drained) continue;
       slot.drained = true;
-      slot.handle.send({ type: 'drain' });
+      try {
+        slot.handle.send({ type: 'drain' });
+      } catch {
+        // A channel that is already gone needs no drain, and must not abandon the drain of
+        // every later worker -- this is the first step of shutdown.
+      }
     }
   }
 

@@ -103,6 +103,13 @@ export function createWorkerRuntime(opts: {
     server,
     counter,
     accept(socket: Socket, head?: Buffer): void {
+      // Defence against a handle-less `conn`. Node can deliver a queued handle-send with no
+      // handle attached (if the descriptor was consumed elsewhere first), and the parameter is
+      // typed `Socket` only because `process.on('message')` casts what it is given. Emitting
+      // `undefined` as a connection throws `TypeError: Cannot convert undefined or null to
+      // object` out of the message handler, uncaught -- killing a worker that may be
+      // multiplexing S turns. A supervisor bug must cost one connection, not the process.
+      if (socket === undefined || socket === null) return;
       // The socket arrived as a file descriptor, which carries no JS-side buffer: bytes the
       // supervisor read to make its routing decision are gone from the kernel buffer too.
       // They must be unshifted HERE, onto the stream this process is about to read.

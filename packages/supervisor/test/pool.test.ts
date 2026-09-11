@@ -97,18 +97,61 @@ describe('WorkerPool hand-off', () => {
     expect(h.forked[0]!.sent[0]!.msg).toEqual({ type: 'conn' });
   });
 
-  it('retries the next-least-loaded when the chosen worker is already gone', () => {
-    // §6's hand-off race. The window between pick and send is real and cannot be closed
-    // without a synchronous round trip, which §3.9 refuses.
+  it('does NOT retry a worker whose send() returned false while still delivering', () => {
+    // THE regression pin for the hand-off double-delivery defect. Node's `send()` returns
+    // false for a queued handle it will still deliver (measured: the third and later handle
+    // sent inside one tick), so treating the boolean as failure retries a socket that has
+    // already been handed over. Because the fd hand-off is destructive, exactly one worker
+    // then gets the descriptor and the other receives a `conn` with no handle -- which used
+    // to kill it, taking every turn it was multiplexing. Any burst of >=3 connections to one
+    // worker in one tick reproduces it, which is precisely what E8's ladder generates.
     const h = harness();
     h.forked[0]!.ready();
     h.forked[1]!.ready();
-    h.forked[0]!.sendOk = false;
+    h.forked[0]!.sendReturnsFalse = true;
+    const sock = fakeSocket();
+    const took = h.pool.handOff(0, sock);
+    expect(took).toBe(0);
+    // Exactly one worker receives the socket, and it is the one we picked.
+    expect(h.forked[0]!.conns).toBe(1);
+    expect(h.forked[1]!.conns).toBe(0);
+    // Credited, or worker 0's estimate is stale LOW -- §3.9's dangerous direction, and
+    // unbounded rather than one-per-worker.
+    expect(h.pool.views()[0]!.inFlight).toBe(1);
+    // Ordinary backpressure is not a retry, and must not inflate the counter E8 reads.
+    expect(h.pool.counters.handoffRetries).toBe(0);
+    expect(sock.destroy).not.toHaveBeenCalled();
+  });
+
+  it('retries the next-least-loaded when the chosen worker is already gone', () => {
+    // §6's hand-off race. The window between pick and send is real and cannot be closed
+    // without a synchronous round trip, which §3.9 refuses. A DISCONNECTED channel is a real
+    // failure signal, unlike a `false` return.
+    const h = harness();
+    h.forked[0]!.ready();
+    h.forked[1]!.ready();
+    h.forked[0]!.connected = false;
     const took = h.pool.handOff(0, fakeSocket());
     expect(took).toBe(1);
     expect(h.forked[1]!.conns).toBe(1);
+    // Nothing was even attempted on the dead channel: the pool consulted `connected`.
+    expect(h.forked[0]!.conns).toBe(0);
     expect(h.pool.counters.handoffRetries).toBe(1);
     // The failed attempt must not leave a phantom turn on worker 0's estimate.
+    expect(h.pool.views()[0]!.inFlight).toBe(0);
+  });
+
+  it('retries when send() THROWS, the other real failure signal', () => {
+    // A channel that closes between the `connected` check and the send raises
+    // ERR_IPC_CHANNEL_CLOSED. That must be caught and retried, not thrown out of handOff()
+    // into the connection callback.
+    const h = harness();
+    h.forked[0]!.ready();
+    h.forked[1]!.ready();
+    h.forked[0]!.sendThrows = true;
+    expect(h.pool.handOff(0, fakeSocket())).toBe(1);
+    expect(h.forked[1]!.conns).toBe(1);
+    expect(h.pool.counters.handoffRetries).toBe(1);
     expect(h.pool.views()[0]!.inFlight).toBe(0);
   });
 
@@ -118,8 +161,8 @@ describe('WorkerPool hand-off', () => {
     const h = harness();
     h.forked[0]!.ready();
     h.forked[1]!.ready();
-    h.forked[0]!.sendOk = false;
-    h.forked[1]!.sendOk = false;
+    h.forked[0]!.connected = false;
+    h.forked[1]!.sendThrows = true;
     const sock = fakeSocket();
     expect(h.pool.handOff(0, sock)).toBeUndefined();
     expect(sock.destroy).toHaveBeenCalled();
@@ -231,5 +274,17 @@ describe('WorkerPool drain', () => {
         { msg: { type: 'drain' }, hasHandle: false },
       ]);
     }
+  });
+
+  it('drains every OTHER worker when one channel is already dead', () => {
+    // drainAll() is the first thing shutdown does, so a throw from a dead channel here would
+    // abandon the drain of every later worker and leave them taking new turns while the
+    // supervisor tears down.
+    const h = harness();
+    h.forked[0]!.ready();
+    h.forked[1]!.ready();
+    h.forked[0]!.sendThrows = true;
+    expect(() => h.pool.drainAll()).not.toThrow();
+    expect(h.forked[1]!.sent.filter((s) => s.msg.type === 'drain')).toHaveLength(1);
   });
 });

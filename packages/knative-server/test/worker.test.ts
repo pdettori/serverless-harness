@@ -175,6 +175,19 @@ describe('createWorkerRuntime', () => {
     cleanup();
   });
 
+  it('ignores a conn that arrives with NO handle instead of dying', () => {
+    // Defence against a handle-less `conn`. Node delivers a QUEUED handle-send with no handle
+    // when the descriptor was already consumed elsewhere (measured: send #3 in a tick returns
+    // false, is delivered, and if the socket was meanwhile sent to another child it arrives
+    // with `hasHandle: false`). `server.emit('connection', undefined)` then throws
+    // `TypeError: Cannot convert undefined or null to object` inside `process.on('message')`,
+    // uncaught -- so the worker dies, taking every turn it was multiplexing with it. A
+    // supervisor bug must degrade one connection, not the process.
+    const send = vi.fn<(msg: WorkerToSupervisor) => void>();
+    const rt = createWorkerRuntime({ send, requestHandler: () => {} });
+    expect(() => rt.accept(undefined as unknown as Socket)).not.toThrow();
+  });
+
   it('drain announces draining exactly once and is idempotent', () => {
     const send = vi.fn<(msg: WorkerToSupervisor) => void>();
     const rt = createWorkerRuntime({ send, requestHandler: () => {} });
