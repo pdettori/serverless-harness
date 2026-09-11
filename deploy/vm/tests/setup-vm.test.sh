@@ -79,8 +79,12 @@ pass "both units: correct ExecStart/WorkingDirectory, §4.3 hardening present, n
 # that is what makes this catch the next env file somebody adds.
 ENV_NAMES=()
 for unit in "$UNIT_SUPERVISOR" "$UNIT_RELAY"; do
-  name=$(grep -oE '^EnvironmentFile=/etc/serverless-harness/[A-Za-z0-9_.-]+\.env$' "$unit" |
-    sed -E 's#.*/([A-Za-z0-9_.-]+)\.env$#\1#')
+  # R46: under `set -euo pipefail`, a no-match `grep` in this pipeline aborts the script
+  # right here -- before the `[[ -n "$name" ]] || fail ...` guard below can ever run. `|| true`
+  # makes the guard reachable so a future unit missing EnvironmentFile= gets the diagnostic
+  # instead of a raw abort.
+  name=$( (grep -oE '^EnvironmentFile=/etc/serverless-harness/[A-Za-z0-9_.-]+\.env$' "$unit" ||
+    true) | sed -E 's#.*/([A-Za-z0-9_.-]+)\.env$#\1#')
   [[ -n "$name" ]] || fail "$unit: no EnvironmentFile= line found"
   [[ -f "$ENV_SRC_DIR/$name.env.example" ]] ||
     fail "$unit references $name.env but deploy/vm/env/$name.env.example does not exist"
@@ -112,9 +116,16 @@ grep -qE '^SH_TURNS_PER_WORKER=$' "$ENV_SRC_DIR/supervisor.env.example" ||
 pass "no default shipped for SH_TURNS_PER_WORKER"
 
 # --- the relay's bind port and the supervisor's dial port must agree (the real F3 bug) -----
-relay_port=$(grep -oE '^SH_RELAY_PORT=[0-9]+' "$ENV_SRC_DIR/relay.env.example" | cut -d= -f2)
-addr_port=$(grep -oE '^SH_RELAY_ADDR=.*:[0-9]+$' "$ENV_SRC_DIR/supervisor.env.example" |
-  grep -oE '[0-9]+$')
+# R46 (same as above): both assignments below can abort the pipeline on no-match under
+# `set -euo pipefail`, before their `[[ -n ... ]] || fail ...` guards run -- `|| true` on the
+# failure-capable stage in each, `grep -q` gating the second.
+relay_port=$(grep -oE '^SH_RELAY_PORT=[0-9]+' "$ENV_SRC_DIR/relay.env.example" | cut -d= -f2 || true)
+if grep -qE '^SH_RELAY_ADDR=.*:[0-9]+$' "$ENV_SRC_DIR/supervisor.env.example"; then
+  addr_port=$(grep -oE '^SH_RELAY_ADDR=.*:[0-9]+$' "$ENV_SRC_DIR/supervisor.env.example" |
+    grep -oE '[0-9]+$')
+else
+  addr_port=""
+fi
 [[ -n "$relay_port" ]] || fail "relay.env.example is missing SH_RELAY_PORT"
 [[ -n "$addr_port" ]] || fail "supervisor.env.example's SH_RELAY_ADDR has no port"
 [[ "$relay_port" == "$addr_port" ]] ||
