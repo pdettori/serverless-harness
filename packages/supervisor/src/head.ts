@@ -86,8 +86,9 @@ export function readHead(
     socket.once('error', onEnd);
     // Required, not defensive: main.ts's server is created with `pauseOnConnect: true`, so
     // attaching the 'data' listener above does not itself start the flow. Without this resume(),
-    // a sticky-routed connection would just sit there — no data, no error, no timeout firing
-    // early enough to matter.
+    // no byte ever arrives, so the setTimeout above (2s default) is what actually fires: finish()
+    // resolves incomplete, sessionId stays undefined, and the connection quietly routes without
+    // its session affinity instead of failing loudly.
     socket.resume();
   });
 }
