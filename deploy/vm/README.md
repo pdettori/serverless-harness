@@ -43,11 +43,34 @@ That one command — run *after* the build above, not instead of it — does the
 2. Installs `systemd/sh-supervisor.service` and `systemd/sh-relay.service` into
    `/etc/systemd/system` and reloads the daemon.
 3. Starts a Redis container and `SH_SANDBOX_COUNT` (default 2) sandbox containers via podman.
-4. Enables and starts the relay and supervisor units.
+4. Enables **and starts** `sh-relay.service`, but only **enables** `sh-supervisor.service` — it
+   is deliberately not started yet (see below).
 
-Before starting the supervisor, edit `/etc/serverless-harness/supervisor.env` and set
-`SH_TURNS_PER_WORKER` — it ships empty on purpose (see below) — then
-`systemctl restart sh-supervisor.service`.
+`SH_TURNS_PER_WORKER` ships empty on purpose (see below), and `readConfig` throws on blank, so
+the supervisor unit is *expected* to fail if it starts before the operator sets it. With
+`Restart=always`/`RestartSec=2` and no `StartLimitIntervalSec=0`, starting it in that state
+trips systemd's default 5-starts-in-10s limit in about ten seconds, and the unit then refuses
+even the ordinary recovery command until you `systemctl reset-failed` it. `setup-vm.sh` avoids
+that entirely by enabling the unit (so it starts on future boots) without starting it now.
+Before starting it for the first time, edit `/etc/serverless-harness/supervisor.env` and set
+`SH_TURNS_PER_WORKER`, then:
+
+```bash
+sudo systemctl start sh-supervisor.service
+```
+
+### Troubleshooting: "start request repeated too quickly"
+
+If `sh-supervisor.service` ends up crash-looping anyway (for example, it was started before
+`SH_TURNS_PER_WORKER` was set, or some other config problem repeats within the 10-second
+window), systemd locks it out with `Failed to start sh-supervisor.service: Unit
+sh-supervisor.service is not loaded properly: start request repeated too quickly.` Fix the
+underlying config in `supervisor.env`, then clear the lockout and start again:
+
+```bash
+sudo systemctl reset-failed sh-supervisor.service
+sudo systemctl start sh-supervisor.service
+```
 
 ## Where the env file lives
 

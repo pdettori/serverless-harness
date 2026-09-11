@@ -227,13 +227,32 @@ else
   pass "unit file leaves SH_ADMIN_PORT at its 8081 default"
 fi
 
+# --- start_services enables the supervisor WITHOUT --now, but starts the relay (B4) ----------
+# SH_TURNS_PER_WORKER ships empty on purpose and readConfig throws on blank, so the supervisor
+# unit is EXPECTED to fail until the operator sets it. Restart=always + RestartSec=2 with no
+# StartLimitIntervalSec=0 means systemd's default 5-starts-in-10s limit trips in about ten
+# seconds if we `enable --now` it, after which the README's own `systemctl start
+# sh-supervisor.service` is refused with "start request repeated too quickly" until
+# `systemctl reset-failed`. Enabling without --now sidesteps the crash loop entirely: the unit
+# is wired into multi-user.target for the next boot, but this run does not start it.
+: >"$MOCK_LOG"
+start_services
+grep -qE '^systemctl enable --now sh-relay\.service$' "$MOCK_LOG" ||
+  fail "start_services must enable --now the relay unit: $(cat "$MOCK_LOG")"
+grep -qE '^systemctl enable sh-supervisor\.service$' "$MOCK_LOG" ||
+  fail "start_services must enable (without --now) the supervisor unit: $(cat "$MOCK_LOG")"
+grep -qE '^systemctl enable --now sh-supervisor\.service$' "$MOCK_LOG" &&
+  fail "start_services must NOT --now the supervisor unit (guaranteed crash loop while" \
+    "SH_TURNS_PER_WORKER is unset): $(cat "$MOCK_LOG")"
+pass "supervisor enabled without --now, relay enabled --now"
+
 # --- main(), end to end, against mocks (last: exercises the real call order) ---------------
 # require_cmds also needs `install` and `node`, which are on the real PATH (appended after the
 # mock dir above) and deliberately not mocked here.
 export SH_UNIT_DIR="$TMP/units2" SH_ENV_DIR="$TMP/etc2"
 mkdir -p "$SH_UNIT_DIR"
 : >"$MOCK_LOG"
-main
+main_output=$(main 2>&1)
 
 grep -q 'id -u' "$MOCK_LOG" || fail "main() did not check for root (require_root)"
 grep -q 'getent passwd harness' "$MOCK_LOG" || fail "main() did not check for the harness account"
@@ -252,5 +271,14 @@ relay_enable_line=$(grep -n 'systemctl enable --now sh-relay.service' "$MOCK_LOG
 ((redis_line < relay_enable_line)) ||
   fail "main() must start Redis before enabling the relay unit"
 pass "main() end to end: harness-account check, both units, both env files, correct ordering"
+
+# The closing message must match the behaviour we actually land on: the supervisor is enabled
+# but not started, so the message must say to set SH_TURNS_PER_WORKER and then start it --
+# never "restart", which implies it is already running.
+echo "$main_output" | grep -qi 'SH_TURNS_PER_WORKER' ||
+  fail "closing message must tell the operator to set SH_TURNS_PER_WORKER: $main_output"
+echo "$main_output" | grep -qE 'systemctl start sh-supervisor\.service' ||
+  fail "closing message must say 'systemctl start' (not restart -- it was never started): $main_output"
+pass "closing message matches the enable-without-start behaviour"
 
 echo "all setup-vm.sh tests passed"

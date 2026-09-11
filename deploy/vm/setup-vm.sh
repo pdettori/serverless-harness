@@ -130,9 +130,16 @@ start_sandboxes() {
 }
 
 start_services() {
-  log "enabling supervisor and relay"
+  log "enabling relay (started now) and supervisor (enabled, not started)"
   systemctl enable --now sh-relay.service
-  systemctl enable --now sh-supervisor.service
+  # SH_TURNS_PER_WORKER ships empty on purpose (§3.8) and readConfig throws on blank, so this
+  # unit is EXPECTED to fail until the operator sets it. Restart=always/RestartSec=2 with no
+  # StartLimitIntervalSec=0 means systemd's default 5-starts-in-10s limit trips in about ten
+  # seconds if this were `enable --now`, after which even the documented recovery command
+  # (`systemctl start sh-supervisor.service`) is refused with "start request repeated too
+  # quickly" until `systemctl reset-failed`. Enable without --now instead: the unit is wired
+  # into multi-user.target for the next boot, but nothing tries to start it yet.
+  systemctl enable sh-supervisor.service
 }
 
 main() {
@@ -145,7 +152,8 @@ main() {
   start_redis
   start_sandboxes
   start_services
-  log "done — curl http://127.0.0.1:${PORT:-8080}/health"
+  log "done — relay is running. Before starting the supervisor, set SH_TURNS_PER_WORKER in" \
+    "$SH_ENV_DIR/supervisor.env, then: systemctl start sh-supervisor.service"
 }
 
 # Sourcing guard: lets the test load these functions without touching the machine.
