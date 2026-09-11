@@ -39,6 +39,20 @@ require_cmds() {
 # policy, shell, and home are an operator decision, not this script's to make). Fail loudly
 # before install_units, naming the account and the units that need it, instead of letting
 # systemd fail later with a confusing "user harness does not exist".
+# install -d -m 0750 /etc/serverless-harness and systemctl enable both need root. Failing here
+# with a clear message beats dying partway through on a confusing `install: Permission denied`.
+# uid defaults to the real effective uid (via `id -u`, not $EUID, so a test can override it
+# without actually running as another user).
+require_root() {
+  local uid="${1:-}"
+  [[ -n "$uid" ]] || uid="$(id -u)"
+  if [[ "$uid" != "0" ]]; then
+    echo "must run as root: this installs systemd units under $SH_UNIT_DIR and files under" \
+      "$SH_ENV_DIR. Re-run as: sudo $0" >&2
+    return 1
+  fi
+}
+
 # ExecStart is `node --import tsx src/main.ts`; tsx is a devDependency and the workspace's
 # link: targets (harness -> pi-fork) only resolve after root `pnpm install`, and pi-fork's own
 # type/JS output only exists after its own build (spec §9). A fresh VM checkout has run neither,
@@ -123,6 +137,7 @@ start_services() {
 
 main() {
   require_cmds podman systemctl install node getent pnpm
+  require_root
   require_build
   require_user harness
   install_env

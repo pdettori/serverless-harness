@@ -21,6 +21,17 @@ printf '%s %s\n' "$(basename "$0")" "$*" >>"$MOCK_LOG"
 MOCK
   chmod +x "$TMP/bin/$cmd"
 done
+# id needs real stdout (the caller parses `id -u`), not just a log line, so it gets its own
+# mock rather than joining the log-only loop above. It reports uid 0 -- main() end to end
+# below is standing in for a `sudo ./setup-vm.sh` invocation (B3).
+cat >"$TMP/bin/id" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s %s\n' "$(basename "$0")" "$*" >>"$MOCK_LOG"
+if [[ "$*" == "-u" ]]; then
+  echo 0
+fi
+MOCK
+chmod +x "$TMP/bin/id"
 export PATH="$TMP/bin:$PATH"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -179,6 +190,17 @@ require_build "$(cd "$VM_DIR/../.." && pwd)" ||
   fail "require_build must pass against this worktree, which is already built"
 pass "require_build passes against a built workspace"
 
+# --- require_root fails for a non-root uid and passes for uid 0 (B3) -------------------------
+# The README shows a bare invocation with no `sudo`, but install -d -m 0750
+# /etc/serverless-harness and systemctl enable both need root -- the script must say so plainly
+# rather than dying on a confusing `install` permission error. require_root takes an optional
+# uid override so this is testable without actually running as root or as another user.
+if require_root 1000 2>/dev/null; then
+  fail "require_root should fail for a non-root uid"
+fi
+require_root 0 || fail "require_root should pass for uid 0"
+pass "require_root rejects non-root, accepts uid 0"
+
 # --- admin listener (Task 11): loopback only -------------------------------------------------
 # Unauthenticated, and it echoes configuration. Bound to 0.0.0.0 on a cloud VM it is a
 # configuration disclosure to the whole subnet, and no unit test can see the difference.
@@ -213,6 +235,7 @@ mkdir -p "$SH_UNIT_DIR"
 : >"$MOCK_LOG"
 main
 
+grep -q 'id -u' "$MOCK_LOG" || fail "main() did not check for root (require_root)"
 grep -q 'getent passwd harness' "$MOCK_LOG" || fail "main() did not check for the harness account"
 [[ -f "$SH_UNIT_DIR/sh-supervisor.service" ]] || fail "main() did not install the supervisor unit"
 [[ -f "$SH_UNIT_DIR/sh-relay.service" ]] || fail "main() did not install the relay unit"
