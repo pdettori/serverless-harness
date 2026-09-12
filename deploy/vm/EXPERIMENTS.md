@@ -18,9 +18,10 @@ machine's. No record here says "maximum".
 patience 2 — the same criterion `experiments/src/sharing.ts` applies to E6, so E6, E8, and E9
 records are in the same units.
 
-## What every run record must carry (§5.2, §5.7)
+## What every E8 run record must carry (§5.2, §5.7)
 
-A record missing any of these is not a result:
+This eleven-field shape describes **E8's** records only — see the note at the end of this
+section for what an E9 record actually contains. A missing E8 field is not a result:
 
 | Field               | Why it is load-bearing                                                        |
 | ------------------- | ----------------------------------------------------------------------------- |
@@ -38,19 +39,19 @@ A record missing any of these is not a result:
 
 ### Two of these columns are permanently `NaN` — this is not a missing run, it is a missing sensor
 
-Of the eleven fields above, **six** are real, load-bearing telemetry every run record actually
-carries: `loop_lag_p99`, `rss_bytes`, `sandbox_cpu`, `over_admission`, `spurious_refusals`,
-`spurious_429`. The other two, `lease_saturation` and `file_op_ms`, will read `NaN` in **every**
-record `e8-density.sh` or `e9-tiers.sh` ever appends here, on any VM, no matter how it is
-provisioned — not because the run failed to collect them, but because nothing in this repository
-computes them. `harness/src/sandbox-lease.ts` derives a lease _count_ from an array its caller
-already holds; it keeps no pool-wide state a supervisor could expose as a saturation ratio.
-No file-op p95 counter exists anywhere in `harness/src` or `packages/k8s-sandbox/src` either. A
-future change could add both — this file does not claim the gap is permanent architecture, only
-that it is real today — but until one does, `lease_saturation` and `file_op_ms` are not
-measurements this driver declined to make; they are measurements this codebase cannot yet make.
+Of the eleven fields above, **six** are real, load-bearing telemetry every **E8** run record
+actually carries: `loop_lag_p99`, `rss_bytes`, `sandbox_cpu`, `over_admission`,
+`spurious_refusals`, `spurious_429`. The other two, `lease_saturation` and `file_op_ms`, will
+read `NaN` in **every E8 record**, on any VM, no matter how it is provisioned — not because the
+run failed to collect them, but because nothing in this repository computes them.
+`harness/src/sandbox-lease.ts` derives a lease _count_ from an array its caller already holds; it
+keeps no pool-wide state a supervisor could expose as a saturation ratio. No file-op p95 counter
+exists anywhere in `harness/src` or `packages/k8s-sandbox/src` either. A future change could add
+both — this file does not claim the gap is permanent architecture, only that it is real today —
+but until one does, `lease_saturation` and `file_op_ms` are not measurements this driver declined
+to make; they are measurements this codebase cannot yet make.
 
-**Read every bound sentence in this file accordingly.** When a run record says "the bound
+**Read every E8 bound sentence in this file accordingly.** When an E8 run record says "the bound
 observed at: worker CPU / memory / admission-control / unattributed", that verdict is reached by
 checking only the six real columns — it is never checked against `lease_saturation` or
 `file_op_ms`, because there is nothing there to check. So "unattributed" does **not** mean "no
@@ -59,8 +60,21 @@ under-provisioned sandbox-pool tier or a slow relay round trip could be the actu
 knee in this file and would show up as `unattributed` here, indistinguishable from a genuinely
 even, non-bottlenecked run. Do not read `unattributed` as an exoneration of the lease/relay
 tiers — read it as `unattributed (lease-pool and relay tiers unmeasured)`. Every claim sentence
-a driver emits should be read with that qualifier whether or not the driver's own prose spells
-it out at the point the sentence is written.
+E8 emits should be read with that qualifier whether or not the driver's own prose spells it out
+at the point the sentence is written.
+
+**E9's records do not have this shape at all — they carry none of the eleven fields above, not
+even as `NaN`.** `e9-tiers.sh` emits one point per rung as exactly `{c, throughput, p95Ms}`
+(`deploy/vm/e9-tiers.sh:182-183`); the one time it reads `$METRICS_BASE/metrics` at all
+(`deploy/vm/e9-tiers.sh:117`) is to check the VM arm's `.env.ANTHROPIC_BASE_URL` matches the
+pinned stub, not to sample any attribution counter — so none of the six real columns,
+`lease_saturation`, or `file_op_ms` are sampled, recorded, or NaN'd out for E9; they are simply
+absent from the JSON. `conns_per_session` and
+`duty_basis` are still load-bearing for an E9 run, but they are recorded once in the surrounding
+run-record prose (§5.2's other requirement), not per-point in the JSON. Do not read an E9
+record's silence on, say, `spurious_429` as "zero refusals were observed and confirmed" — E9
+never samples that column, so its absence means "not measured," not "measured and clean." Zero
+and absent are opposite claims; only E8 records can make the former.
 
 ## Duty bases (spec §2.3) — take a row whole
 
