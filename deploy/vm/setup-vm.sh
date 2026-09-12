@@ -47,7 +47,10 @@ require_cmds() {
 # install -d -m 0750 /etc/serverless-harness and systemctl enable both need root. Failing here
 # with a clear message beats dying partway through on a confusing `install: Permission denied`.
 # uid defaults to the real effective uid (via `id -u`, not $EUID, so a test can override it
-# without actually running as another user).
+# without actually running as another user). main() always calls this with zero arguments --
+# only the test suite passes one -- so shellcheck's cross-call-site analysis of this file alone
+# cannot see a call that uses $1, hence the disable below.
+# shellcheck disable=SC2120
 require_root() {
   local uid="${1:-}"
   [[ -n "$uid" ]] || uid="$(id -u)"
@@ -66,7 +69,9 @@ require_root() {
 # exact commands, and let the operator run them once.
 #
 # root defaults to the repo root two levels above this script (deploy/vm/../..); a caller may
-# override it, which is what makes this testable without a second real checkout.
+# override it, which is what makes this testable without a second real checkout. main() always
+# calls this with zero arguments, same SC2120 rationale as require_root above.
+# shellcheck disable=SC2120
 require_build() {
   local root="${1:-$SCRIPT_DIR/../..}"
   local missing=()
@@ -137,7 +142,10 @@ start_redis() {
 # R46 (see setup-vm.test.sh): under `set -euo pipefail`, a no-match grep aborts the whole
 # script right here rather than leaving these functions to report "no token"/"default port" --
 # `|| true` on the grep stage keeps a missing SH_RELAY_TOKEN/SH_RELAY_PORT line a normal empty
-# result instead of a fatal error.
+# result instead of a fatal error. sandbox_relay_addr below always calls this with zero
+# arguments -- only the test suite passes a file override -- same SC2120 rationale as
+# require_root/require_build above.
+# shellcheck disable=SC2120
 relay_port() {
   local file="${1:-$SH_ENV_DIR/relay.env}"
   local port
@@ -156,7 +164,9 @@ relay_token() {
 # operator secret, not a default), so a fresh install produces a relay.env that cannot
 # authenticate a single sandbox. Fail loudly here, before start_sandboxes ever runs a
 # container that is guaranteed to fail to attach, instead of leaving that discovery to a
-# silently-empty sh:sandbox:records set on the VM.
+# silently-empty sh:sandbox:records set on the VM. main() always calls this with zero
+# arguments, same SC2120 rationale as require_root/require_build above.
+# shellcheck disable=SC2120
 require_relay_token() {
   local file="${1:-$SH_ENV_DIR/relay.env}"
   if [[ -z "$(relay_token "$file")" ]]; then

@@ -35,7 +35,7 @@ cd /opt/serverless-harness   # this checkout, on the VM, already built (see Prer
 sudo ./deploy/vm/setup-vm.sh
 ```
 
-That one command — run *after* the build above, not instead of it — does the following:
+That one command — run _after_ the build above, not instead of it — does the following:
 
 1. Writes `/etc/serverless-harness/supervisor.env` and `relay.env` from their `env/*.example`
    templates — only the first time each; an operator-edited env file is never clobbered on a
@@ -50,7 +50,7 @@ That one command — run *after* the build above, not instead of it — does the
    is deliberately not started yet (see below).
 
 `SH_TURNS_PER_WORKER` ships empty on purpose (see below), and `readConfig` throws on blank, so
-the supervisor unit is *expected* to fail if it starts before the operator sets it. With
+the supervisor unit is _expected_ to fail if it starts before the operator sets it. With
 `Restart=always`/`RestartSec=2` and no `StartLimitIntervalSec=0`, starting it in that state
 trips systemd's default 5-starts-in-10s limit in about ten seconds, and the unit then refuses
 even the ordinary recovery command until you `systemctl reset-failed` it. `setup-vm.sh` avoids
@@ -93,7 +93,7 @@ relay; every container would share one `SANDBOX_ID` and collide on the same
 (`makeDefaultValidateToken` in `packages/sandbox-relay/src/main.ts`) is fail-closed: with
 `SH_RELAY_TOKEN` unset, every attach is rejected, including a tokenless one.
 `relay.env.example` ships it commented out on purpose (it is an operator secret, not a
-default), so `setup-vm.sh` checks the *installed* `relay.env` for a non-empty
+default), so `setup-vm.sh` checks the _installed_ `relay.env` for a non-empty
 `SH_RELAY_TOKEN` before starting any sandbox container, and refuses to continue with a clear
 message if it is missing, rather than starting containers that can never attach. Set it before
 running `setup-vm.sh`:
