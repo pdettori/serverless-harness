@@ -13,13 +13,17 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # --- 1. Without the live gate the driver is inert and exits 0. -----------------------------
-OUT="$(V_LIVE=0 ./e8-density.sh 2>&1)"
+SKIP_RESULTS="$TMP/should-not-exist-EXPERIMENTS.md"
+OUT="$(V_LIVE=0 V_RESULTS="$SKIP_RESULTS" ./e8-density.sh 2>&1)"
 RC=$?
 [ "$RC" = 0 ] && printf '%s' "$OUT" | grep -q 'SKIP' && ok "skips without V_LIVE=1" ||
   ko "should SKIP and exit 0 without V_LIVE=1 (rc=$RC)"
 
-# A skip must not have created or touched the results file.
-printf '%s' "$OUT" | grep -q 'E8 run' && ko "a SKIP wrote a run record" || ok "SKIP writes no record"
+# A skip must not have created or touched the results file: Task 5 owns creating
+# deploy/vm/EXPERIMENTS.md deliberately, and a driver that touched it on a skip would
+# defeat that. Assert the filesystem, not just stdout's silence.
+[ -e "$SKIP_RESULTS" ] && ko "a SKIP wrote a run record ($SKIP_RESULTS exists)" ||
+  ok "SKIP writes no record"
 
 # --- 2. The gate precedes the trap, so a skip cannot mutate state. -------------------------
 GATE_LINE="$(grep -n 'V_LIVE' e8-density.sh | head -1 | cut -d: -f1)"

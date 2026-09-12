@@ -19,12 +19,27 @@ source ./lib-vm.sh
 
 FAIL=0
 RESULTS="${V_RESULTS:-./EXPERIMENTS.md}"
+# tsx is a devDependency of experiments/ only, never root-hoisted, and deploy/ is not a
+# workspace package -- `npx tsx` from this CWD walks upward through node_modules, finds
+# nothing, and either hard-fails offline or silently runs an unpinned fetched copy online
+# (deploy/vm/systemd/sh-supervisor.service documents this exact bug class already hit once).
+# Calling the workspace's own shim directly keeps resolution CWD-independent while leaving
+# our CWD, and therefore the import specifiers below, unchanged.
+TSX="../../experiments/node_modules/.bin/tsx"
 
 # --- live gate, BEFORE any trap ------------------------------------------------------------
 # Installing the trap first would mean a SKIP runs cleanup against a system it never touched.
 [ "${V_LIVE:-0}" = "1" ] || {
   echo "SKIP (set V_LIVE=1 to run E8 against a live VM supervisor)"
   exit 0
+}
+
+# Same shape as require_build's preflight in setup-vm.sh: fail loudly and name the exact
+# remediation rather than let a heredoc die later with ERR_MODULE_NOT_FOUND.
+[ -x "$TSX" ] || {
+  echo "workspace is not built: $TSX is not executable (pnpm install has not run)" >&2
+  echo "run: pnpm install" >&2
+  exit 1
 }
 
 BASE="${V_BASE:-http://127.0.0.1:8080}"
@@ -62,7 +77,7 @@ case " $LADDER " in
 esac
 
 # Resolve the duty basis and the sandbox floor it implies — one row, taken whole (§2.3).
-BASIS_LINE="$(npx tsx -e '
+BASIS_LINE="$("$TSX" -e '
   import { resolveBasis, sandboxFloor, describeBasis, assertBasisConsistent } from "../../experiments/src/basis.ts";
   const b = resolveBasis(process.argv[2]);
   const [w, s] = [Number(process.argv[3]), Number(process.argv[4])];
@@ -159,7 +174,7 @@ for C in $LADDER; do
 done
 
 # --- knee ----------------------------------------------------------------------------------
-KNEE_JSON="$(npx tsx -e '
+KNEE_JSON="$("$TSX" -e '
   import { detectKnee, sanityFloorPass } from "../../experiments/src/sharing.ts";
   const points = JSON.parse(process.argv[2]);
   const knee = detectKnee(points, Number(process.argv[3]), 2);
@@ -193,7 +208,7 @@ BOUND_JSON="$(printf '%s' "$RECORDS" | jq -c \
   elif ($k.spurious_429 // 0) > 0 then
     { tag: "admission-control",
       prose: "admission control — \($k.spurious_429) refusals truncated the rung, so this knee reads early rather than marking a machine limit" }
-  elif (num($k.lease_saturation) // 0) >= 0.95 then
+  elif (($k.lease_saturation | tonumber?) // 0) >= 0.95 then
     { tag: "sandbox-pool",
       prose: "the sandbox lease pool (saturation \($k.lease_saturation)) — provision more containers and re-run before quoting this as a VM limit" }
   elif ($lag != null and $lag0 != null and $lag0 > 0 and ($lag / $lag0) >= 4) then
