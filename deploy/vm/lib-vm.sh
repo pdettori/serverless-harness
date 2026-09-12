@@ -22,10 +22,24 @@ percentile() {
 
 # One turn against the supervisor. Prints elapsed ms and the HTTP status, tab-separated, so the
 # caller can separate "slow" from "refused" — conflating them is how a 429 storm reads as a knee.
+#
+# CURL_OPTS/CURL_HDR are read as globals here, the same way deploy/knative/lib.sh itself treats
+# them (BASE/CURL_OPTS/CURL_HDR are globals there too, read at ~16 call sites) — this is that
+# file's own convention, not a new one. It matters because e9-tiers.sh's Knative arm sources
+# knative/lib.sh, which sets CURL_OPTS="-k..." whenever KSVC_URL is a Route (self-signed/ingress
+# cert); without threading that through here, every Knative /turn request fails TLS verification,
+# `|| echo 000` swallows it, and the arm reports a perfect floor for zero successful requests.
+# e8-density.sh sources ONLY this file, never knative/lib.sh, so on that path CURL_OPTS/CURL_HDR
+# are not merely empty, they are undeclared. `${CURL_OPTS:-}` and the `${CURL_HDR[@]+...}`
+# existence test (lib.sh's own array guard) keep this safe under `set -u` either way. Against
+# E8's plain http://127.0.0.1 target, CURL_OPTS is empty and CURL_HDR unset, so -k is simply
+# absent and E8's request is byte-for-byte what it was before.
 vm_turn() {
   local base="$1" sid="$2" body="$3" t0 code
   t0="$(now_ms)"
-  code="$(curl -s -o /dev/null -w '%{http_code}' -XPOST "$base/turn" \
+  # shellcheck disable=SC2086  # CURL_OPTS is intentionally word-split
+  code="$(curl -s ${CURL_OPTS:-} -o /dev/null -w '%{http_code}' -XPOST "$base/turn" \
+    ${CURL_HDR[@]+"${CURL_HDR[@]}"} \
     -H 'content-type: application/json' -H "X-SH-Session-Id: $sid" -d "$body" || echo 000)"
   printf '%s\t%s\n' "$(($(now_ms) - t0))" "$code"
 }
