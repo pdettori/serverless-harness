@@ -157,17 +157,23 @@ run_arm() {
     # forever, so a dead arm reports the ladder's TOP rung as a clean "floor" instead of erroring.
     # This must fire regardless of *why* c=1 saw no 200s — wrong URL, expired cert, firewall,
     # crashed revision — because none of those reasons make the resulting number less fabricated.
+    # run_arm's stdout IS its return channel (VM_POINTS="$(run_arm ...)" below) — every
+    # diagnostic in this function must go to stderr, or it gets prepended/interleaved into the
+    # JSON points payload and knee_of()'s JSON.parse throws. ko (lib-vm.sh:6, shadowed by
+    # knative/lib.sh:37 once that's sourced at :56) echoes to stdout by design — it is normally
+    # read by callers via `grep -q`, not captured — so it must be redirected here explicitly.
     if [ "$C" -eq 1 ] && [ "$n" -eq 0 ]; then
       rm -rf "$work"
-      ko "$label arm: ZERO 200 responses at c=1 ($base) — refusing to run the ladder against an arm that never answered"
+      ko "$label arm: ZERO 200 responses at c=1 ($base) — refusing to run the ladder against an arm that never answered" >&2
       exit 1
     fi
 
     # A partially-failing arm must be visible, not merely diluted into a lower throughput number
     # (same signal as e8-density.sh's SPURIOUS_429 WARN, generalised to any non-200 — the Knative
-    # arm can fail closed in more ways than a 429).
+    # arm can fail closed in more ways than a 429). >&2 for the same reason as the ko above: this
+    # is the common case a concurrency ladder exists to produce, so it fires on ordinary runs.
     if [ "$non200" -gt 0 ]; then
-      echo "WARN $label rung c=$C saw $non200/$((C * TURNS_PER_RUNG)) non-200 responses — a knee here is suspect"
+      echo "WARN $label rung c=$C saw $non200/$((C * TURNS_PER_RUNG)) non-200 responses — a knee here is suspect" >&2
     fi
 
     p95="$(cut -f1 "$work/raw.$C" | percentile 95)"
