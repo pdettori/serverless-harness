@@ -45,11 +45,3 @@ sandbox_cpu_seconds() {
   podman stats --no-stream --format '{{.CPU}}' 2>/dev/null |
     tr -d '%' | awk '{s+=$1} END {printf "%.2f", s+0}'
 }
-
-# Highest simultaneous lease count observed in a sampling window; an under-provisioned pool
-# shows up here first, and mistaking it for worker saturation attributes the knee to the wrong
-# tier (§5.2).
-max_leases_seen() {
-  local log="$1"
-  awk '{if ($1>m) m=$1} END {print m+0}' "$log" 2>/dev/null || echo 0
-}

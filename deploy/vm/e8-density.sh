@@ -112,7 +112,6 @@ for C in $LADDER; do
   echo "-- rung c=$C"
   : >"$WORK/lat.$C"
   : >"$WORK/code.$C"
-  : >"$WORK/leases.$C"
 
   CPU0="$(sandbox_cpu_seconds)"
   T0="$(now_ms)"
