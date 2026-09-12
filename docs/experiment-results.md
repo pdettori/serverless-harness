@@ -121,6 +121,19 @@ pnpm -C harness test               # checkpoint parity (E3 fidelity), budget uni
 deploy/knative/run-experiments.sh  # setup + E1 + E3 + E4, writes deploy/knative/EXPERIMENTS.md
 ```
 
+## E8 / E9 — single-VM process manager (P6)
+
+Run by `deploy/vm/e8-density.sh` and `deploy/vm/e9-tiers.sh`; results and full methodology in
+[`deploy/vm/EXPERIMENTS.md`](../deploy/vm/EXPERIMENTS.md).
+
+- **E8** — concurrent in-flight turns one VM sustains, as a **floor**, with per-rung telemetry
+  that attributes the bound to a tier (worker CPU, relay, sandbox pool, or admission control).
+- **E9** — VM-with-supervisor vs Knative-per-session, with the model tier and the tool tier both
+  pinned so the comparison varies the deployment tier and nothing else.
+
+Read the "What these numbers are, and are not" section there before quoting a figure: every
+knee is a floor, and turn concurrency is not a session count.
+
 ## Conclusion
 
 The serverless harness delivers its thesis: **~75% lower idle cost (E1)** with **O(tail)
