@@ -45,3 +45,22 @@ sandbox_cpu_seconds() {
   podman stats --no-stream --format '{{.CPU}}' 2>/dev/null |
     tr -d '%' | awk '{s+=$1} END {printf "%.2f", s+0}'
 }
+
+# tsx is a devDependency of experiments/ only, never root-hoisted, and deploy/ is not a
+# workspace package -- `npx tsx` from either driver's CWD walks upward through node_modules,
+# finds nothing, and either hard-fails offline or silently runs an unpinned fetched copy online
+# (deploy/vm/systemd/sh-supervisor.service documents this exact bug class already hit once).
+# Calling the workspace's own shim directly keeps resolution CWD-independent while leaving the
+# driver's CWD, and therefore its import specifiers, unchanged.
+TSX="../../experiments/node_modules/.bin/tsx"
+
+# Same shape as require_build's preflight in setup-vm.sh: fail loudly and name the exact
+# remediation rather than let a heredoc die later with ERR_MODULE_NOT_FOUND. Callers invoke this
+# AFTER their own live gate, so a V_LIVE=0 run SKIPs and exits 0 without ever testing for tsx.
+require_tsx() {
+  [ -x "$TSX" ] || {
+    echo "workspace is not built: $TSX is not executable (pnpm install has not run)" >&2
+    echo "run: pnpm install" >&2
+    exit 1
+  }
+}

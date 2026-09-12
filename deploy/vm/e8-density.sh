@@ -19,13 +19,6 @@ source ./lib-vm.sh
 
 FAIL=0
 RESULTS="${V_RESULTS:-./EXPERIMENTS.md}"
-# tsx is a devDependency of experiments/ only, never root-hoisted, and deploy/ is not a
-# workspace package -- `npx tsx` from this CWD walks upward through node_modules, finds
-# nothing, and either hard-fails offline or silently runs an unpinned fetched copy online
-# (deploy/vm/systemd/sh-supervisor.service documents this exact bug class already hit once).
-# Calling the workspace's own shim directly keeps resolution CWD-independent while leaving
-# our CWD, and therefore the import specifiers below, unchanged.
-TSX="../../experiments/node_modules/.bin/tsx"
 
 # --- live gate, BEFORE any trap ------------------------------------------------------------
 # Installing the trap first would mean a SKIP runs cleanup against a system it never touched.
@@ -34,13 +27,9 @@ TSX="../../experiments/node_modules/.bin/tsx"
   exit 0
 }
 
-# Same shape as require_build's preflight in setup-vm.sh: fail loudly and name the exact
-# remediation rather than let a heredoc die later with ERR_MODULE_NOT_FOUND.
-[ -x "$TSX" ] || {
-  echo "workspace is not built: $TSX is not executable (pnpm install has not run)" >&2
-  echo "run: pnpm install" >&2
-  exit 1
-}
+# TSX and require_tsx come from lib-vm.sh. The check happens here, after the live gate, so a
+# V_LIVE=0 run SKIPs and exits 0 without ever testing for the tsx binary.
+require_tsx
 
 BASE="${V_BASE:-http://127.0.0.1:8080}"
 # Telemetry lives on the loopback admin listener (SH_ADMIN_PORT, plan 1 Task 11), not on $BASE.
