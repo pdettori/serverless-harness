@@ -86,8 +86,7 @@ export function assertBasisConsistent(duty: number, ratio: number, tolerance = 0
   if (!(duty > 0)) throw new Error(`assertBasisConsistent: duty must be > 0, got ${duty}`);
   if (!(ratio > 0)) throw new Error(`assertBasisConsistent: ratio must be > 0, got ${ratio}`);
   const implied = derivedRatio(duty);
-  const unroundedImplied = 1 / duty;
-  const relative = Math.abs(ratio - unroundedImplied) / unroundedImplied;
+  const relative = Math.abs(ratio - implied) / implied;
   if (relative > tolerance) {
     throw new Error(
       `duty ${duty} implies a ratio of ${implied}, not ${ratio} ` +
