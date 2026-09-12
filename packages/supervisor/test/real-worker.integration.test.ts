@@ -14,6 +14,16 @@ import { startSupervisor, DEFAULT_WORKER_ENTRY, type Supervisor } from '../src/m
  * It is also what makes the recorded justification for duplicating `WorkerToSupervisor` across
  * `supervisor/src/pool.ts` and `knative-server/src/worker.ts` true rather than aspirational:
  * the two copies must agree on the wire or these tests fail.
+ *
+ * It also depends on vitest's default per-file process isolation (`pool: 'forks'`,
+ * `isolate: true` -- neither this package's `vitest.config.ts` nor any workspace-root
+ * config overrides either, so both are vitest 2.x's defaults, not a setting pinned here).
+ * `withRealWorker` below mutates `process.execArgv` directly on the running process rather
+ * than threading a test-only option through `startSupervisor`; that mutation is safe only
+ * because vitest gives each test file its own process. A future move to `pool: 'threads'`
+ * (or an explicit `isolate: false`) would let this file's `process.execArgv` mutation leak
+ * into whichever sibling test file happens to share its worker thread -- silently, and the
+ * failure would surface in that other file's `fork()` calls, not in this one.
  */
 
 /**

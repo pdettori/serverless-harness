@@ -159,7 +159,8 @@ oversight, and `deploy/vm/tests/setup-vm.test.sh` asserts `SH_ADMIN_PORT`'s abse
 If an operator needs to change either of these, set them directly in
 `/etc/serverless-harness/supervisor.env` (they are ordinary env vars the supervisor process
 reads at startup) — just be aware that adding an uncommented `SH_ADMIN_PORT` line there will
-change what the shell test above expects if the test is ever extended to check for it.
+change what `deploy/vm/tests/setup-vm.test.sh` expects if the test is ever extended to check
+for it.
 
 ## What round one does not claim
 
