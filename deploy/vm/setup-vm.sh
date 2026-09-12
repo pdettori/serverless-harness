@@ -68,12 +68,16 @@ require_root() {
 # bring-up script that is supposed to be fast and idempotent -- fail loudly instead, naming the
 # exact commands, and let the operator run them once.
 #
-# root defaults to the repo root two levels above this script (deploy/vm/../..); a caller may
-# override it, which is what makes this testable without a second real checkout. main() always
-# calls this with zero arguments, same SC2120 rationale as require_root above.
+# root defaults to the repo root two levels above this script (deploy/vm/../..), overridable
+# by SH_REPO_ROOT, itself overridable by a positional argument -- production behaviour
+# (running unmodified, with no env var set) is unchanged; SH_REPO_ROOT exists only so a test
+# can point this at a fabricated tree without needing a second real checkout or claiming this
+# script's own worktree is built when the caller (e.g. CI's toolchain-free deploy-scripts job)
+# never ran pnpm install or built pi-fork. main() always calls this with zero arguments, same
+# SC2120 rationale as require_root above.
 # shellcheck disable=SC2120
 require_build() {
-  local root="${1:-$SCRIPT_DIR/../..}"
+  local root="${1:-${SH_REPO_ROOT:-$SCRIPT_DIR/../..}}"
   local missing=()
   [[ -d "$root/packages/supervisor/node_modules" ]] ||
     missing+=("pnpm install has not run (packages/supervisor/node_modules is missing)")
@@ -155,7 +159,29 @@ relay_port() {
 
 relay_token() {
   local file="${1:-$SH_ENV_DIR/relay.env}"
-  (grep -oE '^SH_RELAY_TOKEN=.+' "$file" 2>/dev/null || true) | tail -1 | cut -d= -f2-
+  local token
+  token="$( (grep -oE '^SH_RELAY_TOKEN=.+' "$file" 2>/dev/null || true) | tail -1 | cut -d= -f2-)"
+  # systemd's EnvironmentFile= strips exactly one matched pair of surrounding quotes before
+  # handing the value to the relay's own process (systemd.exec(5), "Environment Variables in
+  # Spawned Processes") -- so an operator writing SH_RELAY_TOKEN="s3cr3t" gives the relay
+  # s3cr3t, not "s3cr3t". Strip the same single matched pair here so this function always
+  # returns what the relay actually validates against; otherwise start_sandboxes would hand
+  # every container the quoted literal, the fail-closed validator would reject every attach,
+  # and require_relay_token's non-empty check would still pass -- the exact silently-empty
+  # sh:sandbox:records outcome B5 exists to prevent, reachable through an ordinary quoting habit.
+  if ((${#token} >= 2)); then
+    case "$token" in
+    \"*\")
+      token="${token#\"}"
+      token="${token%\"}"
+      ;;
+    \'*\')
+      token="${token#\'}"
+      token="${token%\'}"
+      ;;
+    esac
+  fi
+  echo "$token"
 }
 
 # The relay's token validation is fail-closed (makeDefaultValidateToken in

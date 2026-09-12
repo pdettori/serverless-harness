@@ -14,7 +14,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 export MOCK_LOG="$TMP/mock.log"
 mkdir -p "$TMP/bin"
-for cmd in podman systemctl getent; do
+for cmd in podman systemctl getent pnpm; do
   cat >"$TMP/bin/$cmd" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s %s\n' "$(basename "$0")" "$*" >>"$MOCK_LOG"
@@ -182,6 +182,22 @@ require_relay_token "$TOKENED_RELAY_ENV" ||
   fail "require_relay_token should pass once SH_RELAY_TOKEN is set"
 pass "require_relay_token passes once SH_RELAY_TOKEN is set"
 
+# --- relay_token strips one matched pair of surrounding quotes (systemd's EnvironmentFile=
+# semantics) ----------------------------------------------------------------------------------
+# An operator writing SH_RELAY_TOKEN="s3cr3t" in relay.env gets s3cr3t handed to the relay
+# process by systemd, not "s3cr3t" (systemd.exec(5), "Environment Variables in Spawned
+# Processes") -- relay_token must return the same value systemd actually hands the relay, or
+# start_sandboxes would pass every container a SANDBOX_TOKEN that never matches while
+# require_relay_token's non-empty check still passes happily: the exact silently-empty
+# sh:sandbox:records outcome B5 exists to prevent, reachable through an ordinary quoting habit.
+QUOTED_RELAY_ENV="$TMP/quoted-relay.env"
+cp "$ENV_SRC_DIR/relay.env.example" "$QUOTED_RELAY_ENV"
+echo 'SH_RELAY_TOKEN="s3cr3t"' >>"$QUOTED_RELAY_ENV"
+[[ "$(relay_token "$QUOTED_RELAY_ENV")" == "s3cr3t" ]] ||
+  fail "relay_token must strip a matched pair of surrounding quotes (systemd.exec(5)" \
+    "EnvironmentFile= semantics), got: [$(relay_token "$QUOTED_RELAY_ENV")]"
+pass "relay_token strips a matched pair of surrounding quotes"
+
 # --- start_sandboxes passes each container its own SANDBOX_ID, a host-reaching RELAY_ADDR, and
 # the relay token, and pins host.containers.internal explicitly (B5) ------------------------
 # The real bug: a bare `podman run` with no -e flags leaves every container at
@@ -236,9 +252,28 @@ echo "$build_err" | grep -q 'pnpm install' || fail "require_build's message must
 echo "$build_err" | grep -q 'npm run build' || fail "require_build's message must name pi-fork's npm run build (spec §9): $build_err"
 pass "require_build fails loudly and names spec §9's commands"
 
-require_build "$(cd "$VM_DIR/../.." && pwd)" ||
-  fail "require_build must pass against this worktree, which is already built"
-pass "require_build passes against a built workspace"
+# The EMPTY_ROOT case above already covers require_build's failure path, and main()'s
+# end-to-end test below covers its success path against a fabricated tree -- this assertion is
+# guarded (not dropped) because it is the only one that exercises require_build against the
+# REAL monorepo layout (three real relative paths, not paths this test invented), which is
+# worth keeping for local/dev regression coverage. It is guarded because that real coverage
+# depends on this worktree actually being built, which CI's toolchain-free deploy-scripts job
+# (no repo-init step for pi-fork, no setup-node, no pnpm install, no pi-fork build -- see
+# .github/workflows/ci.yml) deliberately never does; asserting it unconditionally would couple
+# a script-testing job to a built workspace, inverting that job's own reason to exist.
+REAL_ROOT="$(cd "$VM_DIR/../.." && pwd)"
+if [[ -d "$REAL_ROOT/packages/supervisor/node_modules" &&
+  -d "$REAL_ROOT/pi-fork/packages/ai/dist" &&
+  -d "$REAL_ROOT/pi-fork/packages/coding-agent/dist" ]]; then
+  require_build "$REAL_ROOT" ||
+    fail "require_build must pass against this worktree, which is already built"
+  pass "require_build passes against a built workspace"
+else
+  echo "skip - require_build-against-a-built-workspace: this worktree is not built here (no" \
+    "pnpm install / pi-fork build -- expected in CI's toolchain-free deploy-scripts job);" \
+    "covered instead by the EMPTY_ROOT case above and the fabricated-tree case in main()'s" \
+    "end-to-end test below" >&2
+fi
 
 # --- require_root fails for a non-root uid and passes for uid 0 (B3) -------------------------
 # The README shows a bare invocation with no `sudo`, but install -d -m 0750
@@ -307,6 +342,16 @@ mkdir -p "$SH_UNIT_DIR" "$SH_ENV_DIR"
 # this end-to-end run is checking the happy path's step ordering, not that refusal.
 cp "$ENV_SRC_DIR/relay.env.example" "$SH_ENV_DIR/relay.env"
 echo 'SH_RELAY_TOKEN=e2e-token' >>"$SH_ENV_DIR/relay.env"
+# require_build (called inside main() with zero args) would otherwise resolve against this real
+# worktree via SCRIPT_DIR/../.. -- exactly the coupling item 1 exists to break for CI's
+# toolchain-free deploy-scripts job. Point it at a fabricated tree with just the three
+# directories require_build probes, so this end-to-end run does not depend on pnpm install /
+# pi-fork build having actually happened in this worktree.
+FAKE_BUILT_ROOT="$TMP/fake-built-root"
+mkdir -p "$FAKE_BUILT_ROOT/packages/supervisor/node_modules" \
+  "$FAKE_BUILT_ROOT/pi-fork/packages/ai/dist" \
+  "$FAKE_BUILT_ROOT/pi-fork/packages/coding-agent/dist"
+export SH_REPO_ROOT="$FAKE_BUILT_ROOT"
 : >"$MOCK_LOG"
 main_output=$(main 2>&1)
 
