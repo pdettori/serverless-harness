@@ -160,6 +160,56 @@ start_sandboxes
   fail "expected 3 sandbox containers, got: $(cat "$MOCK_LOG")"
 pass "SH_SANDBOX_COUNT honoured"
 
+# --- require_relay_token fails loudly on an unset token, passes once one is set (B5) --------
+# relay.env.example ships SH_RELAY_TOKEN commented out (an operator secret, not a default),
+# and the relay's validation is fail-closed (makeDefaultValidateToken in
+# packages/sandbox-relay/src/main.ts) -- a fresh install would otherwise start sandbox
+# containers that can never attach. require_relay_token takes an optional file override so this
+# is testable without touching $SH_ENV_DIR/relay.env directly.
+TOKENLESS_RELAY_ENV="$TMP/tokenless-relay.env"
+cp "$ENV_SRC_DIR/relay.env.example" "$TOKENLESS_RELAY_ENV"
+if token_err=$(require_relay_token "$TOKENLESS_RELAY_ENV" 2>&1); then
+  fail "require_relay_token should fail when SH_RELAY_TOKEN is commented out"
+fi
+echo "$token_err" | grep -qi 'SH_RELAY_TOKEN' ||
+  fail "require_relay_token's message must name SH_RELAY_TOKEN: $token_err"
+pass "require_relay_token fails loudly on an unconfigured token"
+
+TOKENED_RELAY_ENV="$TMP/tokened-relay.env"
+cp "$ENV_SRC_DIR/relay.env.example" "$TOKENED_RELAY_ENV"
+echo 'SH_RELAY_TOKEN=s3cr3t' >>"$TOKENED_RELAY_ENV"
+require_relay_token "$TOKENED_RELAY_ENV" ||
+  fail "require_relay_token should pass once SH_RELAY_TOKEN is set"
+pass "require_relay_token passes once SH_RELAY_TOKEN is set"
+
+# --- start_sandboxes passes each container its own SANDBOX_ID, a host-reaching RELAY_ADDR, and
+# the relay token, and pins host.containers.internal explicitly (B5) ------------------------
+# The real bug: a bare `podman run` with no -e flags leaves every container at
+# remote-worker/cmd/worker/main.go's defaults (SANDBOX_ID=sbx-laptop-1, RELAY_ADDR=
+# localhost:8443, SANDBOX_TOKEN=dev-token) -- every container collides on one Redis record,
+# "localhost" resolves to the container itself rather than the host, and the token never
+# matches a fail-closed relay. --add-host pins host.containers.internal explicitly rather
+# than relying on netavark's automatic (rootless-default, version-dependent) population of
+# /etc/hosts -- see podman-run(1)'s host-gateway special string.
+: >"$MOCK_LOG"
+cp "$TOKENED_RELAY_ENV" "$SH_ENV_DIR/relay.env"
+start_sandboxes
+grep -q -- '-e SANDBOX_ID=sh-sandbox-0' "$MOCK_LOG" ||
+  fail "start_sandboxes must set a per-container SANDBOX_ID: $(cat "$MOCK_LOG")"
+grep -q -- '-e SANDBOX_ID=sh-sandbox-1' "$MOCK_LOG" ||
+  fail "start_sandboxes must set a distinct SANDBOX_ID per container (the real collision bug," \
+    "B5): $(cat "$MOCK_LOG")"
+grep -q -- '-e RELAY_ADDR=host.containers.internal:9443' "$MOCK_LOG" ||
+  fail "start_sandboxes must set RELAY_ADDR to the host's relay port, taken from" \
+    "SH_RELAY_PORT in relay.env: $(cat "$MOCK_LOG")"
+grep -q -- '-e SANDBOX_TOKEN=s3cr3t' "$MOCK_LOG" ||
+  fail "start_sandboxes must set SANDBOX_TOKEN to match the relay's SH_RELAY_TOKEN:" \
+    "$(cat "$MOCK_LOG")"
+grep -q -- '--add-host host.containers.internal:host-gateway' "$MOCK_LOG" ||
+  fail "start_sandboxes must map host.containers.internal explicitly (podman-run(1)" \
+    "host-gateway), not rely on implicit netavark DNS: $(cat "$MOCK_LOG")"
+pass "start_sandboxes: per-container SANDBOX_ID, host-reaching RELAY_ADDR, matching SANDBOX_TOKEN"
+
 # --- missing commands fail loudly -----------------------------------------------------------
 if PATH="/nonexistent" require_cmds podman 2>/dev/null; then
   fail "require_cmds should fail when podman is absent"
@@ -250,7 +300,13 @@ pass "supervisor enabled without --now, relay enabled --now"
 # require_cmds also needs `install` and `node`, which are on the real PATH (appended after the
 # mock dir above) and deliberately not mocked here.
 export SH_UNIT_DIR="$TMP/units2" SH_ENV_DIR="$TMP/etc2"
-mkdir -p "$SH_UNIT_DIR"
+mkdir -p "$SH_UNIT_DIR" "$SH_ENV_DIR"
+# Pre-seed relay.env with a token before main() runs: install_env_file never clobbers an
+# existing file, so this stands in for an operator who has already set SH_RELAY_TOKEN --
+# without it, main() would (correctly, per B5) refuse to start any sandbox containers, and
+# this end-to-end run is checking the happy path's step ordering, not that refusal.
+cp "$ENV_SRC_DIR/relay.env.example" "$SH_ENV_DIR/relay.env"
+echo 'SH_RELAY_TOKEN=e2e-token' >>"$SH_ENV_DIR/relay.env"
 : >"$MOCK_LOG"
 main_output=$(main 2>&1)
 
@@ -270,6 +326,9 @@ relay_enable_line=$(grep -n 'systemctl enable --now sh-relay.service' "$MOCK_LOG
   fail "main() must install units (daemon-reload) before starting Redis"
 ((redis_line < relay_enable_line)) ||
   fail "main() must start Redis before enabling the relay unit"
+grep -q -- '-e SANDBOX_TOKEN=e2e-token' "$MOCK_LOG" ||
+  fail "main() did not pass the pre-seeded SH_RELAY_TOKEN through to the sandbox containers" \
+    "(B5 / require_relay_token wiring): $(cat "$MOCK_LOG")"
 pass "main() end to end: harness-account check, both units, both env files, correct ordering"
 
 # The closing message must match the behaviour we actually land on: the supervisor is enabled

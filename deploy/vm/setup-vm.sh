@@ -13,8 +13,13 @@
 #   SH_UNIT_DIR       Where systemd unit files are installed (default /etc/systemd/system)
 #   SH_ENV_DIR        Where the supervisor/relay env files live (default /etc/serverless-harness)
 #   SH_INSTALL_DIR    Where the harness checkout lives on the VM (default /opt/serverless-harness)
-#   SH_SANDBOX_COUNT  Number of sandbox containers to start (default 2)
-#   SANDBOX_IMAGE     Sandbox container image (default ghcr.io/rossoctl/serverless-harness-sandbox:latest)
+#   SH_SANDBOX_COUNT     Number of sandbox containers to start (default 2)
+#   SANDBOX_IMAGE        Sandbox container image (default ghcr.io/rossoctl/serverless-harness-sandbox:latest)
+#   SH_SANDBOX_RELAY_ADDR  Address each sandbox container uses to dial the relay (default
+#                          host.containers.internal:<SH_RELAY_PORT from relay.env>). Reaching
+#                          the host from inside a container is the part of this script least
+#                          verified on real hardware -- override this if the default does not
+#                          resolve on your VM (see deploy/vm/README.md).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -121,11 +126,72 @@ start_redis() {
   podman run -d --name sh-redis --replace -p 6379:6379 docker.io/redis:7-alpine
 }
 
+# remote-worker/cmd/worker/main.go:93-105 reads RELAY_ADDR (default localhost:8443),
+# SANDBOX_TOKEN (default dev-token), and SANDBOX_ID (default sbx-laptop-1) from its own
+# environment. A bare `podman run` with none of those set means: "localhost" resolves to the
+# container itself, not the host, so the worker can never reach the relay; every container
+# shares one SANDBOX_ID and collides on the same Redis record; and dev-token never matches a
+# fail-closed relay. relay_port/relay_token read the INSTALLED relay.env (not the .example),
+# so they see the operator's real values once install_env has run. file defaults to
+# $SH_ENV_DIR/relay.env; a caller may override it for testing.
+# R46 (see setup-vm.test.sh): under `set -euo pipefail`, a no-match grep aborts the whole
+# script right here rather than leaving these functions to report "no token"/"default port" --
+# `|| true` on the grep stage keeps a missing SH_RELAY_TOKEN/SH_RELAY_PORT line a normal empty
+# result instead of a fatal error.
+relay_port() {
+  local file="${1:-$SH_ENV_DIR/relay.env}"
+  local port
+  port="$( (grep -oE '^SH_RELAY_PORT=[0-9]+' "$file" 2>/dev/null || true) | tail -1 | cut -d= -f2)"
+  echo "${port:-8443}"
+}
+
+relay_token() {
+  local file="${1:-$SH_ENV_DIR/relay.env}"
+  (grep -oE '^SH_RELAY_TOKEN=.+' "$file" 2>/dev/null || true) | tail -1 | cut -d= -f2-
+}
+
+# The relay's token validation is fail-closed (makeDefaultValidateToken in
+# packages/sandbox-relay/src/main.ts): with SH_RELAY_TOKEN unset, every attach -- including a
+# tokenless one -- is rejected. relay.env.example ships it commented out on purpose (an
+# operator secret, not a default), so a fresh install produces a relay.env that cannot
+# authenticate a single sandbox. Fail loudly here, before start_sandboxes ever runs a
+# container that is guaranteed to fail to attach, instead of leaving that discovery to a
+# silently-empty sh:sandbox:records set on the VM.
+require_relay_token() {
+  local file="${1:-$SH_ENV_DIR/relay.env}"
+  if [[ -z "$(relay_token "$file")" ]]; then
+    echo "SH_RELAY_TOKEN is not set in $file: the relay's token validation is fail-closed" \
+      "(packages/sandbox-relay/src/main.ts), so every sandbox attach would be rejected." \
+      "Set SH_RELAY_TOKEN there to a shared secret matching each worker's SANDBOX_TOKEN, then" \
+      "re-run." >&2
+    return 1
+  fi
+}
+
+# Reaching the host's relay port from inside a container is the one piece of this deployment
+# most likely to need a real VM run to confirm -- see the report's "Still unverified" section.
+# host.containers.internal is podman's documented analogue of Docker's host.docker.internal
+# (podman-run(1): the host-gateway special string). Passing --add-host explicitly on every
+# `podman run` below makes that mapping deterministic rather than depending on netavark's
+# automatic /etc/hosts population, which differs between rootful and rootless podman and
+# across versions. SH_SANDBOX_RELAY_ADDR overrides the whole address if this default does not
+# reach the relay on your VM's actual network setup.
+sandbox_relay_addr() {
+  echo "${SH_SANDBOX_RELAY_ADDR:-host.containers.internal:$(relay_port)}"
+}
+
 start_sandboxes() {
   log "starting $SH_SANDBOX_COUNT sandbox containers"
-  local i
+  local i token addr
+  token="$(relay_token)"
+  addr="$(sandbox_relay_addr)"
   for ((i = 0; i < SH_SANDBOX_COUNT; i++)); do
-    podman run -d --name "sh-sandbox-$i" --replace "$SANDBOX_IMAGE"
+    podman run -d --name "sh-sandbox-$i" --replace \
+      --add-host host.containers.internal:host-gateway \
+      -e "SANDBOX_ID=sh-sandbox-$i" \
+      -e "RELAY_ADDR=$addr" \
+      -e "SANDBOX_TOKEN=$token" \
+      "$SANDBOX_IMAGE"
   done
 }
 
@@ -148,6 +214,7 @@ main() {
   require_build
   require_user harness
   install_env
+  require_relay_token
   install_units
   start_redis
   start_sandboxes
