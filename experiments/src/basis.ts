@@ -9,6 +9,8 @@
  * knee gets attributed to the wrong bound and reads early.
  */
 
+import { derivedRatio } from './sharing';
+
 /** One row of spec §2.3's table, taken whole. */
 export interface DutyBasis {
   readonly name: 'e6-ocp' | 'e6-kind' | 'e7';
@@ -83,11 +85,12 @@ export function sandboxFloor(workers: number, turnsPerWorker: number, duty: numb
 export function assertBasisConsistent(duty: number, ratio: number, tolerance = 0.15): void {
   if (!(duty > 0)) throw new Error(`assertBasisConsistent: duty must be > 0, got ${duty}`);
   if (!(ratio > 0)) throw new Error(`assertBasisConsistent: ratio must be > 0, got ${ratio}`);
-  const implied = 1 / duty;
-  const relative = Math.abs(ratio - implied) / implied;
+  const implied = derivedRatio(duty);
+  const unroundedImplied = 1 / duty;
+  const relative = Math.abs(ratio - unroundedImplied) / unroundedImplied;
   if (relative > tolerance) {
     throw new Error(
-      `duty ${duty} implies a ratio of ${Math.round(implied * 10) / 10}, not ${ratio} ` +
+      `duty ${duty} implies a ratio of ${implied}, not ${ratio} ` +
         `(off by ${Math.round(relative * 100)}%) — this is a blend of two §2.3 rows. ` +
         `Take one row whole: ${DUTY_BASES.map((b) => `${b.name} duty ${b.duty[0]}-${b.duty[1]} ratio ${b.ratio[0]}-${b.ratio[1]}`).join('; ')}`,
     );
