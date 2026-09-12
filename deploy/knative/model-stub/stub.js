@@ -7,7 +7,8 @@
 // The tool-call rate is NOT optional. A stub that streams only text means no session ever
 // reaches the sandbox, and E8's density number would silently exclude the entire hands tier.
 // The rate is calibrated to ONE row of spec §2.3's table (default basis E6/OCP,
-// duty 0.061-0.079) and the run record names which row — see deploy/knative/EXPERIMENTS.md.
+// duty 0.061-0.079, documented in deploy/knative/EXPERIMENTS.md) and this plan's own run
+// record — deploy/vm/EXPERIMENTS.md (Task 5) — names which row a given run used.
 const http = require('http');
 
 const num = (name, fallback, { min, max }) => {
