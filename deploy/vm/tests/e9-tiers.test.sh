@@ -10,17 +10,36 @@ ko() {
   FAIL=1
 }
 
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
 # --- 1. Inert without the gate. ------------------------------------------------------------
-OUT="$(V_LIVE=0 ./e9-tiers.sh 2>&1)"
+SKIP_RESULTS="$TMP/should-not-exist-EXPERIMENTS.md"
+OUT="$(V_LIVE=0 V_RESULTS="$SKIP_RESULTS" ./e9-tiers.sh 2>&1)"
 RC=$?
 [ "$RC" = 0 ] && printf '%s' "$OUT" | grep -q 'SKIP' && ok "skips without V_LIVE=1" ||
   ko "should SKIP and exit 0 without V_LIVE=1 (rc=$RC)"
+
+# A skip must not have created or touched the results file, same property e8-density.test.sh
+# asserts: silence on stdout is not proof nothing was written.
+[ -e "$SKIP_RESULTS" ] && ko "a SKIP wrote a run record ($SKIP_RESULTS exists)" ||
+  ok "SKIP writes no record"
 
 GATE_LINE="$(grep -n 'V_LIVE' e9-tiers.sh | head -1 | cut -d: -f1)"
 TRAP_LINE="$(grep -n '^trap ' e9-tiers.sh | head -1 | cut -d: -f1)"
 [ -z "$TRAP_LINE" ] || [ "$GATE_LINE" -lt "$TRAP_LINE" ] &&
   ok "live gate precedes the EXIT trap" ||
   ko "trap before gate: a SKIP would restore ksvc env on a cluster it never touched"
+
+# The KSVC_URL/V_STUB_URL required-variable checks must ALSO precede the trap: a missing
+# variable exits via `:?`, and if the trap were already installed that exit would run
+# restore_ksvc_env's real kubectl patch calls against a cluster this invocation never
+# configured. Same hazard as the live gate above, same fix.
+REQVAR_LINE="$(grep -n ':?' e9-tiers.sh | head -1 | cut -d: -f1)"
+[ -n "$REQVAR_LINE" ] || ko "no required-variable (:?) check found for KSVC_URL/V_STUB_URL"
+[ -z "$TRAP_LINE" ] || [ -z "$REQVAR_LINE" ] || [ "$REQVAR_LINE" -lt "$TRAP_LINE" ] &&
+  ok "KSVC_URL/V_STUB_URL required-var checks precede the EXIT trap" ||
+  ko "trap before required-var check: a missing var would restore ksvc env on an unconfigured cluster"
 
 # --- 2. PIN ONE: both arms drive the same stub. --------------------------------------------
 grep -q 'ANTHROPIC_BASE_URL' e9-tiers.sh && ok "points an arm at the stub via ANTHROPIC_BASE_URL" ||

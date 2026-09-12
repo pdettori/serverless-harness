@@ -43,14 +43,36 @@ RESULTS="${V_RESULTS:-./EXPERIMENTS.md}"
 # V_LIVE=0 run SKIPs and exits 0 without ever testing for the tsx binary.
 require_tsx
 
-# shellcheck source=../knative/lib.sh
-source ../knative/lib.sh
-trap 'restore_ksvc_env' EXIT
-
 VM_BASE="${V_BASE:-http://127.0.0.1:8080}"
 METRICS_BASE="${V_METRICS_BASE:-http://127.0.0.1:8081}"
+# Required-variable checks BEFORE the trap below, same property as the live gate above it: a
+# missing variable must exit WITHOUT running restore_ksvc_env's real `kubectl patch` calls
+# against a cluster this invocation never configured (its failures are swallowed by `|| true`,
+# so a bogus patch here would fail silently and mutate state on the way out).
 KSVC_URL="${KSVC_URL:?KSVC_URL must point at the Knative arm}"
 STUB_URL="${V_STUB_URL:?V_STUB_URL must be the stub URL the CLUSTER can reach (not 127.0.0.1)}"
+
+# shellcheck source=../knative/lib.sh
+source ../knative/lib.sh
+
+# restore_ksvc_env() (deploy/knative/lib.sh) resets KAGENTI_SANDBOX_POD/EXEC_TIMING/CAP, the
+# pool selector, autoscaling annotations, and the request timeout — it does NOT touch
+# ANTHROPIC_BASE_URL, SH_REMOTE_SANDBOX, SH_SANDBOX_DISCOVERY, or SH_RELAY_ADDR (confirmed by
+# reading it: none of the four appear in its patch calls). Widening that shared helper is out of
+# scope here — many other drivers depend on it — but a note in a report is not a note the
+# operator running this LIVE sees. KSVC_MUTATED is only set to 1 once set_ksvc_env below has
+# actually run, so a run that fails before ever touching the cluster does not falsely warn.
+KSVC_MUTATED=0
+warn_ksvc_left_mutated() {
+  [ "$KSVC_MUTATED" = 1 ] || return 0
+  echo "" >&2
+  echo "NOTE: ksvc $KSVC (namespace $NS) is left pointed at ANTHROPIC_BASE_URL=$STUB_URL," >&2
+  echo "      SH_REMOTE_SANDBOX=1, SH_SANDBOX_DISCOVERY=records, SH_RELAY_ADDR=$RELAY_ADDR." >&2
+  echo "      restore_ksvc_env() does not reset these four. Reset them by hand (or re-apply" >&2
+  echo "      service.yaml) before anyone else uses this cluster." >&2
+}
+trap 'restore_ksvc_env; warn_ksvc_left_mutated' EXIT
+
 # In-cluster relay Service DNS (packages/sandbox-relay), matching relay-leaf-smoke.sh's own
 # convention. defaultExecClient (harness/src/select-sandbox.ts) falls back to
 # sandbox-relay.default.svc.cluster.local:8443 if this is never set, which only happens to be
@@ -83,12 +105,26 @@ echo "== E9 tier comparison: ladder='$LADDER' basis=$BASIS conns_per_session=$CO
 set_ksvc_env "ANTHROPIC_BASE_URL=$STUB_URL" "SH_REMOTE_SANDBOX=1" \
   "SH_SANDBOX_DISCOVERY=records" "SH_RELAY_ADDR=$RELAY_ADDR"
 wait_ksvc_ready
+KSVC_MUTATED=1
 
 # The VM arm's supervisor must already be running with the same two pins; assert rather than
-# assume, because a mismatched arm produces a plausible-looking number that means nothing.
+# assume, because a mismatched arm produces a plausible-looking number that means nothing. Both
+# SH_REMOTE_SANDBOX and SH_SANDBOX_DISCOVERY are in /metrics' env allowlist alongside
+# ANTHROPIC_BASE_URL (packages/supervisor/src/admin.ts's ENV_ALLOWLIST), so they are checkable
+# exactly the same way the stub URL is. This is a hard failure, not a WARN: an unpinned VM arm
+# is not a degraded tier comparison, it is not a tier comparison at all, and letting the run
+# continue would still write a labelled "floor" into EXPERIMENTS.md that means nothing.
 VM_ENV="$(curl -sf --max-time 5 "$METRICS_BASE/metrics" | jq -r '.env // {} | @json')"
 printf '%s' "$VM_ENV" | grep -q "$STUB_URL" ||
-  echo "WARN could not confirm the VM arm points at $STUB_URL — verify /etc/serverless-harness/supervisor.env"
+  ko "VM arm's /metrics does not show ANTHROPIC_BASE_URL=$STUB_URL — verify /etc/serverless-harness/supervisor.env"
+printf '%s' "$VM_ENV" | grep -q '"SH_REMOTE_SANDBOX":"1"' ||
+  ko "VM arm's /metrics does not show SH_REMOTE_SANDBOX=1 — pin 2 (tool tier) is not satisfied"
+printf '%s' "$VM_ENV" | grep -q '"SH_SANDBOX_DISCOVERY":"records"' ||
+  ko "VM arm's /metrics does not show SH_SANDBOX_DISCOVERY=records — pin 2 (tool tier) is not satisfied"
+[ "$FAIL" = 0 ] || {
+  echo "refusing to run: the VM arm is not pinned the same way as the Knative arm (§5.3)" >&2
+  exit 1
+}
 
 BODY="${V_BODY:-{\"prompt\":\"summarise the diff\"}}"
 
@@ -109,9 +145,31 @@ run_arm() {
       ) >>"$work/raw.$C" &
     done
     wait
-    local wall n p95 tput
+    local wall n non200 p95 tput
     wall="$(($(now_ms) - t0))"
     n="$(cut -f2 "$work/raw.$C" | grep -c '^200$' || true)"
+    non200="$(cut -f2 "$work/raw.$C" | grep -vc '^200$' || true)"
+
+    # Hard-fail HERE, before any further rung runs: an arm that answered nothing at its own
+    # c=1 baseline cannot produce a meaningful ladder, and the failure mode is dangerous rather
+    # than merely absent. detectKnee (experiments/src/sharing.ts) seeds `best` from the c=1
+    # throughput; if that throughput is 0, `cur.throughput >= best` is `0 >= 0`, trivially true
+    # forever, so a dead arm reports the ladder's TOP rung as a clean "floor" instead of erroring.
+    # This must fire regardless of *why* c=1 saw no 200s — wrong URL, expired cert, firewall,
+    # crashed revision — because none of those reasons make the resulting number less fabricated.
+    if [ "$C" -eq 1 ] && [ "$n" -eq 0 ]; then
+      rm -rf "$work"
+      ko "$label arm: ZERO 200 responses at c=1 ($base) — refusing to run the ladder against an arm that never answered"
+      exit 1
+    fi
+
+    # A partially-failing arm must be visible, not merely diluted into a lower throughput number
+    # (same signal as e8-density.sh's SPURIOUS_429 WARN, generalised to any non-200 — the Knative
+    # arm can fail closed in more ways than a 429).
+    if [ "$non200" -gt 0 ]; then
+      echo "WARN $label rung c=$C saw $non200/$((C * TURNS_PER_RUNG)) non-200 responses — a knee here is suspect"
+    fi
+
     p95="$(cut -f1 "$work/raw.$C" | percentile 95)"
     tput="$(awk -v n="$n" -v ms="$wall" 'BEGIN {printf "%.3f", ms>0 ? n*1000/ms : 0}')"
     echo "-- $label c=$C p95=${p95}ms tput=$tput" >&2
