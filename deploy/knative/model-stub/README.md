@@ -42,10 +42,14 @@ podman run --rm -d --name p6-stub -p 18081:8080 \
   -e SH_STUB_OUTPUT_TOKENS=64 -e SH_STUB_TOOL_CALL_RATE=0.07 \
   dev.local/model-stub:p6
 export ANTHROPIC_BASE_URL=http://127.0.0.1:18081
+export ANTHROPIC_API_KEY=unused  # notsecret
 ```
 
 The VM arm's supervisor picks up `ANTHROPIC_BASE_URL` the same way it would for a real gateway
-(see `harness/src/run-turn.ts`); no other wiring is needed.
+(see `harness/src/run-turn.ts`); no other wiring is needed. A non-empty `ANTHROPIC_API_KEY` (or
+`ANTHROPIC_AUTH_TOKEN`) must still be exported even against this stub — pi-fork's client
+construction throws "No API key for provider" on an empty one — even though the stub itself never
+checks auth at all; any placeholder value works.
 
 **On a cluster (Knative arm):** build and load/push the same image, then point a Knative
 Service or a plain Deployment+Service at it and set `ANTHROPIC_BASE_URL` (or
