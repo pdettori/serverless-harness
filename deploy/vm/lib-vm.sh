@@ -8,7 +8,17 @@ ko() {
   FAIL=1
 }
 
-now_ms() { python3 -c 'import time; print(int(time.time()*1000))'; }
+# Milliseconds since epoch, integer. Bash's own EPOCHREALTIME (seconds.microseconds, always
+# 6 fractional digits, e.g. "1757622155.123456") rather than a python3 subprocess. vm_turn below
+# no longer calls this at all -- it reads curl's own -w timing instead -- but the per-rung
+# wall-clock timers in e8-density.sh and e9-tiers.sh still do, and a subprocess per call there is
+# exactly the cost this part's B1 item exists to remove (see vm_turn's comment for the fuller
+# story). If EPOCHREALTIME is ever unset (POSIX mode, an ancient bash), this prints garbage
+# rather than failing loudly -- not a concern on the bash 5.x this repo already requires elsewhere.
+now_ms() {
+  local t="${EPOCHREALTIME/./}"
+  printf '%s\n' "${t:0:-3}"
+}
 
 # p50/p95 from newline-separated integers on stdin. Nearest-rank, no interpolation — the same
 # convention lib.sh's median uses, so E6 and E8 percentiles are comparable.
@@ -34,14 +44,36 @@ percentile() {
 # existence test (lib.sh's own array guard) keep this safe under `set -u` either way. Against
 # E8's plain http://127.0.0.1 target, CURL_OPTS is empty and CURL_HDR unset, so -k is simply
 # absent and E8's request is byte-for-byte what it was before.
+#
+# B1 (final review fix, part 3): this used to call now_ms twice around the curl call -- three
+# subprocesses per turn (python3, curl, python3), and at c=32 that is 32 concurrent chains of
+# three spawns competing with the supervisor and its own workers for the same CPU the experiment
+# is trying to measure. curl already times its own request, so one -w format now carries both the
+# duration and the status code, and now_ms is gone from this function entirely.
+#
+# This is a measurement-boundary change, not just a speedup: curl's own %{time_total} excludes
+# curl's own process startup (fork/exec, dynamic linking, TLS library init), where the old
+# wall-clock measurement -- now_ms before spawning curl to now_ms after it exited -- included it.
+# That is an improvement (the driver's own overhead should not be inside the number a rung
+# reports), but it IS a change in what is measured, and whoever reads a knee number produced by
+# this file deserves to know the two are not directly comparable to a pre-B1 run's numbers.
 vm_turn() {
-  local base="$1" sid="$2" body="$3" t0 code
-  t0="$(now_ms)"
+  local base="$1" sid="$2" body="$3" out ms code
   # shellcheck disable=SC2086  # CURL_OPTS is intentionally word-split
-  code="$(curl -s ${CURL_OPTS:-} -o /dev/null -w '%{http_code}' -XPOST "$base/turn" \
+  out="$(curl -s ${CURL_OPTS:-} -o /dev/null -w '%{time_total}\t%{http_code}' -XPOST "$base/turn" \
     ${CURL_HDR[@]+"${CURL_HDR[@]}"} \
-    -H 'content-type: application/json' -H "X-SH-Session-Id: $sid" -d "$body" || echo 000)"
-  printf '%s\t%s\n' "$(($(now_ms) - t0))" "$code"
+    -H 'content-type: application/json' -H "X-SH-Session-Id: $sid" -d "$body" || true)"
+  # Verified empirically (connection-refused, DNS failure, --max-time timeout): curl still emits
+  # its -w output on all three, with %{http_code}=000 and a real %{time_total} up to the failure,
+  # so the `|| true` above exists only to stop `set -e` aborting the whole rung on one bad turn --
+  # not, as the old `|| echo 000` was, to synthesize a fallback because curl printed nothing. The
+  # empty-string defaults below are a second-order guard for a case not observed in that testing
+  # (e.g. the curl binary itself missing), so a truly empty $out still yields a well-formed line.
+  ms="${out%%$'\t'*}"
+  code="${out#*$'\t'}"
+  [ -n "$ms" ] || ms=0
+  [ -n "$code" ] || code=000
+  printf '%s\t%s\n' "$(awk -v s="$ms" 'BEGIN {printf "%.0f", (s + 0) * 1000}')" "$code"
 }
 
 # Event-loop lag p99 and RSS per worker, from the supervisor's loopback ADMIN listener (plan 1
