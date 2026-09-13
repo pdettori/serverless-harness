@@ -9,6 +9,19 @@ export interface LadderPoint {
  * baseline AND throughput at/above the running max. Tolerates transient dips — breaks only after
  * `patience` consecutive unhealthy rungs (per-leaf latency variance makes a single rung dip). The
  * knee that c is the recommended KAGENTI_SANDBOX_CAP (a floor when no break occurs).
+ *
+ * Load-bearing coupling, written down rather than fixed (round 2, "one thing to write down"):
+ * `cur.p95Ms <= bound` below can receive JSON `null` for `p95Ms` on a rung whose latency file was
+ * empty (deploy/vm/lib-vm.sh's `percentile` returns "NaN" over no input; deploy/vm/e8-density.sh
+ * passes that to jq via --argjson, which serializes an accepted-but-unrepresentable NaN back out
+ * as `null`). In JS, `null <= bound` coerces `null` to `0`, so this comparison evaluates true —
+ * an all-failed rung's latency half reads as PERFECT, not missing. The only thing stopping that
+ * from making the rung "healthy" outright is the OTHER half of the `&&` below: `cur.throughput`
+ * is genuinely 0 for an all-failed rung, which fails `>= best` as long as `best` is positive —
+ * and the only thing guaranteeing `best` starts positive (from `baseline.throughput`) is
+ * lib-vm.sh's `require_live_arm`, which hard-fails before any rung runs if c=1 saw zero 200s.
+ * Three mechanisms in three different places, none aware of the others, currently balance to a
+ * safe result. See `percentile`'s own comment (lib-vm.sh) for the other half of this.
  */
 export function detectKnee(points: LadderPoint[], degradeX: number, patience = 2): number {
   const baseline = points.find((p) => p.c === 1);

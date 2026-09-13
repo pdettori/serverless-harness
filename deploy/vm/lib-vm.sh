@@ -22,6 +22,26 @@ now_ms() {
 
 # p50/p95 from newline-separated integers on stdin. Nearest-rank, no interpolation — the same
 # convention lib.sh's median uses, so E6 and E8 percentiles are comparable.
+#
+# Load-bearing coupling, written down rather than fixed (round 2, "one thing to write down"):
+# on an all-failed rung this returns the literal string "NaN" (see the NR==0 branch below), which
+# e8-density.sh passes to jq via --argjson; jq accepts NaN as a parser extension but serializes it
+# back out as JSON null (confirmed: `jq -n --argjson p50 NaN '{p50:$p50}'` -> {"p50": null}), so
+# a rung's p95Ms lands in POINTS (e8-density.sh) as JSON null. experiments/src/sharing.ts's
+# detectKnee then evaluates `cur.p95Ms <= bound`, and in JS `null <= bound` coerces null to 0, so
+# an all-failed rung's latency check passes as if it measured a PERFECT rung, not a missing one.
+# The only thing stopping that from making an all-failed rung look healthy outright is
+# detectKnee's OTHER half, the throughput check (an all-failed rung's throughput is 0, which
+# fails `>= best` for any rung past c=1) — and the only thing keeping `bound` itself from being 0,
+# which would make EVERY rung's latency check pass this way, is require_live_arm (this file)
+# guaranteeing a non-empty c=1 sample. Three mechanisms in three different places, none aware of
+# the others, currently balance to a safe result: today an all-failed rung's throughput (0) can
+# never meet or beat a positive `best` (guaranteed positive by require_live_arm's c=1 floor), so
+# the latency half's false "healthy" verdict is masked by the throughput half every time. See
+# detectKnee's own comment (sharing.ts) for the other half of this — a future change to either
+# file that stops guaranteeing one of those two things (e.g. a knee algorithm that no longer
+# requires BOTH checks to pass, or a c=1 floor that no longer forbids ok_n=0) would surface this
+# silently, not loudly.
 percentile() {
   local p="$1"
   sort -n | awk -v p="$p" '{a[NR]=$1} END {

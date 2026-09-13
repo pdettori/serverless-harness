@@ -103,6 +103,29 @@ both — this file does not claim the gap is permanent architecture, only that i
 but until one does, `lease_saturation` and `file_op_ms` are not measurements this driver declined
 to make; they are measurements this codebase cannot yet make.
 
+**A different case — an all-failed rung at `c>1` (`ok_n=0`, not a c=1 dead arm, which
+`require_live_arm` already hard-fails on) — renders its unmeasurable fields as two different
+JSON types, and both are intentional, not a bug to unify (round 2 minor item).** `p50Ms`/`p95Ms`
+come from `percentile`, which returns the bash string `"NaN"` over an empty latency file;
+`e8-density.sh` passes that string to jq via `--argjson`, which accepts `NaN` as a parser
+extension but has no JSON literal to serialize it back out as, so **the record's `p50Ms`/`p95Ms`
+come out as JSON `null`**, not the string `"NaN"` — confirmed directly: `jq -n --argjson p50 NaN
+'{p50: $p50}'` prints `{"p50": null}`. `lease_saturation`, `file_op_ms`, `over_admission`,
+`spurious_refusals`, and `contention_load1`, by contrast, are passed via `--arg`, which always
+produces a JSON string — so on the same all-failed rung they come out as the literal three-byte
+JSON string `"NaN"`, exactly as the permanently-`NaN` columns above always do. The difference is
+not an inconsistency to fix; it tracks each field's own normal type. `p50Ms`/`p95Ms` are genuine
+JSON numbers on every healthy rung (so a downstream consumer summing or sorting them does not
+have to string-parse first), and `null` is the correct JSON way to say "no number here" for a
+field of that type. The `--arg` fields are JSON strings on every rung, healthy or not — quoting
+`"NaN"` is consistent with their own type, not a departure from it. Reading a record's raw JSON
+for an all-failed rung: expect `null` on `p50Ms`/`p95Ms` and the string `"NaN"` on the rest; a
+tool that treats `null` and `"NaN"` as the same "unmeasured" sentinel across all of these fields
+will read this record correctly regardless of which one it hits. (`POINTS`' own `p95Ms` — the
+array `detectKnee` consumes, distinct from the run-record `RECORDS` documented here — depends on
+this exact `null` behaviour for a different reason entirely; see `percentile`'s and
+`detectKnee`'s own comments for that load-bearing coupling, which this section does not restate.)
+
 **Read every E8 bound sentence in this file accordingly.** When an E8 run record says "the bound
 observed at: worker CPU / memory / admission-control / unattributed", that verdict is reached by
 checking only the six real columns — it is never checked against `lease_saturation` or

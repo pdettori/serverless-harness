@@ -13,6 +13,11 @@ cd "$(dirname "$0")"
 
 : "${SH_WORKERS:?SH_WORKERS must match the running supervisor}"
 : "${SH_TURNS_PER_WORKER:?SH_TURNS_PER_WORKER must match the running supervisor (no default: Sec 3.8)}"
+# Round 2 minor item: e8-density.sh has required V_STUB_URL (C4 Path A fix, item 2 above) since
+# before this script's own preflight block existed, but this block never grew a check for it --
+# so the failure used to arrive only after ./e8-density.sh below had already started and printed
+# its banner lines, rather than up front beside its siblings.
+: "${V_STUB_URL:?V_STUB_URL must be the model stub URL this supervisor\'s ANTHROPIC_BASE_URL points at (see e8-density.sh)}"
 
 export V_LADDER="${V_LADDER:-1 2 4 8 16 32}"
 export V_DEGRADE_X="${V_DEGRADE_X:-2}"

@@ -27,7 +27,15 @@ RC=$?
 
 GATE_LINE="$(grep -n 'V_LIVE' e9-tiers.sh | head -1 | cut -d: -f1)"
 TRAP_LINE="$(grep -n '^trap ' e9-tiers.sh | head -1 | cut -d: -f1)"
-[ -z "$TRAP_LINE" ] || [ "$GATE_LINE" -lt "$TRAP_LINE" ] &&
+# Round 2 minor item: the three ordering assertions below used to lead with `[ -z "$TRAP_LINE" ]
+# ||`, which takes the `ok` branch whenever $TRAP_LINE is EMPTY too -- `A || B && ok || ko`
+# parses as `((A || B) && ok) || ko`, and an empty $TRAP_LINE makes the leading `-z` disjunct
+# true on its own, short-circuiting straight to `ok` without ever comparing line numbers. So if
+# the `grep -n '^trap '` above ever stopped matching (e.g. the trap line's syntax changed), this
+# assertion would report a vacuous pass instead of catching a broken grep. Requiring `-n` (and
+# `&&`, not `||`) on the line-number variables before comparing them closes that hole: an
+# unmatched grep now fails the assertion instead of skipping past it.
+[ -n "$TRAP_LINE" ] && [ "$GATE_LINE" -lt "$TRAP_LINE" ] &&
   ok "live gate precedes the EXIT trap" ||
   ko "trap before gate: a SKIP would restore ksvc env on a cluster it never touched"
 
@@ -37,7 +45,7 @@ TRAP_LINE="$(grep -n '^trap ' e9-tiers.sh | head -1 | cut -d: -f1)"
 # configured. Same hazard as the live gate above, same fix.
 REQVAR_LINE="$(grep -n ':?' e9-tiers.sh | head -1 | cut -d: -f1)"
 [ -n "$REQVAR_LINE" ] || ko "no required-variable (:?) check found for KSVC_URL/V_STUB_URL"
-[ -z "$TRAP_LINE" ] || [ -z "$REQVAR_LINE" ] || [ "$REQVAR_LINE" -lt "$TRAP_LINE" ] &&
+[ -n "$TRAP_LINE" ] && [ -n "$REQVAR_LINE" ] && [ "$REQVAR_LINE" -lt "$TRAP_LINE" ] &&
   ok "KSVC_URL/V_STUB_URL required-var checks precede the EXIT trap" ||
   ko "trap before required-var check: a missing var would restore ksvc env on an unconfigured cluster"
 
@@ -47,7 +55,7 @@ REQVAR_LINE="$(grep -n ':?' e9-tiers.sh | head -1 | cut -d: -f1)"
 # configured. Same hazard as the live gate and the required-var checks above, same fix.
 LADDER_GATE_LINE="$(grep -n 'no c=1' e9-tiers.sh | head -1 | cut -d: -f1)"
 [ -n "$LADDER_GATE_LINE" ] || ko "no ladder c=1 gate found (grep for 'no c=1 baseline rung')"
-[ -z "$TRAP_LINE" ] || [ -z "$LADDER_GATE_LINE" ] || [ "$LADDER_GATE_LINE" -lt "$TRAP_LINE" ] &&
+[ -n "$TRAP_LINE" ] && [ -n "$LADDER_GATE_LINE" ] && [ "$LADDER_GATE_LINE" -lt "$TRAP_LINE" ] &&
   ok "ladder c=1 gate precedes the EXIT trap" ||
   ko "trap before ladder gate: a typo'd V_LADDER would restore ksvc env on a cluster it never configured"
 

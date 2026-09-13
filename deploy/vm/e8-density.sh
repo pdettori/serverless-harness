@@ -156,8 +156,13 @@ RECORDS='[]'
 
 for C in $LADDER; do
   echo "-- rung c=$C"
-  : >"$WORK/lat.$C"
-  : >"$WORK/code.$C"
+  # Truncate raw.$C, not lat.$C/code.$C: raw.$C is the file the loop below APPENDS to
+  # (>>), so a repeated rung value in $LADDER (e.g. "1 2 2 4") would otherwise accumulate
+  # both c=2 runs' output into one file. lat.$C and code.$C are each fully OVERWRITTEN
+  # further down (the awk and cut lines both redirect with a plain >), so truncating them
+  # here was dead code — round 2 minor item: removed the two dead truncations, added the
+  # one that was missing.
+  : >"$WORK/raw.$C"
 
   CPU0="$(sandbox_cpu_seconds)"
   T0="$(now_ms)"

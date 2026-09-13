@@ -355,9 +355,17 @@ echo "E9_RESULT vm_knee_floor=$VM_KNEE knative_knee_floor=$KN_KNEE degrade_x=$DE
     echo "Both are **floors**: each ladder topped out at $TOP_RUNG, so neither number is a"
     echo "machine ceiling. Extend \`V_LADDER\` to find either machine's real limit."
   elif [ "$VM_SATURATED" = yes ] && [ "$KN_SATURATED" = yes ]; then
-    echo "Neither is ladder-limited: both arms found a genuine knee below the top rung"
-    echo "($TOP_RUNG), so both $VM_KNEE and $KN_KNEE are machine bounds, not artefacts of how"
-    echo "tall this ladder was."
+    # Round 2 minor item (GC8 wording drift): this used to claim both numbers are machine
+    # bounds outright, with no floor qualifier -- the only one of these four branches missing
+    # one. Not ladder-limited is real (neither arm ran out of rungs), but detectKnee's own
+    # patience of 2 (see knee_of above) breaks on two CONSECUTIVE unhealthy rungs, which can be
+    # transient noise rather than a true capacity failure -- so even a "genuine" knee below the
+    # top rung is still a floor on the machine's real limit, just a tighter one than "ladder
+    # topped out" gives, not a proven ceiling.
+    echo "Neither is ladder-limited: both arms found a knee below the top rung ($TOP_RUNG), so"
+    echo "neither $VM_KNEE nor $KN_KNEE is an artefact of how tall this ladder was. Both are"
+    echo "still **floors**, not proven ceilings: \`detectKnee\`'s patience of 2 stops at two"
+    echo "consecutive unhealthy rungs, which can be noise rather than a true capacity failure."
   elif [ "$VM_SATURATED" = no ]; then
     echo "The VM arm's floor ($VM_KNEE) is the ladder's limit, **not the machine's**: top rung"
     echo "($TOP_RUNG) was still healthy. Extend \`V_LADDER\` to find the VM's real limit. The"
