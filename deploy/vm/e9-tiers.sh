@@ -276,7 +276,9 @@ run_arm() {
     # full quantile-shift rationale (a mixed-status sample's naive p95 is really the successes'
     # own (0.95-f)/(1-f) quantile, where f is the failure fraction).
     p95="$(awk -F'\t' '$2==200{print $1}' "$work/raw.$C" | percentile 95)"
-    tput="$(awk -v n="$n" -v ms="$wall" 'BEGIN {printf "%.3f", ms>0 ? n*1000/ms : 0}')"
+    # Parentheses are load-bearing -- gawk rejects an unparenthesised ternary in printf's argument
+    # list and aborts the rung under `set -e`. See e8-density.sh's fuller note at its identical site.
+    tput="$(awk -v n="$n" -v ms="$wall" 'BEGIN {printf "%.3f", (ms>0 ? n*1000/ms : 0)}')"
     # Final review fix, part 3, item B3 (claim corrected by round 2, item 4c): contention proxy,
     # read fresh at the end of THIS rung — see load1's comment in lib-vm.sh. load1 takes no target:
     # it always reads the 1-minute load average of the box THIS DRIVER PROCESS ITSELF runs on, not

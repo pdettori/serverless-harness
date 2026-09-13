@@ -206,7 +206,14 @@ for C in $LADDER; do
   SPURIOUS_429="$(grep -c '^429$' "$WORK/code.$C" || true)"
   P50="$(percentile 50 <"$WORK/lat.$C")"
   P95="$(percentile 95 <"$WORK/lat.$C")"
-  THROUGHPUT="$(awk -v n="$OK_N" -v ms="$WALL_MS" 'BEGIN {printf "%.3f", ms>0 ? n*1000/ms : 0}')"
+  # The ternary MUST stay parenthesised: gawk (the system awk on Ubuntu/Amazon Linux, i.e. every
+  # VM this driver is meant to run on) rejects `printf "fmt", cond ? a : b` outright --
+  #   awk: cmd. line:1: BEGIN {printf "%.3f", ms>0 ? n*1000/ms : 0}
+  #   awk: cmd. line:1:                            ^ syntax error
+  # -- because the `?` is ambiguous inside printf's argument list, while macOS's BWK awk accepts
+  # it. Unparenthesised, this aborted the run at the FIRST rung under `set -e` on real hardware
+  # and was invisible to every test on a Mac. Same fix applies at e9-tiers.sh's identical site.
+  THROUGHPUT="$(awk -v n="$OK_N" -v ms="$WALL_MS" 'BEGIN {printf "%.3f", (ms>0 ? n*1000/ms : 0)}')"
 
   # General success-rate floor (deploy/vm/EXPERIMENTS.md): unlike the SPURIOUS_429-only WARN
   # below, this fires on ANY failure mode — a 500/503/000 storm produces no field and no
