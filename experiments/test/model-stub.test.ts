@@ -162,3 +162,40 @@ describe('model stub — timing profile', () => {
     expect(Date.now() - t0).toBeGreaterThanOrEqual(200);
   });
 });
+
+describe('model stub — /profile (§5.7, final review fix part 3)', () => {
+  // Every value here is deliberately non-default (see stub.js: TTFT_MS defaults to 300,
+  // TOKEN_DELAY_MS to 12, OUTPUT_TOKENS to 64, TOOL_CALL_RATE to 0.07). A bug that returns the
+  // defaults regardless of env — the exact bug this route exists to make impossible to ship
+  // undetected — would pass a test that booted with default-shaped values; it cannot pass this.
+  const NON_DEFAULT = {
+    SH_STUB_TTFT_MS: '111',
+    SH_STUB_TOKEN_DELAY_MS: '22',
+    SH_STUB_OUTPUT_TOKENS: '33',
+    SH_STUB_TOOL_CALL_RATE: '0.44',
+  };
+
+  beforeAll(async () => {
+    child?.kill('SIGTERM');
+    await boot(NON_DEFAULT);
+  });
+
+  it('reports the four resolved values the process was actually started with, as JSON, on a route separate from /health', async () => {
+    const res = await fetch(`${base}/profile`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    const body = await res.json();
+    expect(body).toEqual({
+      ttftMs: 111,
+      tokenDelayMs: 22,
+      outputTokens: 33,
+      toolCallRate: 0.44,
+    });
+  });
+
+  it('/health still answers, unchanged, alongside /profile', async () => {
+    const res = await fetch(`${base}/health`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('ok\n');
+  });
+});

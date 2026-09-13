@@ -113,6 +113,25 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/plain' }).end('ok\n');
     return;
   }
+  // Final review fix, part 3, item A: a separate route from /health, deliberately. /health is a
+  // liveness probe an orchestrator polls and stays trivial and cheap; /profile is a diagnostic a
+  // driver reads ONCE per run so its §5.7 claim sentence can quote what this process was actually
+  // launched with, not what the driver's own environment said (those two can differ: this process
+  // may have booted minutes or hosts away from whichever shell exported SH_STUB_*). Values here
+  // are RESOLVED -- post-defaulting, via the same `num()` helper used to build the consts above --
+  // not raw env strings, so a reader cannot tell a set value from an unset one and does not need
+  // to.
+  if (req.url === '/profile') {
+    res.writeHead(200, { 'content-type': 'application/json' }).end(
+      JSON.stringify({
+        ttftMs: TTFT_MS,
+        tokenDelayMs: TOKEN_DELAY_MS,
+        outputTokens: OUTPUT_TOKENS,
+        toolCallRate: TOOL_CALL_RATE,
+      }),
+    );
+    return;
+  }
   if (req.method !== 'POST' || !String(req.url).endsWith('/v1/messages')) {
     res.writeHead(404, { 'content-type': 'application/json' }).end('{"error":"not found"}');
     return;
