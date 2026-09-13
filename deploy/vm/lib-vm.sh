@@ -58,7 +58,7 @@ percentile() {
 # reports), but it IS a change in what is measured, and whoever reads a knee number produced by
 # this file deserves to know the two are not directly comparable to a pre-B1 run's numbers.
 vm_turn() {
-  local base="$1" sid="$2" body="$3" out ms code
+  local base="$1" sid="$2" body="$3" out ms code us
   # shellcheck disable=SC2086  # CURL_OPTS is intentionally word-split
   out="$(curl -s ${CURL_OPTS:-} -o /dev/null -w '%{time_total}\t%{http_code}' -XPOST "$base/turn" \
     ${CURL_HDR[@]+"${CURL_HDR[@]}"} \
@@ -66,14 +66,35 @@ vm_turn() {
   # Verified empirically (connection-refused, DNS failure, --max-time timeout): curl still emits
   # its -w output on all three, with %{http_code}=000 and a real %{time_total} up to the failure,
   # so the `|| true` above exists only to stop `set -e` aborting the whole rung on one bad turn --
-  # not, as the old `|| echo 000` was, to synthesize a fallback because curl printed nothing. The
-  # empty-string defaults below are a second-order guard for a case not observed in that testing
-  # (e.g. the curl binary itself missing), so a truly empty $out still yields a well-formed line.
+  # not, as the old `|| echo 000` was, to synthesize a fallback because curl printed nothing.
   ms="${out%%$'\t'*}"
   code="${out#*$'\t'}"
+  # The empty-string defaults below guard the case where $out is truly empty (e.g. the curl
+  # binary itself missing) -- NOT a malformed, non-empty, no-tab $out. If $out ever held some
+  # non-empty string with no tab in it, both `${out%%$'\t'*}` and `${out#*$'\t'}` return $out
+  # unchanged (neither pattern matches), so `ms` and `code` would both become that same non-empty
+  # garbled string, not "" -- these defaults would not fire, and the arithmetic below would hard
+  # error on a non-numeric $ms under `set -e`, aborting the run rather than silently recording a
+  # wrong number. That is a real, undemonstrated gap (unlike the three failure modes verified
+  # above, nothing here has been shown to actually produce a non-empty no-tab curl -w output),
+  # named rather than fixed, per this file's own "fail loudly on a genuinely unmeasured case"
+  # convention elsewhere (see e.g. worker_metrics' NaN fallback below).
   [ -n "$ms" ] || ms=0
   [ -n "$code" ] || code=000
-  printf '%s\t%s\n' "$(awk -v s="$ms" 'BEGIN {printf "%.0f", (s + 0) * 1000}')" "$code"
+  # Round to the nearest whole millisecond in pure bash arithmetic -- no awk subprocess (round 2,
+  # item 6: this used to shell out to awk here, making vm_turn 2 subprocesses per turn, not the 1
+  # task-3-report.md originally and wrongly claimed; see its round 2 addendum). curl's
+  # %{time_total} is always S.FFFFFF -- exactly six fractional digits, confirmed against curl
+  # 8.7.1 -- so stripping the "." turns it directly into a microsecond count as a decimal integer
+  # (e.g. "0.001330" -> "0001330" -> 1330us = 1.330ms). `10#` forces base-10 parsing so a leading
+  # zero (present on every sub-one-second turn, i.e. nearly always) is never misread as octal.
+  # Adding 500us before the integer division rounds to the nearest ms rather than truncating --
+  # matching the awk `%.0f` rounding this replaces. (The round 2 directive's own suggested
+  # technique, `${d:0:-3}` with no rounding correction, truncates instead and would silently bias
+  # every turn's latency down by up to just under 1ms; that suggestion was not used as-is.)
+  us=$((10#${ms/./}))
+  ms=$(( (us + 500) / 1000 ))
+  printf '%s\t%s\n' "$ms" "$code"
 }
 
 # Event-loop lag p99 and RSS per worker, from the supervisor's loopback ADMIN listener (plan 1
