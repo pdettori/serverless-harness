@@ -65,16 +65,11 @@ case " $LADDER " in
 esac
 
 # Resolve the duty basis and the sandbox floor it implies — one row, taken whole (§2.3).
-BASIS_LINE="$("$TSX" -e '
-  import { resolveBasis, sandboxFloor, describeBasis, assertBasisConsistent } from "../../experiments/src/basis.ts";
-  const b = resolveBasis(process.argv[1]);
-  const [w, s] = [Number(process.argv[2]), Number(process.argv[3])];
-  // Belt and braces: if the table itself is ever mistranscribed, fail here.
-  assertBasisConsistent(b.duty[1], b.ratio[0]);
-  console.log(JSON.stringify({ describe: describeBasis(b), floor: sandboxFloor(w, s, b.duty[1]) }));
-' "$BASIS" "$WORKERS" "$TURNS_PER_WORKER")"
-DUTY_BASIS_DESC="$(printf '%s' "$BASIS_LINE" | jq -r .describe)"
-SANDBOX_FLOOR="$(printf '%s' "$BASIS_LINE" | jq -r .floor)"
+# describe_duty_basis (lib-vm.sh) is the basis-VALIDATION half, shared with e9-tiers.sh;
+# duty_basis_sandbox_floor stays here (e8-density.sh-only) — see its comment in lib-vm.sh for
+# why that half is not lifted for E9.
+DUTY_BASIS_DESC="$(describe_duty_basis "$BASIS")"
+SANDBOX_FLOOR="$(duty_basis_sandbox_floor "$BASIS" "$WORKERS" "$TURNS_PER_WORKER")"
 echo "duty_basis: $DUTY_BASIS_DESC"
 echo "sandbox floor for W=$WORKERS S=$TURNS_PER_WORKER: K >= $SANDBOX_FLOOR"
 

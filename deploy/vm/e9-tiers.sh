@@ -55,24 +55,12 @@ STUB_URL="${V_STUB_URL:?V_STUB_URL must be the stub URL the CLUSTER can reach (n
 # shellcheck source=../knative/lib.sh
 source ../knative/lib.sh
 
-# restore_ksvc_env() (deploy/knative/lib.sh) resets KAGENTI_SANDBOX_POD/EXEC_TIMING/CAP, the
-# pool selector, autoscaling annotations, and the request timeout — it does NOT touch
-# ANTHROPIC_BASE_URL, SH_REMOTE_SANDBOX, SH_SANDBOX_DISCOVERY, or SH_RELAY_ADDR (confirmed by
-# reading it: none of the four appear in its patch calls). Widening that shared helper is out of
-# scope here — many other drivers depend on it — but a note in a report is not a note the
-# operator running this LIVE sees. KSVC_MUTATED is only set to 1 once set_ksvc_env below has
-# actually run, so a run that fails before ever touching the cluster does not falsely warn.
-KSVC_MUTATED=0
-warn_ksvc_left_mutated() {
-  [ "$KSVC_MUTATED" = 1 ] || return 0
-  echo "" >&2
-  echo "NOTE: ksvc $KSVC (namespace $NS) is left pointed at ANTHROPIC_BASE_URL=$STUB_URL," >&2
-  echo "      SH_REMOTE_SANDBOX=1, SH_SANDBOX_DISCOVERY=records, SH_RELAY_ADDR=$RELAY_ADDR." >&2
-  echo "      restore_ksvc_env() does not reset these four. Reset them by hand (or re-apply" >&2
-  echo "      service.yaml) before anyone else uses this cluster." >&2
-}
-trap 'restore_ksvc_env; warn_ksvc_left_mutated' EXIT
-
+# Ladder/basis defaults, the c=1 gate, and the basis-VALIDATION lookup — ALL of this must precede
+# the trap installed below, same hazard and same fix as the live gate and the required-variable
+# checks above: a typo'd V_LADDER (no c=1 rung) or an unknown V_DUTY_BASIS must exit BEFORE
+# restore_ksvc_env's real `kubectl patch` calls are wired to run on exit, or they run against a
+# cluster this invocation never actually configured. (This block used to live after the trap.)
+#
 # In-cluster relay Service DNS (packages/sandbox-relay), matching relay-leaf-smoke.sh's own
 # convention. defaultExecClient (harness/src/select-sandbox.ts) falls back to
 # sandbox-relay.default.svc.cluster.local:8443 if this is never set, which only happens to be
@@ -91,6 +79,36 @@ case " $LADDER " in
   exit 1
   ;;
 esac
+
+# Basis-VALIDATION half, shared with e8-density.sh via lib-vm.sh's describe_duty_basis: resolves
+# and validates $BASIS against experiments/src/basis.ts's table before anything below mutates
+# the cluster. E9 has NO equivalent of E8's sandbox-pool-floor precondition
+# (duty_basis_sandbox_floor needs a worker count and a per-worker turn cap that E9's two-arm
+# ladder model has no analogue of — see that function's comment in lib-vm.sh). This is a real,
+# currently-unaddressed gap, documented rather than papered over with a substitute check under
+# the same name: an E9 rung that queues on the VM arm's own sandbox-lease pool would read
+# exactly like the VM tier saturating, and nothing here catches it. See task-3-report.md's
+# Part 2, Item 4.
+DUTY_BASIS_DESC="$(describe_duty_basis "$BASIS")"
+echo "duty_basis: $DUTY_BASIS_DESC"
+
+# restore_ksvc_env() (deploy/knative/lib.sh) resets KAGENTI_SANDBOX_POD/EXEC_TIMING/CAP, the
+# pool selector, autoscaling annotations, and the request timeout — it does NOT touch
+# ANTHROPIC_BASE_URL, SH_REMOTE_SANDBOX, SH_SANDBOX_DISCOVERY, or SH_RELAY_ADDR (confirmed by
+# reading it: none of the four appear in its patch calls). Widening that shared helper is out of
+# scope here — many other drivers depend on it — but a note in a report is not a note the
+# operator running this LIVE sees. KSVC_MUTATED is only set to 1 once set_ksvc_env below has
+# actually run, so a run that fails before ever touching the cluster does not falsely warn.
+KSVC_MUTATED=0
+warn_ksvc_left_mutated() {
+  [ "$KSVC_MUTATED" = 1 ] || return 0
+  echo "" >&2
+  echo "NOTE: ksvc $KSVC (namespace $NS) is left pointed at ANTHROPIC_BASE_URL=$STUB_URL," >&2
+  echo "      SH_REMOTE_SANDBOX=1, SH_SANDBOX_DISCOVERY=records, SH_RELAY_ADDR=$RELAY_ADDR." >&2
+  echo "      restore_ksvc_env() does not reset these four. Reset them by hand (or re-apply" >&2
+  echo "      service.yaml) before anyone else uses this cluster." >&2
+}
+trap 'restore_ksvc_env; warn_ksvc_left_mutated' EXIT
 
 echo "== E9 tier comparison: ladder='$LADDER' basis=$BASIS =="
 

@@ -41,6 +41,16 @@ REQVAR_LINE="$(grep -n ':?' e9-tiers.sh | head -1 | cut -d: -f1)"
   ok "KSVC_URL/V_STUB_URL required-var checks precede the EXIT trap" ||
   ko "trap before required-var check: a missing var would restore ksvc env on an unconfigured cluster"
 
+# The ladder c=1 gate must ALSO precede the trap: a typo'd V_LADDER (no c=1 rung) exits via
+# `exit 1` right after this check, and if the trap were already installed that exit would run
+# restore_ksvc_env's real kubectl patch calls against a cluster this invocation never
+# configured. Same hazard as the live gate and the required-var checks above, same fix.
+LADDER_GATE_LINE="$(grep -n 'no c=1' e9-tiers.sh | head -1 | cut -d: -f1)"
+[ -n "$LADDER_GATE_LINE" ] || ko "no ladder c=1 gate found (grep for 'no c=1 baseline rung')"
+[ -z "$TRAP_LINE" ] || [ -z "$LADDER_GATE_LINE" ] || [ "$LADDER_GATE_LINE" -lt "$TRAP_LINE" ] &&
+  ok "ladder c=1 gate precedes the EXIT trap" ||
+  ko "trap before ladder gate: a typo'd V_LADDER would restore ksvc env on a cluster it never configured"
+
 # --- 2. PIN ONE: both arms drive the same stub. --------------------------------------------
 grep -q 'ANTHROPIC_BASE_URL' e9-tiers.sh && ok "points an arm at the stub via ANTHROPIC_BASE_URL" ||
   ko "the Knative arm MUST be re-run against the same stub (§5.3) — no ANTHROPIC_BASE_URL"

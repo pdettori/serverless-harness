@@ -110,3 +110,45 @@ require_live_arm() {
   ko "$label arm: ZERO 200 responses at c=1 ($base) — refusing to run the ladder against an arm that never answered" >&2
   exit 1
 }
+
+# Resolves and validates a duty-basis name against experiments/src/basis.ts's §2.3 table and
+# prints its one-line human-readable description on stdout. Shared by e8-density.sh and
+# e9-tiers.sh — originally e8-density.sh-only, lifted here so a basis mistranscription (or a
+# basis name the table doesn't have) can't drift between the two drivers by omission, the same
+# reasoning as require_live_arm above.
+#
+# This is the basis-VALIDATION half only: resolveBasis (throws on an unknown name) +
+# assertBasisConsistent (throws if the table's own duty/ratio pair for that row is internally
+# inconsistent) + describeBasis (formats the result). The sandbox-pool-floor half
+# (basis.ts's sandboxFloor) is deliberately NOT folded in here — see duty_basis_sandbox_floor
+# below for why it stays e8-density.sh-only rather than being given a substitute here.
+describe_duty_basis() {
+  local basis="$1"
+  "$TSX" -e '
+    import { resolveBasis, describeBasis, assertBasisConsistent } from "../../experiments/src/basis.ts";
+    const b = resolveBasis(process.argv[1]);
+    // Belt and braces: if the table itself is ever mistranscribed, fail here.
+    assertBasisConsistent(b.duty[1], b.ratio[0]);
+    console.log(describeBasis(b));
+  ' "$basis"
+}
+
+# K >= ceil(W * S * duty), the sandbox-pool floor for a (workers, turnsPerWorker) provisioning
+# point (§2.3). e8-density.sh-ONLY, deliberately not called from e9-tiers.sh: sandboxFloor's
+# inputs are a worker count and a per-worker in-flight-turn cap, both properties of E8's single
+# supervisor, (W, S) provisioning model. E9 compares two DEPLOYMENT TIERS (a VM-supervisor arm
+# against a Knative pod-per-session arm) via a concurrency ladder run directly against each
+# arm's own base URL — it has no (W, S) point and no equivalent of either input. A per-arm
+# container/pod count is not the same quantity a sandbox-pool floor measures, so rather than
+# invent a substitute so E9 could call something under this same name, this stays asymmetric
+# and documented: E9 currently has NO sandbox-pool-floor precondition, live or otherwise, so an
+# E9 rung that queues on the VM arm's own lease pool would read exactly like the VM tier
+# saturating, and nothing in e9-tiers.sh catches it today. See task-3-report.md's Part 2, Item 4.
+duty_basis_sandbox_floor() {
+  local basis="$1" workers="$2" turns_per_worker="$3"
+  "$TSX" -e '
+    import { resolveBasis, sandboxFloor } from "../../experiments/src/basis.ts";
+    const b = resolveBasis(process.argv[1]);
+    console.log(sandboxFloor(Number(process.argv[2]), Number(process.argv[3]), b.duty[1]));
+  ' "$basis" "$workers" "$turns_per_worker"
+}
