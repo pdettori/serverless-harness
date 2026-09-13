@@ -126,6 +126,14 @@ curl -sf --max-time 5 "$BASE/health" >/dev/null || {
   exit 1
 }
 
+# Final review fix, round 2, item 2 (BLOCKING, C4 Path A): before trusting $STUB_URL's /profile
+# below, confirm THIS supervisor's own ANTHROPIC_BASE_URL actually points at it — see
+# assert_stub_pinned's comment in lib-vm.sh for the fabrication path this closes (an operator
+# pointing the supervisor at a different, unmeasured stub than the one $STUB_URL names). Placed
+# after the /health check (a dead supervisor should fail with that message, not this one) and
+# before stub_profile (no point fetching a profile this run cannot causally attribute anyway).
+assert_stub_pinned "$METRICS_BASE" "$STUB_URL" "E8 supervisor"
+
 # Final review fix, part 3, item A3: fetch the stub's OWN resolved profile rather than trust this
 # driver's environment. stub_profile (lib-vm.sh) hard-fails (exit 1) if the stub is unreachable
 # or returns something that is not valid JSON -- a run whose profile cannot be established is not

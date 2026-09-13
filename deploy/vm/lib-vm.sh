@@ -161,11 +161,74 @@ stub_profile() {
     ko "stub profile unreachable at $url/profile — refusing to publish a load claim nobody verified" >&2
     exit 1
   }
-  printf '%s' "$body" | jq -e '.' >/dev/null 2>&1 || {
-    ko "stub profile at $url/profile did not return valid JSON: $body" >&2
+  # Final review fix, round 2, item 3 (BLOCKING, C4 Path B): `jq -e '.'` only asserted the body
+  # parses as JSON — it accepts `{}`, `[]`, `null`, or `{"unrelated":"key"}` just as happily as a
+  # real profile. Consequences confirmed by the re-review: E8 would then publish
+  # `ttft=nullms tokenDelay=nullms tokens=null toolRate=null` into the §5.7 claim sentence and
+  # into EXPERIMENTS.md — a profile the stub never reported, via a path where the FETCH
+  # succeeded, so nothing upstream of this function had any reason to suspect trouble. Worse in
+  # E9: two stub endpoints that both merely answer `{}` compare byte-for-byte EQUAL as JSON text,
+  # so PIN 1's diff check (this file's caller) passes and the run record claims the two stubs are
+  # "verified to be running the identical resolved profile" when neither ever reported one.
+  #
+  # Fix: assert the four keys this profile shape requires are present AND are all numbers — not
+  # merely "the body parses", but "the body IS a profile". `has(...)` catches a missing key;
+  # `map(type=="number")|all` over the four NAMED fields (not `[.[]|numbers]|length==4` over the
+  # whole object) catches a key present with the wrong type. Named fields, deliberately, not a
+  # whole-object count: an object with all four correct fields PLUS an unrelated fifth numeric key
+  # would pass a real profile check but fail `[.[]|numbers]|length==4` (that expression counts
+  # every numeric value in the object, not just these four, so a fifth number make it 5, not 4) —
+  # a false rejection this rewrite avoids by naming exactly the fields this shape requires.
+  # Failing with the parsed body (not just "invalid") names exactly which field(s) are missing or
+  # wrong-typed, the same "name what broke" convention this file's other hard failures follow.
+  printf '%s' "$body" | jq -e \
+    'has("ttftMs") and has("tokenDelayMs") and has("outputTokens") and has("toolCallRate")
+       and ([.ttftMs, .tokenDelayMs, .outputTokens, .toolCallRate] | map(type=="number") | all)' \
+    >/dev/null 2>&1 || {
+    ko "stub profile at $url/profile is not a real profile (missing one of ttftMs/tokenDelayMs/outputTokens/toolCallRate, or one is not a number): $body" >&2
     exit 1
   }
   printf '%s\n' "$body"
+}
+
+# Final review fix, round 2, item 2 (BLOCKING, C4 Path A): ties a driver's own *_STUB_URL to
+# what the supervisor's OWN /metrics reports its ANTHROPIC_BASE_URL actually is. Without this,
+# an operator can start stub A with toolRate=0.07, point the supervisor at stub B with
+# toolRate=0, and set the driver's *_STUB_URL to A: stub_profile above fetches A's /profile
+# successfully, every gate passes, and the driver publishes A's ttft/tokenDelay/tokens/toolRate
+# into a §5.7 claim for a run where no session ever reached a sandbox. e8-density.sh's own
+# comment named this exact risk ("or, worse, quietly succeed against some OTHER stub, which is
+# precisely the fabrication path this item exists to close") without closing it — this closes it.
+#
+# Lifted from e9-tiers.sh's existing PIN 1 verification (the ANTHROPIC_BASE_URL equality check
+# only, not its SH_REMOTE_SANDBOX/SH_SANDBOX_DISCOVERY checks, which are E9's own PIN 2 tool-tier
+# concern and stay inline there) — this is the second-caller pattern again: stub_profile was
+# shared from the start, the check that makes its fetch CAUSAL rather than nominal was not.
+# e9-tiers.sh's own inline check is deliberately left as-is rather than rewired through this
+# function: it already batches three diagnostics (this one plus SH_REMOTE_SANDBOX and
+# SH_SANDBOX_DISCOVERY) and reports all three before exiting once at the end, and this function's
+# hard-exit-on-first-mismatch behaviour (matching require_live_arm/stub_profile's convention
+# above) would silently regress that batching for E9's mismatched-on-two-things case — a
+# diagnostic-completeness regression the directive that asked for this function did not ask for.
+# E8 has only this one check to make, so the simpler hard-exit shape fits it directly.
+#
+# Exact match via jq -e, not a substring grep — same reasoning as stub_profile's caller-facing
+# comments elsewhere: a substring match would also pass on a URL that merely CONTAINS stub_url
+# (a stray query string, or a decoy host sharing a suffix), weaker than the equality this
+# assertion exists to provide. Hard failure (exit 1), not a WARN: an unpinned stub is not a
+# degraded result, it is not a result at all — same principle as stub_profile and
+# require_live_arm above.
+assert_stub_pinned() {
+  local metrics_base="$1" stub_url="$2" label="${3:-supervisor}" env_json
+  env_json="$(curl -sf --max-time 5 "$metrics_base/metrics" 2>/dev/null | jq -r '.env // {} | @json' 2>/dev/null)" || env_json=""
+  if [ -z "$env_json" ] || [ "$env_json" = "{}" ]; then
+    ko "$label's /metrics at $metrics_base did not return a usable env object — cannot verify ANTHROPIC_BASE_URL is pinned to $stub_url" >&2
+    exit 1
+  fi
+  printf '%s' "$env_json" | jq -e --arg u "$stub_url" '.ANTHROPIC_BASE_URL == $u' >/dev/null 2>&1 || {
+    ko "$label's /metrics does not show ANTHROPIC_BASE_URL=$stub_url exactly — refusing to publish a load claim for a stub the supervisor is not actually pointed at" >&2
+    exit 1
+  }
 }
 
 # Final review fix, part 3, item B2: where did the generator (this script) actually run,
