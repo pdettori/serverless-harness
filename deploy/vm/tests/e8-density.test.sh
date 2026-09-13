@@ -47,7 +47,7 @@ grep -qE 'SH_TURNS_PER_WORKER:?-' e8-density.sh &&
   ok "SH_TURNS_PER_WORKER carries no default"
 
 # --- 5. Every rung records the two run-record fields §5.2 requires. -----------------------
-for field in duty_basis conns_per_session; do
+for field in duty_basis conns_per_turn; do
   grep -q "$field" e8-density.sh && ok "records $field" || ko "missing run-record field: $field"
 done
 

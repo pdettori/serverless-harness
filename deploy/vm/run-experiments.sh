@@ -17,7 +17,6 @@ cd "$(dirname "$0")"
 export V_LADDER="${V_LADDER:-1 2 4 8 16 32}"
 export V_DEGRADE_X="${V_DEGRADE_X:-2}"
 export V_MIN_C="${V_MIN_C:-4}"
-export V_CONNS_PER_SESSION="${V_CONNS_PER_SESSION:-1}"
 export V_DUTY_BASIS="${V_DUTY_BASIS:-e6-ocp}"
 # Both drivers must read telemetry from the same admin listener, or their attribution columns
 # describe two different supervisors (plan 1 Task 11).
@@ -28,7 +27,7 @@ export SH_STUB_OUTPUT_TOKENS="${SH_STUB_OUTPUT_TOKENS:-64}"
 export SH_STUB_TOOL_CALL_RATE="${SH_STUB_TOOL_CALL_RATE:-0.07}"
 
 echo "== P6 VM experiments (stub-driven) =="
-echo "ladder='$V_LADDER' basis=$V_DUTY_BASIS conns_per_session=$V_CONNS_PER_SESSION"
+echo "ladder='$V_LADDER' basis=$V_DUTY_BASIS"
 echo "stub: ttft=${SH_STUB_TTFT_MS}ms delay=${SH_STUB_TOKEN_DELAY_MS}ms tokens=$SH_STUB_OUTPUT_TOKENS toolRate=$SH_STUB_TOOL_CALL_RATE"
 echo "This is the stub-driven measurement path. It does NOT prove the VM path works against a"
 echo "real model -- run deploy/vm/v-live-gate.sh separately for that (spec Sec 5.5)."

@@ -26,7 +26,7 @@ section for what an E9 record actually contains. A missing E8 field is not a res
 | Field               | Why it is load-bearing                                                        |
 | ------------------- | ----------------------------------------------------------------------------- |
 | `duty_basis`        | One §2.3 row, taken whole. A blend implies a wrong sandbox count.             |
-| `conns_per_session` | Sticky routing decides once per connection; must match across arms.           |
+| `conns_per_turn`    | What the driver actually does (one connection per turn) — see the note below. |
 | stub profile        | Half the claim. ttft, token delay, output tokens, tool-call rate.             |
 | `loop_lag_p99`      | Attributes a knee to worker CPU / socket multiplexing.                        |
 | `rss_bytes`         | Memory per live session.                                                      |
@@ -36,6 +36,13 @@ section for what an E9 record actually contains. A missing E8 field is not a res
 | `over_admission`    | Bounds IPC staleness; self-correcting, so it is a diagnostic not a failure.   |
 | `spurious_refusals` | Refusals the next `load` convicted. Attributes a `spurious_429` to staleness. |
 | `spurious_429`      | **The dangerous one.** Refusals truncate a rung, so the knee reads early.     |
+
+`conns_per_turn` records an observation, not a knob: both drivers leave `SH_ROUTING_POLICY` at
+its `leastInFlight` default (`deploy/vm/env/supervisor.env.example:7`), under which routing
+decides per request, not per session, so there is no session affinity for a per-turn connection
+to defeat — one connection per turn is simply what `vm_turn` (`lib-vm.sh`) does. Exercising
+`stickyBySession`'s session affinity is a separate, not-yet-covered gap, not something this field
+or either driver's rung loop measures.
 
 ### Two of these columns are permanently `NaN` — this is not a missing run, it is a missing sensor
 
@@ -69,9 +76,9 @@ even as `NaN`.** `e9-tiers.sh` emits one point per rung as exactly `{c, throughp
 (`deploy/vm/e9-tiers.sh:117`) is to check the VM arm's `.env.ANTHROPIC_BASE_URL` matches the
 pinned stub, not to sample any attribution counter — so none of the six real columns,
 `lease_saturation`, or `file_op_ms` are sampled, recorded, or NaN'd out for E9; they are simply
-absent from the JSON. `conns_per_session` and
-`duty_basis` are still load-bearing for an E9 run, but they are recorded once in the surrounding
-run-record prose (§5.2's other requirement), not per-point in the JSON. Do not read an E9
+absent from the JSON. `conns_per_turn` and
+`duty_basis` are still recorded for an E9 run, once in the surrounding run-record prose (§5.2's
+other requirement), not per-point in the JSON. Do not read an E9
 record's silence on, say, `spurious_429` as "zero refusals were observed and confirmed" — E9
 never samples that column, so its absence means "not measured," not "measured and clean." Zero
 and absent are opposite claims; only E8 records can make the former.

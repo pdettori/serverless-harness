@@ -82,7 +82,6 @@ LADDER="${V_LADDER:-1 2 4 8 16}"
 DEGRADE_X="${V_DEGRADE_X:-2}"
 MIN_C="${V_MIN_C:-4}"
 TURNS_PER_RUNG="${V_TURNS_PER_RUNG:-30}"
-CONNS_PER_SESSION="${V_CONNS_PER_SESSION:-1}"
 BASIS="${V_DUTY_BASIS:-e6-ocp}"
 
 case " $LADDER " in
@@ -93,7 +92,7 @@ case " $LADDER " in
   ;;
 esac
 
-echo "== E9 tier comparison: ladder='$LADDER' basis=$BASIS conns_per_session=$CONNS_PER_SESSION =="
+echo "== E9 tier comparison: ladder='$LADDER' basis=$BASIS =="
 
 # --- PIN 1 + PIN 2 applied to the Knative arm ----------------------------------------------
 # ANTHROPIC_BASE_URL: the same stub, so the model tier is identical.
@@ -222,7 +221,11 @@ echo "E9_RESULT vm_knee_floor=$VM_KNEE knative_knee_floor=$KN_KNEE degrade_x=$DE
   echo "  \`SH_SANDBOX_DISCOVERY=records\`). Leaving \`persistentExecInPod\`'s fast channel enabled"
   echo "  on the Knative arm would penalise the VM for a tool-tier difference — gRPC has no"
   echo "  persistent fast channel (deferred, #245)."
-  echo "- conns_per_session: $CONNS_PER_SESSION on **both** arms."
+  echo "- conns_per_turn: 1 on **both** arms. Each vm_turn/curl call is its own connection;"
+  echo "  harmless here since both arms leave SH_ROUTING_POLICY at its leastInFlight default"
+  echo "  (deploy/vm/env/supervisor.env.example:7 — the Knative arm has no equivalent affinity"
+  echo "  knob either), so routing decides per request, not per session, and there is no session"
+  echo "  affinity for a per-turn connection to defeat."
   echo "- duty_basis: $BASIS (one §2.3 row, taken whole)."
   echo ""
   echo '```json'

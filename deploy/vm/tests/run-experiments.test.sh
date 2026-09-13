@@ -46,7 +46,7 @@ grep -qE 'SH_TURNS_PER_WORKER:?-[^}]' run-experiments.sh &&
 # --- 4. One shared configuration feeds BOTH drivers -- not two separately-configured calls. --
 # Every knob that must match across E8 and E9 is exported exactly once, before either driver
 # runs, so both processes inherit the identical value rather than each defaulting on its own.
-for var in V_LADDER V_DEGRADE_X V_MIN_C V_CONNS_PER_SESSION V_DUTY_BASIS V_METRICS_BASE; do
+for var in V_LADDER V_DEGRADE_X V_MIN_C V_DUTY_BASIS V_METRICS_BASE; do
   N="$(grep -c "^export $var=" run-experiments.sh || true)"
   [ "$N" = 1 ] && ok "exports $var exactly once, shared by both drivers" ||
     ko "$var must be exported exactly once so E8 and E9 cannot diverge (found $N export sites)"

@@ -38,7 +38,6 @@ LADDER="${V_LADDER:-1 2 4 8 16 32}"
 DEGRADE_X="${V_DEGRADE_X:-2}"
 MIN_C="${V_MIN_C:-4}"
 TURNS_PER_RUNG="${V_TURNS_PER_RUNG:-30}"
-CONNS_PER_SESSION="${V_CONNS_PER_SESSION:-1}"
 BASIS="${V_DUTY_BASIS:-e6-ocp}"
 # Optional. Unset means the memory bound is never attributed, rather than attributed against a
 # number nobody chose: "RSS looked high" is not a budget, and how much RSS is too much depends
@@ -105,9 +104,13 @@ for C in $LADDER; do
   CPU0="$(sandbox_cpu_seconds)"
   T0="$(now_ms)"
 
-  # C concurrent virtual sessions, TURNS_PER_RUNG turns each. One connection per session by
-  # default: sticky routing decides ONCE per connection, so connections-per-session changes what
-  # is being measured and must match across arms (§5.2) — hence it is recorded on every rung.
+  # C concurrent virtual sessions, TURNS_PER_RUNG turns each. vm_turn (lib-vm.sh) opens one
+  # curl connection per turn, not one per session. That is harmless here: both drivers leave
+  # SH_ROUTING_POLICY at its leastInFlight default (deploy/vm/env/supervisor.env.example:7),
+  # under which routing decides per REQUEST, not per session, so there is no session affinity
+  # in play for a per-turn connection to defeat. This records what the driver actually does
+  # (conns_per_turn: 1 below), not a knob — exercising stickyBySession's session affinity is a
+  # separate, not-yet-covered gap, not something this rung loop measures.
   for i in $(seq 1 "$C"); do
     (
       for _ in $(seq 1 "$TURNS_PER_RUNG"); do
@@ -154,11 +157,11 @@ for C in $LADDER; do
     --argjson lag "$LOOP_LAG_P99" --argjson rss "$RSS_BYTES" \
     --arg fop "$FILE_OP_MS" --arg scpu "$SANDBOX_CPU" --arg lease "$LEASE_SATURATION" \
     --arg over "$OVER_ADMISSION" --arg recon "$REFUSALS_CONVICTED" \
-    --argjson s429 "$SPURIOUS_429" --argjson conns "$CONNS_PER_SESSION" --arg basis "$BASIS" \
+    --argjson s429 "$SPURIOUS_429" --arg basis "$BASIS" \
     '. + [{c: $c, throughput: $t, p50Ms: $p50, p95Ms: $p95,
            loop_lag_p99: $lag, rss_bytes: $rss, file_op_ms: $fop, sandbox_cpu: $scpu,
            lease_saturation: $lease, over_admission: $over, spurious_refusals: $recon,
-           spurious_429: $s429, conns_per_session: $conns, duty_basis: $basis}]')"
+           spurious_429: $s429, conns_per_turn: 1, duty_basis: $basis}]')"
 done
 
 # --- knee ----------------------------------------------------------------------------------
@@ -228,7 +231,9 @@ echo "E8_RESULT knee_floor=$KNEE degrade_x=$DEGRADE_X min_c=$MIN_C workers=$WORK
   echo "- **This is a turn-concurrency number, not a session count.** Sessions addressable is a"
   echo "  Redis capacity statement and is not measured here (§5.1)."
   echo "- duty_basis: $DUTY_BASIS_DESC"
-  echo "- conns_per_session: $CONNS_PER_SESSION (identical across arms, or the comparison is void)"
+  echo "- conns_per_turn: 1. Each vm_turn call is its own connection; harmless under"
+  echo "  SH_ROUTING_POLICY=leastInFlight (the only policy either driver sets — routing decides"
+  echo "  per request, not per session, so there is no session affinity here to preserve)."
   echo "- Sandbox pool: $SANDBOX_COUNT containers (floor $SANDBOX_FLOOR)."
   echo "- Model stub profile: ttft=${SH_STUB_TTFT_MS:-default} tokenDelay=${SH_STUB_TOKEN_DELAY_MS:-default} tokens=${SH_STUB_OUTPUT_TOKENS:-default} toolRate=${SH_STUB_TOOL_CALL_RATE:-default}"
   echo "- Bound observed at: **$BOUND**"

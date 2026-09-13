@@ -60,9 +60,9 @@ grep -qi 'persistentExecInPod' e9-tiers.sh &&
 grep -qi '245' e9-tiers.sh && ok "cites #245 for the missing gRPC fast channel" ||
   ko "should cite #245 so the deferral is traceable"
 
-# --- 4. Both arms run the SAME ladder and the same connections-per-session. ---------------
-grep -q 'conns_per_session' e9-tiers.sh && ok "records conns_per_session" ||
-  ko "conns_per_session must be recorded (§5.2) and identical across arms"
+# --- 4. Both arms run the SAME ladder and the driver records what it actually did. --------
+grep -q 'conns_per_turn' e9-tiers.sh && ok "records conns_per_turn" ||
+  ko "conns_per_turn must be recorded (§5.2) — what the driver actually does, not a knob"
 [ "$(grep -c 'V_LADDER' e9-tiers.sh)" -ge 1 ] && ok "one ladder variable feeds both arms" ||
   ko "each arm must run the same ladder"
 
