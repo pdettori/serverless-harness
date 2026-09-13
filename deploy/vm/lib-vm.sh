@@ -51,7 +51,14 @@ vm_turn() {
 # the tier that actually saturated.
 worker_metrics() {
   local base="${1:-$METRICS_BASE}"
-  curl -s --max-time 5 "$base/metrics" 2>/dev/null || echo '{}'
+  # -f: curl itself fails (rather than returning the error body as if it were a metrics
+  # payload) on a non-2xx response. Piped through `jq -c .` to validate the body actually
+  # parses as JSON before it reaches a caller — a base pointed at the DATA port (which parses
+  # nothing per connection in leastInFlight mode, see the comment above) rather than the admin
+  # port would otherwise hand a caller plain text/HTML, which used to reach jq downstream (in
+  # the caller) and abort the whole run under `set -e`. Either failure mode falls back to '{}',
+  # matching the same "missing metric reads NaN, not 0" contract this function already documents.
+  curl -sf --max-time 5 "$base/metrics" 2>/dev/null | jq -c . 2>/dev/null || echo '{}'
 }
 
 # Sum of container CPU seconds across the sandbox pool — the `bash -c` churn term in §5.2.
