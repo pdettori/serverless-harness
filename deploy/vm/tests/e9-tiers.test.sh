@@ -69,6 +69,15 @@ grep -q 'conns_per_turn' e9-tiers.sh && ok "records conns_per_turn" ||
 # --- 5. No ceiling claims; the comparison is of floors. -----------------------------------
 grep -qi 'floor' e9-tiers.sh && ok "results labelled floors" || ko "must label results as floors"
 
+# --- 5b. Every point records attempts/non200, and percentiles are success-only. -----------
+for field in attempts non200; do
+  grep -q "$field" e9-tiers.sh && ok "records $field" || ko "missing point field: $field"
+done
+grep -qE "\\\$2==200" e9-tiers.sh && ok "percentile input is filtered to 200-coded rows" ||
+  ko "p95 must be computed over 200-coded rows only, not the mixed raw sample"
+grep -qi '0.95' e9-tiers.sh && ok "driver names a success-rate floor" ||
+  ko "driver must WARN below a stated success-rate floor (see EXPERIMENTS.md)"
+
 # --- 6. shellcheck. -----------------------------------------------------------------------
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -x e9-tiers.sh >/dev/null 2>&1 && ok "shellcheck clean" || ko "shellcheck found problems"

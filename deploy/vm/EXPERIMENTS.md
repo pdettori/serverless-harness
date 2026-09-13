@@ -20,22 +20,54 @@ records are in the same units.
 
 ## What every E8 run record must carry (§5.2, §5.7)
 
-This eleven-field shape describes **E8's** records only — see the note at the end of this
+This thirteen-field shape describes **E8's** records only — see the note at the end of this
 section for what an E9 record actually contains. A missing E8 field is not a result:
 
-| Field               | Why it is load-bearing                                                        |
-| ------------------- | ----------------------------------------------------------------------------- |
-| `duty_basis`        | One §2.3 row, taken whole. A blend implies a wrong sandbox count.             |
-| `conns_per_turn`    | What the driver actually does (one connection per turn) — see the note below. |
-| stub profile        | Half the claim. ttft, token delay, output tokens, tool-call rate.             |
-| `loop_lag_p99`      | Attributes a knee to worker CPU / socket multiplexing.                        |
-| `rss_bytes`         | Memory per live session.                                                      |
-| `file_op_ms`        | The relay round trip.                                                         |
-| `sandbox_cpu`       | `bash -c` churn across the pool.                                              |
-| `lease_saturation`  | An under-provisioned pool, which reads exactly like worker saturation.        |
-| `over_admission`    | Bounds IPC staleness; self-correcting, so it is a diagnostic not a failure.   |
-| `spurious_refusals` | Refusals the next `load` convicted. Attributes a `spurious_429` to staleness. |
-| `spurious_429`      | **The dangerous one.** Refusals truncate a rung, so the knee reads early.     |
+| Field               | Why it is load-bearing                                                                   |
+| ------------------- | ---------------------------------------------------------------------------------------- |
+| `duty_basis`        | One §2.3 row, taken whole. A blend implies a wrong sandbox count.                        |
+| `conns_per_turn`    | What the driver actually does (one connection per turn) — see the note below.            |
+| stub profile        | Half the claim. ttft, token delay, output tokens, tool-call rate.                        |
+| `loop_lag_p99`      | Attributes a knee to worker CPU / socket multiplexing.                                   |
+| `rss_bytes`         | Memory per live session.                                                                 |
+| `file_op_ms`        | The relay round trip.                                                                    |
+| `sandbox_cpu`       | `bash -c` churn across the pool.                                                         |
+| `lease_saturation`  | An under-provisioned pool, which reads exactly like worker saturation.                   |
+| `over_admission`    | Bounds IPC staleness; self-correcting, so it is a diagnostic not a failure.              |
+| `spurious_refusals` | Refusals the next `load` convicted. Attributes a `spurious_429` to staleness.            |
+| `spurious_429`      | **The dangerous one.** Refusals truncate a rung, so the knee reads early.                |
+| `attempts`          | Total requests issued at this rung — the denominator for the success rate.               |
+| `ok_n`              | 200-coded requests at this rung — the numerator, and what `p50`/`p95` are computed over. |
+
+### `p50`/`p95` are computed over successes only, and there is a floor below which a rung is not a result
+
+A latency sample that mixes fast failures (a refused or timed-out request returns in a fraction
+of a real response's time) with genuine responses is not a latency distribution. Sorted
+ascending, the failures pile up at the bottom of the sample, so the **naive** p95 taken over
+every row — successes and failures together — is really the successes' own
+`(0.95 - f) / (1 - f)` quantile, where `f` is the failure fraction. At `f = 0.05` the shift is
+negligible (the effective quantile is ~0.947). At `f = 0.5` the naive "p95" is actually the
+successes' own **p90** wearing a p95 label — a materially different number reported under the
+wrong name. See `task-3-report.md`'s "Final review fix — part 2" section for the worked
+numeric example. Both drivers now filter to `ok_n`/200-coded rows before computing `p50`/`p95`;
+`attempts` and `ok_n` (E8) or `attempts` and `non200` (E9, §below) are recorded precisely so this
+filtering is auditable from the record itself, not merely asserted by the driver's prose.
+
+**Success-rate floor: 0.95.** Below a 95% success rate at a rung, that rung is not a capacity
+result and must not be quoted as one, even though the (now-filtered) p95 and the throughput
+figure will both still look healthy — throughput saturates at whatever the arm actually
+completed, and the filtered p95 by construction excludes every failure, so neither number is
+sensitive to a failure storm. 0.95 is chosen, not derived, from the quantile-shift arithmetic
+above: at `f = 0.05` the p95 shift is negligible (~0.3 points of quantile), so a rung just at the
+floor still reports an honest p95; the floor exists to catch rungs well past that, where `f` is
+large enough to materially relabel a lower quantile as p95. Both drivers WARN (not `ko`) when a
+rung falls below this floor — a WARN, not a hard failure, because a low success rate at one rung
+of a ladder is informative (it is itself part of what the ladder is measuring, e.g. an
+admission-control knee) and should not abort a run that would otherwise produce useful rungs
+above or below it; the existing `spurious_429`/`non200` WARNs already cover the mechanism, this
+floor generalizes the same signal to any failure mode (a 500/503/000 storm, not only 429s) and
+gives it an explicit, comparable numeric line rather than leaving "some failures happened" as
+the only signal.
 
 `conns_per_turn` records an observation, not a knob: both drivers leave `SH_ROUTING_POLICY` at
 its `leastInFlight` default (`deploy/vm/env/supervisor.env.example:7`), under which routing
@@ -46,9 +78,10 @@ or either driver's rung loop measures.
 
 ### Two of these columns are permanently `NaN` — this is not a missing run, it is a missing sensor
 
-Of the eleven fields above, **six** are real, load-bearing telemetry every **E8** run record
+Of the thirteen fields above, **eight** are real, load-bearing telemetry every **E8** run record
 actually carries: `loop_lag_p99`, `rss_bytes`, `sandbox_cpu`, `over_admission`,
-`spurious_refusals`, `spurious_429`. The other two, `lease_saturation` and `file_op_ms`, will
+`spurious_refusals`, `spurious_429`, `attempts`, `ok_n`. The other two, `lease_saturation` and
+`file_op_ms`, will
 read `NaN` in **every E8 record**, on any VM, no matter how it is provisioned — not because the
 run failed to collect them, but because nothing in this repository computes them.
 `harness/src/sandbox-lease.ts` derives a lease _count_ from an array its caller already holds; it
@@ -70,13 +103,17 @@ tiers — read it as `unattributed (lease-pool and relay tiers unmeasured)`. Eve
 E8 emits should be read with that qualifier whether or not the driver's own prose spells it out
 at the point the sentence is written.
 
-**E9's records do not have this shape at all — they carry none of the eleven fields above, not
-even as `NaN`.** `e9-tiers.sh` emits one point per rung as exactly `{c, throughput, p95Ms}`
-(`deploy/vm/e9-tiers.sh:182-183`); the one time it reads `$METRICS_BASE/metrics` at all
-(`deploy/vm/e9-tiers.sh:117`) is to check the VM arm's `.env.ANTHROPIC_BASE_URL` matches the
-pinned stub, not to sample any attribution counter — so none of the six real columns,
-`lease_saturation`, or `file_op_ms` are sampled, recorded, or NaN'd out for E9; they are simply
-absent from the JSON. `conns_per_turn` and
+**E9's records do not have the attribution shape above at all — they carry none of the nine
+attribution/basis/stub fields, not even as `NaN`.** `e9-tiers.sh` emits one point per rung as
+`{c, throughput, p95Ms, attempts, non200}` (`deploy/vm/e9-tiers.sh`'s `run_arm`, see the `points`
+assembly near the end of its rung loop) — `attempts` and `non200` (not `ok_n`: E9 records the
+failure count directly, since its existing non200>0 WARN already worked in those terms) are the
+one exception, carried per-point for the same success-rate-floor auditability as E8's
+`attempts`/`ok_n`. The one time `e9-tiers.sh` reads `$METRICS_BASE/metrics` at all (in its PIN 2
+pre-flight check) is to check the VM arm's `.env.ANTHROPIC_BASE_URL` matches the pinned stub, not
+to sample any attribution counter — so none of the six real E8 columns, `lease_saturation`, or
+`file_op_ms` are sampled, recorded, or NaN'd out for E9; they are simply absent from the JSON.
+`conns_per_turn` and
 `duty_basis` are still recorded for an E9 run, once in the surrounding run-record prose (§5.2's
 other requirement), not per-point in the JSON. Do not read an E9
 record's silence on, say, `spurious_429` as "zero refusals were observed and confirmed" — E9

@@ -121,10 +121,10 @@ for C in $LADDER; do
   wait
 
   WALL_MS="$(($(now_ms) - T0))"
-  cut -f1 "$WORK/raw.$C" >"$WORK/lat.$C"
   cut -f2 "$WORK/raw.$C" >"$WORK/code.$C"
 
   OK_N="$(grep -c '^200$' "$WORK/code.$C" || true)"
+  ATTEMPTS="$(wc -l <"$WORK/code.$C" | tr -d ' ')"
 
   # Hard-fail HERE, before any further rung runs, on a dead arm — see lib-vm.sh's
   # require_live_arm for why (shared with e9-tiers.sh's run_arm, so neither driver can drift
@@ -132,10 +132,28 @@ for C in $LADDER; do
   # cleaned up by the EXIT trap installed above, so no cleanup is needed before this call.
   require_live_arm "$C" "$OK_N" "e8" "$BASE"
 
+  # Percentiles are computed over 200-coded rows ONLY. A latency sample that mixes fast
+  # failures (a refused or errored request returns in a fraction of a real response's time)
+  # with genuine responses is not a latency distribution: sorted ascending, the failures pile
+  # up at the bottom, so the naive p95 over ALL rows is really the successes' own
+  # (0.95-f)/(1-f) quantile, where f is the failure fraction — at f=0.5 that quietly reports
+  # the successes' p90 labelled p95. See the synthetic demonstration in task-3-report.md.
+  awk -F'\t' '$2==200{print $1}' "$WORK/raw.$C" >"$WORK/lat.$C"
+
   SPURIOUS_429="$(grep -c '^429$' "$WORK/code.$C" || true)"
   P50="$(percentile 50 <"$WORK/lat.$C")"
   P95="$(percentile 95 <"$WORK/lat.$C")"
   THROUGHPUT="$(awk -v n="$OK_N" -v ms="$WALL_MS" 'BEGIN {printf "%.3f", ms>0 ? n*1000/ms : 0}')"
+
+  # General success-rate floor (deploy/vm/EXPERIMENTS.md): unlike the SPURIOUS_429-only WARN
+  # below, this fires on ANY failure mode — a 500/503/000 storm produces no field and no
+  # warning today, and throughput saturates at the arm's real capacity regardless of which
+  # status code did the refusing, so a heavily-failing rung can read healthy on both the
+  # throughput and (percentile-filtered) latency criteria. 0.95 is this driver's floor; see the
+  # report for why.
+  if awk -v n="$OK_N" -v a="$ATTEMPTS" 'BEGIN {exit !(a>0 && n/a<0.95)}'; then
+    echo "WARN rung c=$C succeeded on only $OK_N/$ATTEMPTS requests (below the 0.95 success-rate floor, see EXPERIMENTS.md) — this rung is not a capacity result"
+  fi
 
   M1="$(worker_metrics "$METRICS_BASE")"
   LOOP_LAG_P99="$(printf '%s' "$M1" | jq -c '[.workers[]?.loop_lag_p99_ms // "NaN"]')"
@@ -165,10 +183,12 @@ for C in $LADDER; do
     --arg fop "$FILE_OP_MS" --arg scpu "$SANDBOX_CPU" --arg lease "$LEASE_SATURATION" \
     --arg over "$OVER_ADMISSION" --arg recon "$REFUSALS_CONVICTED" \
     --argjson s429 "$SPURIOUS_429" --arg basis "$BASIS" \
+    --argjson attempts "$ATTEMPTS" --argjson ok_n "$OK_N" \
     '. + [{c: $c, throughput: $t, p50Ms: $p50, p95Ms: $p95,
            loop_lag_p99: $lag, rss_bytes: $rss, file_op_ms: $fop, sandbox_cpu: $scpu,
            lease_saturation: $lease, over_admission: $over, spurious_refusals: $recon,
-           spurious_429: $s429, conns_per_turn: 1, duty_basis: $basis}]')"
+           spurious_429: $s429, conns_per_turn: 1, duty_basis: $basis,
+           attempts: $attempts, ok_n: $ok_n}]')"
 done
 
 # --- knee ----------------------------------------------------------------------------------

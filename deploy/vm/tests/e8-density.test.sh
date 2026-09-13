@@ -51,6 +51,15 @@ for field in duty_basis conns_per_turn; do
   grep -q "$field" e8-density.sh && ok "records $field" || ko "missing run-record field: $field"
 done
 
+# --- 5b. Every rung records attempts/ok_n, and percentiles are success-only. --------------
+for field in attempts ok_n; do
+  grep -q "$field" e8-density.sh && ok "records $field" || ko "missing run-record field: $field"
+done
+grep -qE "\\\$2==200" e8-density.sh && ok "percentile input is filtered to 200-coded rows" ||
+  ko "p50/p95 must be computed over 200-coded rows only, not the mixed raw sample"
+grep -qi '0.95' e8-density.sh && ok "driver names a success-rate floor" ||
+  ko "driver must WARN below a stated success-rate floor (see EXPERIMENTS.md)"
+
 # --- 6. Every §5.2 attribution metric is sampled. -----------------------------------------
 for m in loop_lag_p99 rss_bytes file_op_ms sandbox_cpu lease_saturation over_admission spurious_refusals spurious_429; do
   grep -q "$m" e8-density.sh && ok "samples $m" ||

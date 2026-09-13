@@ -144,10 +144,11 @@ run_arm() {
       ) >>"$work/raw.$C" &
     done
     wait
-    local wall n non200 p95 tput
+    local wall n non200 attempts p95 tput
     wall="$(($(now_ms) - t0))"
     n="$(cut -f2 "$work/raw.$C" | grep -c '^200$' || true)"
     non200="$(cut -f2 "$work/raw.$C" | grep -vc '^200$' || true)"
+    attempts="$((n + non200))"
 
     # Hard-fail HERE, before any further rung runs: an arm that answered nothing at its own
     # c=1 baseline cannot produce a meaningful ladder, and the failure mode is dangerous rather
@@ -176,11 +177,24 @@ run_arm() {
       echo "WARN $label rung c=$C saw $non200/$((C * TURNS_PER_RUNG)) non-200 responses — a knee here is suspect" >&2
     fi
 
-    p95="$(cut -f1 "$work/raw.$C" | percentile 95)"
+    # General success-rate floor (deploy/vm/EXPERIMENTS.md), same rationale as e8-density.sh's:
+    # the non200>0 WARN above already flags ANY failure, but it never blocks a rung from being
+    # read as a capacity result. This makes the same 0.95 threshold explicit and comparable
+    # across both drivers rather than leaving it as an implicit "some WARN fired" signal.
+    if awk -v n="$n" -v a="$attempts" 'BEGIN {exit !(a>0 && n/a<0.95)}'; then
+      echo "WARN $label rung c=$C succeeded on only $n/$attempts requests (below the 0.95 success-rate floor, see EXPERIMENTS.md) — this rung is not a capacity result" >&2
+    fi
+
+    # Percentiles are computed over 200-coded rows ONLY — see e8-density.sh's rung loop for the
+    # full quantile-shift rationale (a mixed-status sample's naive p95 is really the successes'
+    # own (0.95-f)/(1-f) quantile, where f is the failure fraction).
+    p95="$(awk -F'\t' '$2==200{print $1}' "$work/raw.$C" | percentile 95)"
     tput="$(awk -v n="$n" -v ms="$wall" 'BEGIN {printf "%.3f", ms>0 ? n*1000/ms : 0}')"
     echo "-- $label c=$C p95=${p95}ms tput=$tput" >&2
-    points="$(printf '%s' "$points" | jq -c --argjson c "$C" --argjson t "$tput" --argjson p "$p95" \
-      '. + [{c: $c, throughput: $t, p95Ms: $p}]')"
+    points="$(printf '%s' "$points" | jq -c \
+      --argjson c "$C" --argjson t "$tput" --argjson p "$p95" \
+      --argjson attempts "$attempts" --argjson non200 "$non200" \
+      '. + [{c: $c, throughput: $t, p95Ms: $p, attempts: $attempts, non200: $non200}]')"
   done
   rm -rf "$work"
   printf '%s' "$points"
