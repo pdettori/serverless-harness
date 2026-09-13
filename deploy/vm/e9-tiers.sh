@@ -191,9 +191,9 @@ KN_POINTS="$(run_arm knative "$KSVC_URL")"
 knee_of() {
   "$TSX" -e '
     import { detectKnee, sanityFloorPass } from "../../experiments/src/sharing.ts";
-    const knee = detectKnee(JSON.parse(process.argv[2]), Number(process.argv[3]), 2);
-    console.log(JSON.stringify({ knee, pass: sanityFloorPass(knee, Number(process.argv[4])) }));
-  ' -- "$1" "$DEGRADE_X" "$MIN_C"
+    const knee = detectKnee(JSON.parse(process.argv[1]), Number(process.argv[2]), 2);
+    console.log(JSON.stringify({ knee, pass: sanityFloorPass(knee, Number(process.argv[3])) }));
+  ' "$1" "$DEGRADE_X" "$MIN_C"
 }
 VM_KNEE="$(knee_of "$VM_POINTS" | jq -r .knee)"
 KN_KNEE="$(knee_of "$KN_POINTS" | jq -r .knee)"

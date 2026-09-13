@@ -67,12 +67,12 @@ esac
 # Resolve the duty basis and the sandbox floor it implies — one row, taken whole (§2.3).
 BASIS_LINE="$("$TSX" -e '
   import { resolveBasis, sandboxFloor, describeBasis, assertBasisConsistent } from "../../experiments/src/basis.ts";
-  const b = resolveBasis(process.argv[2]);
-  const [w, s] = [Number(process.argv[3]), Number(process.argv[4])];
+  const b = resolveBasis(process.argv[1]);
+  const [w, s] = [Number(process.argv[2]), Number(process.argv[3])];
   // Belt and braces: if the table itself is ever mistranscribed, fail here.
   assertBasisConsistent(b.duty[1], b.ratio[0]);
   console.log(JSON.stringify({ describe: describeBasis(b), floor: sandboxFloor(w, s, b.duty[1]) }));
-' -- "$BASIS" "$WORKERS" "$TURNS_PER_WORKER")"
+' "$BASIS" "$WORKERS" "$TURNS_PER_WORKER")"
 DUTY_BASIS_DESC="$(printf '%s' "$BASIS_LINE" | jq -r .describe)"
 SANDBOX_FLOOR="$(printf '%s' "$BASIS_LINE" | jq -r .floor)"
 echo "duty_basis: $DUTY_BASIS_DESC"
@@ -167,10 +167,10 @@ done
 # --- knee ----------------------------------------------------------------------------------
 KNEE_JSON="$("$TSX" -e '
   import { detectKnee, sanityFloorPass } from "../../experiments/src/sharing.ts";
-  const points = JSON.parse(process.argv[2]);
-  const knee = detectKnee(points, Number(process.argv[3]), 2);
-  console.log(JSON.stringify({ knee, pass: sanityFloorPass(knee, Number(process.argv[4])) }));
-' -- "$POINTS" "$DEGRADE_X" "$MIN_C")"
+  const points = JSON.parse(process.argv[1]);
+  const knee = detectKnee(points, Number(process.argv[2]), 2);
+  console.log(JSON.stringify({ knee, pass: sanityFloorPass(knee, Number(process.argv[3])) }));
+' "$POINTS" "$DEGRADE_X" "$MIN_C")"
 KNEE="$(printf '%s' "$KNEE_JSON" | jq -r .knee)"
 PASS="$(printf '%s' "$KNEE_JSON" | jq -r .pass)"
 [ "$PASS" = "true" ] || ko "knee floor $KNEE is below the sanity floor $MIN_C"
