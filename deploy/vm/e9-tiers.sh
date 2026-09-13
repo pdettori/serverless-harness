@@ -236,10 +236,32 @@ knee_of() {
     console.log(JSON.stringify({ knee, pass: sanityFloorPass(knee, Number(process.argv[3])) }));
   ' "$1" "$DEGRADE_X" "$MIN_C"
 }
-VM_KNEE="$(knee_of "$VM_POINTS" | jq -r .knee)"
-KN_KNEE="$(knee_of "$KN_POINTS" | jq -r .knee)"
+# .pass (sanityFloorPass) used to be discarded here — only .knee was ever extracted — so a knee
+# below MIN_C (e.g. detectKnee falling back to the c=1 rung itself) produced a clean-looking
+# table row instead of a `ko`. Mirrors E8's own PASS handling (e8-density.sh's `[ "$PASS" =
+# "true" ] || ko ...` right after its own knee_of-equivalent call).
+VM_KNEE_JSON="$(knee_of "$VM_POINTS")"
+KN_KNEE_JSON="$(knee_of "$KN_POINTS")"
+VM_KNEE="$(printf '%s' "$VM_KNEE_JSON" | jq -r .knee)"
+KN_KNEE="$(printf '%s' "$KN_KNEE_JSON" | jq -r .knee)"
+VM_PASS="$(printf '%s' "$VM_KNEE_JSON" | jq -r .pass)"
+KN_PASS="$(printf '%s' "$KN_KNEE_JSON" | jq -r .pass)"
+[ "$VM_PASS" = "true" ] || ko "VM arm's knee floor $VM_KNEE is below the sanity floor $MIN_C"
+[ "$KN_PASS" = "true" ] || ko "Knative arm's knee floor $KN_KNEE is below the sanity floor $MIN_C"
 
-echo "E9_RESULT vm_knee_floor=$VM_KNEE knative_knee_floor=$KN_KNEE degrade_x=$DEGRADE_X"
+# Same SATURATED convention as e8-density.sh: SATURATED=no means the knee equals the ladder's
+# own top rung, i.e. the arm was STILL healthy when the ladder ran out, so that arm's number is
+# the ladder's limit, not a machine ceiling. SATURATED=yes means a genuine knee was found below
+# the top rung — a real machine bound, not an artefact of how tall this ladder was. The two arms
+# can land in different states (one tops out while the other genuinely knees), so this is
+# tracked per arm rather than as one shared flag.
+TOP_RUNG="${LADDER##* }"
+VM_SATURATED=yes
+[ "$VM_KNEE" = "$TOP_RUNG" ] && VM_SATURATED=no
+KN_SATURATED=yes
+[ "$KN_KNEE" = "$TOP_RUNG" ] && KN_SATURATED=no
+
+echo "E9_RESULT vm_knee_floor=$VM_KNEE knative_knee_floor=$KN_KNEE degrade_x=$DEGRADE_X vm_saturated=$VM_SATURATED knative_saturated=$KN_SATURATED"
 
 {
   echo ""
@@ -250,8 +272,27 @@ echo "E9_RESULT vm_knee_floor=$VM_KNEE knative_knee_floor=$KN_KNEE degrade_x=$DE
   echo "| VM + supervisor | $VM_KNEE |"
   echo "| Knative per-session | $KN_KNEE |"
   echo ""
-  echo "Both are **floors**: each ladder topped out at ${LADDER##* }, so neither number is a"
-  echo "machine ceiling."
+  # Unconditional "both are floors, ladder topped out" prose used to run regardless of what the
+  # ladder actually found — including on a genuine knee. Report which arms actually ran out of
+  # ladder (SATURATED=no) versus which found a real bound (SATURATED=yes) instead.
+  if [ "$VM_SATURATED" = no ] && [ "$KN_SATURATED" = no ]; then
+    echo "Both are **floors**: each ladder topped out at $TOP_RUNG, so neither number is a"
+    echo "machine ceiling. Extend \`V_LADDER\` to find either machine's real limit."
+  elif [ "$VM_SATURATED" = yes ] && [ "$KN_SATURATED" = yes ]; then
+    echo "Neither is ladder-limited: both arms found a genuine knee below the top rung"
+    echo "($TOP_RUNG), so both $VM_KNEE and $KN_KNEE are machine bounds, not artefacts of how"
+    echo "tall this ladder was."
+  elif [ "$VM_SATURATED" = no ]; then
+    echo "The VM arm's floor ($VM_KNEE) is the ladder's limit, **not the machine's**: top rung"
+    echo "($TOP_RUNG) was still healthy. Extend \`V_LADDER\` to find the VM's real limit. The"
+    echo "Knative arm found a genuine knee ($KN_KNEE) below the top rung, so that number **is**"
+    echo "a machine bound."
+  else
+    echo "The Knative arm's floor ($KN_KNEE) is the ladder's limit, **not the machine's**: top"
+    echo "rung ($TOP_RUNG) was still healthy. Extend \`V_LADDER\` to find its real limit. The VM"
+    echo "arm found a genuine knee ($VM_KNEE) below the top rung, so that number **is** a"
+    echo "machine bound."
+  fi
   echo ""
   echo "Pins that make this a tier comparison (§5.3):"
   echo ""

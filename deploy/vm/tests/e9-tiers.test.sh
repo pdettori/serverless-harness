@@ -88,6 +88,20 @@ grep -qE "\\\$2==200" e9-tiers.sh && ok "percentile input is filtered to 200-cod
 grep -qi '0.95' e9-tiers.sh && ok "driver names a success-rate floor" ||
   ko "driver must WARN below a stated success-rate floor (see EXPERIMENTS.md)"
 
+# --- 5c. sanityFloorPass's .pass is consumed (ko when false), not discarded, and the "floors" --
+# prose is conditional on whether a genuine knee was actually found — mirrors e8-density.sh's
+# own PASS/SATURATED/TOP_RUNG pattern. Before this fix, .pass was extracted and thrown away
+# (only .knee was read) and the run-record prose unconditionally asserted "Both are floors:
+# each ladder topped out..." even when detectKnee found a real knee below the top rung.
+grep -q '\.pass' e9-tiers.sh && ok "consumes sanityFloorPass's .pass, not just .knee" ||
+  ko "knee_of returns {knee, pass} but .pass must actually be read and acted on (ko when false)"
+grep -qi 'SATURATED' e9-tiers.sh && ok "tracks per-arm saturation, mirroring e8-density.sh's TOP_RUNG/SATURATED pattern" ||
+  ko "must record whether each arm's knee is a genuine bound or merely the ladder's own ceiling"
+# The "Both are floors" sentence must not be the ONLY prose branch — there must be at least one
+# conditional arm (an elif) covering the case where a genuine knee was found.
+grep -q 'elif \[ "\$VM_SATURATED"' e9-tiers.sh && ok "\"floors\" prose is conditional on per-arm saturation" ||
+  ko "the topped-out-ladder prose must not run unconditionally when a genuine knee was found"
+
 # --- 6. shellcheck. -----------------------------------------------------------------------
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -x e9-tiers.sh >/dev/null 2>&1 && ok "shellcheck clean" || ko "shellcheck found problems"
