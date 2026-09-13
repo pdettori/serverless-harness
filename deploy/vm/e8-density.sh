@@ -17,6 +17,31 @@ cd "$(dirname "$0")"
 # shellcheck source=./lib-vm.sh
 source ./lib-vm.sh
 
+# Final review fix, round 2, item 1: pin the locale here in the driver rather than inside
+# lib-vm.sh's helpers -- a future caller of now_ms/load1 that forgets this line would otherwise
+# inherit the bug silently. Under a comma-radix locale (e.g. de_DE.UTF-8), bash's own
+# EPOCHREALTIME and this platform's `uptime` load-average both render with a comma, not a dot:
+# now_ms's `${t/./}` strip is then a no-op, `${t:0:-3}` yields a comma-containing string, and
+# `$(($(now_ms) - t0))` below raises a bash arithmetic error under `set -e`, ending the run at
+# the first rung. load1 degrades more quietly -- its `sed | awk` pipeline hands back "0" instead,
+# the exact value load1's own comment says must never appear, because a 0 there reads as "no
+# contention" and would exonerate a box that was actually busy.
+#
+# LC_ALL=C, not the narrower LC_NUMERIC=C: verified empirically that LC_ALL, once present in the
+# environment, unconditionally overrides LC_NUMERIC for numeric-category resolution regardless of
+# which was exported more recently --
+#   $ export LC_ALL=de_DE.UTF-8; export LC_NUMERIC=C; echo "$EPOCHREALTIME"
+#   1789271691,872501   <- still comma-radix; LC_NUMERIC=C had no effect
+# So a driver that merely set LC_NUMERIC=C would leave the bug open on any operator whose ambient
+# environment exports LC_ALL (common in container base images and systemd environment files) --
+# precisely the variable the directive's own reproduction used. Only overriding LC_ALL itself,
+# from within this process, is robust against every ambient combination. The tradeoff (message/
+# collation locale is pinned too, not just numeric formatting) is accepted deliberately: this
+# script emits no user-facing message text that depends on locale, and `sort -n` in
+# lib-vm.sh's percentile() is itself LC_COLLATE-sensitive, so pinning the whole locale removes a
+# second, previously-undiscussed risk along with the first.
+export LC_ALL=C
+
 FAIL=0
 RESULTS="${V_RESULTS:-./EXPERIMENTS.md}"
 

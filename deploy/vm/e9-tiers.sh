@@ -39,6 +39,15 @@ cd "$(dirname "$0")"
 # shellcheck source=./lib-vm.sh
 source ./lib-vm.sh
 
+# Final review fix, round 2, item 1: see e8-density.sh's identical block for the full rationale,
+# including why LC_ALL=C (not the narrower LC_NUMERIC=C) is the robust choice -- LC_ALL, once set
+# in the ambient environment, overrides LC_NUMERIC regardless of export order, so only overriding
+# LC_ALL itself is safe against every operator environment. Pinned here (the driver), not inside
+# lib-vm.sh's helpers, so a future caller cannot inherit the comma-radix bug by forgetting this
+# line. Affects both now_ms (arithmetic at :217 below) and load1 (this driver's own per-rung
+# contention_load1).
+export LC_ALL=C
+
 FAIL=0
 RESULTS="${V_RESULTS:-./EXPERIMENTS.md}"
 
