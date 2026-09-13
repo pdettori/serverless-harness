@@ -40,8 +40,11 @@ section for what an E9 record actually contains. A missing E8 field is not a res
 | `ok_n`              | 200-coded requests at this rung — the numerator, and what `p50`/`p95` are computed over.                                |
 | `contention_load1`  | 1-minute load average, a contention PROXY (not a generator-specific measurement) — see "Where the generator ran" below. |
 
-`generator_placement` (on-box/off-box) is recorded once **per run**, not per rung, in the
-run-summary prose rather than this per-rung JSON shape — see "Where the generator ran" below.
+`generator_placement` (on-box/undetermined — round 2, item 4a renamed the non-loopback case from
+"off-box"; see below for why) is recorded once **per run**, not per rung, in the run-summary prose
+rather than this per-rung JSON shape — see "Where the generator ran" below. So is `core_count`
+(round 2, item 4b), the denominator `contention_load1` needs normalising against — also once per
+run, in the run-summary prose, never per rung, because core count does not change mid-ladder either.
 
 ### `p50`/`p95` are computed over successes only, and there is a floor below which a rung is not a result
 
@@ -82,9 +85,14 @@ or either driver's rung loop measures.
 
 ### Two of these columns are permanently `NaN` — this is not a missing run, it is a missing sensor
 
-Of the fourteen fields above, **nine** are real, load-bearing telemetry every **E8** run record
-actually carries: `loop_lag_p99`, `rss_bytes`, `sandbox_cpu`, `over_admission`,
-`spurious_refusals`, `spurious_429`, `attempts`, `ok_n`, `contention_load1`. The other two,
+Of the fourteen fields above, **eight** are real, load-bearing attribution telemetry every **E8**
+run record actually carries: `loop_lag_p99`, `rss_bytes`, `sandbox_cpu`, `over_admission`,
+`spurious_refusals`, `spurious_429`, `attempts`, `ok_n`. `contention_load1` is also real (it is not
+`NaN`-by-design like the two below), but round 2, item 4c moved it out of this list deliberately:
+unlike the eight above, it is not scoped to any one of E8's six attribution tiers, and — for E9,
+see "Where the generator ran" below — it does not even vary per arm the way its own field name's
+placement in a per-arm record might suggest. Treat it as a box-level contention proxy alongside
+this list, not as a ninth member of it. The other two,
 `lease_saturation` and `file_op_ms`, will
 read `NaN` in **every E8 record**, on any VM, no matter how it is provisioned — not because the
 run failed to collect them, but because nothing in this repository computes them.
@@ -107,15 +115,21 @@ tiers — read it as `unattributed (lease-pool and relay tiers unmeasured)`. Eve
 E8 emits should be read with that qualifier whether or not the driver's own prose spells it out
 at the point the sentence is written.
 
-**E9's records do not have the attribution shape above at all — they carry none of the nine
+**E9's records do not have the attribution shape above at all — they carry none of the eight
 attribution/basis/stub fields, not even as `NaN`.** `e9-tiers.sh` emits one point per rung as
 `{c, throughput, p95Ms, attempts, non200, contention_load1}` (`deploy/vm/e9-tiers.sh`'s `run_arm`,
 see the `points` assembly near the end of its rung loop) — `attempts` and `non200` (not `ok_n`: E9
 records the failure count directly, since its existing non200>0 WARN already worked in those
 terms) are carried per-point for the same success-rate-floor auditability as E8's
-`attempts`/`ok_n`; `contention_load1` is carried per-point for the same reason it is carried in
-E8's records (see "Where the generator ran" below) — it is not part of the attribution shape, it
-is the same box-level contention proxy added independently of it. The one time `e9-tiers.sh` reads
+`attempts`/`ok_n`; `contention_load1` is carried per-point for the same box-level-proxy reason it
+is carried in E8's records (see "Where the generator ran" below) — it is not part of the
+attribution shape, it is added independently of it. Round 2, item 4c is sharper about what "per
+arm" means for it here than the field's own name suggests: `run_arm` calls `load1` with no target,
+so both arms' `contention_load1` measure the SAME box (the generator's own, wherever this driver
+process runs) — never either arm's own box. Two E9 points from the same run can still show
+different `contention_load1` values (each is a fresh read, taken at different times as the two
+sequential `run_arm` calls progress), but that difference reflects the generator's box getting
+busier or idling over time, not the vm/knative arms being different boxes. The one time `e9-tiers.sh` reads
 `$METRICS_BASE/metrics` at all (in its PIN 2
 pre-flight check) is to check the VM arm's `.env.ANTHROPIC_BASE_URL` matches the pinned stub, not
 to sample any attribution counter — so none of the six real E8 columns, `lease_saturation`, or
@@ -138,31 +152,70 @@ Two fields close that gap, and a documentation requirement closes a third.
 ### `generator_placement` — derived, not declared, once per run per arm
 
 `generator_placement()` (`lib-vm.sh`) classifies a base URL as **on-box** when it is loopback
-(`127.0.0.1`, `localhost`, `::1`) and **off-box** otherwise. This is a derivation, not a flag
-someone sets: curl can only reach a loopback address when the caller and the callee share a
-machine, so the address itself is the proof, not a claim about it. `e8-density.sh` records one
-`GENERATOR_PLACEMENT` (from `$BASE`); `e9-tiers.sh` records one per arm (`$VM_BASE`, `$KSVC_URL`),
-since the same generator process can be on-box relative to one arm and off-box relative to the
-other — a `$VM_BASE` on loopback is common, a `$KSVC_URL` on loopback essentially never happens
-(cluster addresses are not loopback). Recorded once per run, in the run-summary prose, because
-placement does not change mid-ladder — a per-rung field would only repeat the same value.
+(`127.0.0.1`, `localhost`, `::1`) and **undetermined** otherwise. This is a derivation, not a flag
+someone sets, but only the **on-box** half of it is actually proven: curl can only reach a
+loopback address when the caller and the callee share a machine, so the address itself is proof
+of on-box, not merely a claim about it. Round 2, item 4a corrected the other half: an earlier
+version of this function labelled every non-loopback base **off-box**, on the reasoning that
+"this driver could not have reached that base URL without leaving the box." That reasoning does
+not hold — a box can also address itself by its own routable interface address (e.g. an E9 VM
+arm run with `VM_BASE` set to the VM's own `10.0.0.5` rather than `127.0.0.1` is still on-box),
+so a non-loopback base is not proof of anything either way. **`undetermined` is the honest label
+for that case** — it costs nothing and claims nothing this driver cannot back up, unlike the
+`off-box` label it replaces, which asserted a conclusion the address alone does not establish. A
+future resolve-and-compare implementation (matching the base URL's resolved host address against
+this machine's own interface addresses) could sharpen `undetermined` into a real `off-box` proof,
+but was deliberately not attempted here: doing it unreliably across this repo's Linux production
+target and macOS test/dev environment risked introducing a new false-confidence claim of exactly
+the kind this item exists to remove. `e8-density.sh` records one `GENERATOR_PLACEMENT` (from
+`$BASE`); `e9-tiers.sh` records one per arm (`$VM_BASE`, `$KSVC_URL`), since the same generator
+process can be on-box relative to one arm and undetermined relative to the other — a `$VM_BASE`
+on loopback is common, a `$KSVC_URL` on loopback essentially never happens (cluster addresses are
+not loopback), so the Knative arm's placement is routinely `undetermined`, not proven either way.
+Recorded once per run, in the run-summary prose, because placement does not change mid-ladder — a
+per-rung field would only repeat the same value.
 
-### `contention_load1` — a proxy, recorded per rung, not a generator-specific measurement
+### `contention_load1` — a proxy, recorded per rung, always for the GENERATOR's own box
 
-Each rung also records `contention_load1`, the 1-minute load average (`uptime`) of whichever box
-the driver call executes on, sampled fresh at the end of that rung. This is **not** scoped to the
-generator's own process, the supervisor's own process, or any single tier — it is whatever else is
-running on that box, which is exactly the point: a co-located generator that drives its own
-supervisor's load average up during a high-`c` rung will show it here, so that run cannot silently
-masquerade as a clean one just because throughput and the (failure-filtered) `p95` still look
-healthy. Label it as a proxy when quoting it, never as a precise attribution — it says "the box was
-busy," not "the generator caused it" or "the supervisor caused it." 1-minute load average was kept
-as the cheapest honest option available without a new dependency (`uptime` exists on every
-platform this repo already targets, Linux and macOS/BSD alike, and needs no counter this codebase
-would have to add) rather than argued away in favour of something narrower like a per-process CPU
-sample, which would need `/proc` (Linux-only, and this repo's own dev environment is macOS) or an
-additional tool. `e9-tiers.sh` records it per arm per rung, since the two arms can be on different
-boxes and can carry different contention.
+Each rung also records `contention_load1`, the 1-minute load average (`uptime`) of the box the
+driver PROCESS ITSELF executes on, sampled fresh at the end of that rung — `load1()` (`lib-vm.sh`)
+takes no target argument, so this is never a measurement of some other, remote box. This is
+**not** scoped to the generator's own curl calls, the supervisor's own process, or any single
+tier — it is whatever else is running on the box `load1` is called from, which is exactly the
+point for a co-located (`generator_placement: on-box`) run: a co-located generator that drives its
+own supervisor's load average up during a high-`c` rung will show it here, so that run cannot
+silently masquerade as a clean one just because throughput and the (failure-filtered) `p95` still
+look healthy. Label it as a proxy when quoting it, never as a precise attribution — it says "the
+box was busy," not "the generator caused it" or "the supervisor caused it." 1-minute load average
+was kept as the cheapest honest option available without a new dependency (`uptime` exists on
+every platform this repo already targets, Linux and macOS/BSD alike, and needs no counter this
+codebase would have to add) rather than argued away in favour of something narrower like a
+per-process CPU sample, which would need `/proc` (Linux-only, and this repo's own dev environment
+is macOS) or an additional tool.
+
+**Round 2, item 4c: for E9 specifically, "the box `load1` is called from" is the SAME box for
+BOTH arms, on every run, with no exception.** An earlier version of this section (and of
+`e9-tiers.sh`'s own comment at its `run_arm` call site) claimed `contention_load1` was recorded
+"per arm per rung, since the two arms can be on different boxes and can carry different
+contention" — that claim does not hold. `e9-tiers.sh` is a single process; every `load1` call it
+makes, whether inside the "vm" or the "knative" `run_arm` invocation, reads the 1-minute load
+average of that one process's own box, never the VM's box or the Knative pod's box specifically.
+For the VM arm this is frequently still a meaningful reading, because a co-located `VM_BASE` run
+puts the generator and the VM arm's supervisor on the literal same box (`generator_placement:
+on-box` for that arm). For the Knative arm it essentially never is: `KSVC_URL` is a routable
+cluster address reached over the network, so this driver's own box contention says nothing about
+contention on whichever node the Knative pod actually landed on. Read an E9 record's
+`contention_load1` for the "knative" arm as "how busy was the generator's box during this rung",
+never as "how busy was the Knative pod's node" — the JSON shape carries the field once per arm's
+point, but the underlying measurement is the generator's own box both times. Normalise it against
+`core_count()`'s reading (recorded once per run in the run-summary prose — see `e9-tiers.sh`'s
+"cores on the generator's own box" line) for the same reason E8's per-run `CORE_COUNT` exists: a
+raw load average is not comparable across boxes without knowing how many cores that box has.
+Fixing the mechanism itself — sampling the Knative pod's own node, not the generator's — would need
+a way to run a command on that node from this driver (an exec into the pod, or a sidecar, or a
+metrics-server query), none of which this repository currently wires up; documenting the
+limitation, as this paragraph does, is the deliverable for round 2, not a new remote-sampling
+mechanism.
 
 ### The authoritative run puts the generator off-box, on the same subnet
 
@@ -174,7 +227,12 @@ supervisor's/ksvc's own CPU never compete for the same core — B1's `vm_turn` r
 remove the fact that an on-box generator still shares a CPU budget with the thing it is measuring.
 A run recorded with `generator_placement: on-box` should be read, and cited, with that caveat
 attached; it is informative (useful for local iteration, or when no second machine is available)
-but is not interchangeable with an off-box run when the two disagree.
+but is not interchangeable with a genuinely off-box run when the two disagree. Note the asymmetry
+introduced by round 2, item 4a: a genuinely off-box run (the authoritative path this section
+describes) records `generator_placement: undetermined`, not `off-box` — the code never asserts
+`off-box` as a proven label (see the field's own description above), so "this run's generator was
+on a separate machine" is established by how the run was actually set up and operated, not by
+anything `generator_placement` prints. Only `on-box` is a label the record itself proves.
 
 **If off-box is genuinely impossible, `taskset` (Linux) or an equivalent cpuset/cgroup pin is the
 documented fallback** — pin the generator process to CPUs the supervisor's/ksvc's own workers do

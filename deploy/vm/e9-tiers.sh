@@ -73,13 +73,21 @@ KSVC_URL="${KSVC_URL:?KSVC_URL must point at the Knative arm}"
 VM_STUB_URL="${V_VM_STUB_URL:?V_VM_STUB_URL must be the stub URL the VM ARM can reach (its own co-located instance)}"
 KNATIVE_STUB_URL="${V_KNATIVE_STUB_URL:?V_KNATIVE_STUB_URL must be the stub URL the CLUSTER can reach (its own co-located instance)}"
 
-# Final review fix, part 3, item B2: derived (not declared) per arm, from that arm's own base
-# URL — see generator_placement's comment in lib-vm.sh. This driver drives BOTH arms from wherever
-# it itself runs, so the two can differ: a VM_BASE on loopback is on-box relative to the VM arm
-# even when KSVC_URL (necessarily a routable cluster address, never loopback) is off-box relative
-# to the Knative arm. Recorded once per run, per arm, in the run summary below, not per rung.
+# Final review fix, part 3, item B2 (label corrected by round 2, item 4a — see
+# generator_placement's comment in lib-vm.sh): derived (not declared) per arm, from that arm's
+# own base URL. This driver drives BOTH arms from wherever it itself runs, so the two can differ:
+# a VM_BASE on loopback is on-box relative to the VM arm even when KSVC_URL (necessarily a
+# routable cluster address, never loopback) is undetermined relative to the Knative arm — "never
+# loopback" here does not mean "proven off-box", only "not proven on-box"; the Knative arm's pod
+# runs somewhere this driver cannot verify from a base URL alone. Recorded once per run, per arm,
+# in the run summary below, not per rung.
 VM_GENERATOR_PLACEMENT="$(generator_placement "$VM_BASE")"
 KNATIVE_GENERATOR_PLACEMENT="$(generator_placement "$KSVC_URL")"
+# Final review fix, round 2, item 4b: recorded once per run — see core_count's comment in
+# lib-vm.sh. Not per arm: this driver is a single process, so there is exactly one box it itself
+# runs on, and (per item 4c above) that is also the only box either arm's contention_load1 ever
+# actually measures — one core count covers both.
+CORE_COUNT="$(core_count)"
 
 # shellcheck source=../knative/lib.sh
 source ../knative/lib.sh
@@ -141,6 +149,7 @@ trap 'restore_ksvc_env; warn_ksvc_left_mutated' EXIT
 
 echo "== E9 tier comparison: ladder='$LADDER' basis=$BASIS =="
 echo "generator: vm=$VM_GENERATOR_PLACEMENT (from \$VM_BASE=$VM_BASE) knative=$KNATIVE_GENERATOR_PLACEMENT (from \$KSVC_URL=$KSVC_URL) — loopback means on-box, see EXPERIMENTS.md"
+echo "cores on the generator's own box: $CORE_COUNT (both arms' contention_load1 measure this same box — normalise against this, see EXPERIMENTS.md)"
 
 # --- PIN 1 + PIN 2 applied to the Knative arm ----------------------------------------------
 # ANTHROPIC_BASE_URL: the same stub, so the model tier is identical.
@@ -268,9 +277,18 @@ run_arm() {
     # own (0.95-f)/(1-f) quantile, where f is the failure fraction).
     p95="$(awk -F'\t' '$2==200{print $1}' "$work/raw.$C" | percentile 95)"
     tput="$(awk -v n="$n" -v ms="$wall" 'BEGIN {printf "%.3f", ms>0 ? n*1000/ms : 0}')"
-    # Final review fix, part 3, item B3: contention proxy, read fresh at the end of THIS rung —
-    # see load1's comment in lib-vm.sh. Recorded per arm per rung, since the two arms can be on
-    # different boxes and can carry different contention.
+    # Final review fix, part 3, item B3 (claim corrected by round 2, item 4c): contention proxy,
+    # read fresh at the end of THIS rung — see load1's comment in lib-vm.sh. load1 takes no target:
+    # it always reads the 1-minute load average of the box THIS DRIVER PROCESS ITSELF runs on, not
+    # the arm's own box. For the VM arm that is often the box under test (a co-located VM_BASE is
+    # the common on-box case — see generator_placement above), so it is a meaningful reading there.
+    # For the Knative arm it essentially never is: KSVC_URL is a routable cluster address reached
+    # over the network, so the Knative pod's own box contention is invisible to this call — the
+    # "knative" arm's contention_load1 measures the GENERATOR's box, exactly like the "vm" arm's
+    # does, not the cluster's. Still recorded once per arm per rung (each call is a fresh read, so
+    # the two numbers can differ run-to-run as the generator's own box gets busier or idles between
+    # the two sequential run_arm calls below) — but "per arm" means "sampled once per arm's rung",
+    # not "measuring that arm's own box". See EXPERIMENTS.md's contention_load1 section.
     local load1_now
     load1_now="$(load1)"
     echo "-- $label c=$C p95=${p95}ms tput=$tput load1=$load1_now" >&2
@@ -374,7 +392,9 @@ echo "E9_RESULT vm_knee_floor=$VM_KNEE knative_knee_floor=$KN_KNEE degrade_x=$DE
   echo "  not declared. Either arm reading **on-box** makes that arm's numbers a caveated result,"
   echo "  not an equivalent one — see EXPERIMENTS.md's \"Where the generator ran\" section."
   echo "- Per-rung \`contention_load1\` (1-minute load average) is a contention PROXY, not a"
-  echo "  generator-specific measurement — see EXPERIMENTS.md."
+  echo "  generator-specific measurement, and — see EXPERIMENTS.md, round 2 item 4c — it always"
+  echo "  measures the GENERATOR's own box (\`$CORE_COUNT\` cores) for BOTH arms, never either"
+  echo "  arm's own box; normalise it against that core count, not against either arm's."
   echo ""
   echo '```json'
   jq -n --argjson vm "$VM_POINTS" --argjson kn "$KN_POINTS" '{vm: $vm, knative: $kn}'

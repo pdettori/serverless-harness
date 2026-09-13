@@ -235,14 +235,34 @@ assert_stub_pinned() {
 # relative to the arm base URL it is about to drive? Derived, not declared: a flag someone sets
 # can be wrong or stale in a way a loopback address cannot, because curl can only reach
 # 127.0.0.1/localhost/::1 when the caller and the callee share a machine — that address IS the
-# on-box proof, not merely a claim about it. Anything else is off-box by the same logic: this
-# driver could not have reached that base URL without leaving the box, so leaving the box is what
-# it did. Recorded once per run, per arm (not per rung — placement does not change mid-ladder).
+# on-box proof, not merely a claim about it.
+#
+# Final review fix, round 2, item 4a: the original version of this function labelled every
+# non-loopback base "off-box", on the reasoning that "this driver could not have reached that
+# base URL without leaving the box, so leaving the box is what it did". That reasoning is wrong,
+# and the re-review caught it: a box can also address itself by its own ROUTABLE address (its
+# real interface IP, or a DNS name that happens to resolve back to it), not only by loopback --
+# e.g. an E9 VM arm run with VM_BASE set to the VM's own 10.0.0.5 rather than 127.0.0.1 is still
+# on-box, but the old code printed "off-box" for it with exactly the same unearned confidence
+# loopback deserves and this one does not.
+#
+# Fix chosen (of the directive's two options -- rename to "undetermined", or resolve-and-compare
+# host addresses): rename. Resolve-and-compare was considered and rejected FOR NOW: this driver's
+# production target is the Linux VM (setup-vm.sh already requires getent/systemctl/podman, all
+# Linux-only), but its test suite runs locally on macOS, and reliably resolving "is this base
+# URL's host one of MY interface addresses" portably across both -- IPv6, containers, NAT'd
+# interfaces, a hostname resolving to multiple A/AAAA records -- is exactly the kind of
+# proof-shaped mechanism that, done carelessly, introduces a NEW false-confidence claim of the
+# same species this item exists to remove. "undetermined" costs nothing and claims nothing it
+# cannot back up; a real resolve-and-compare implementation is future work if the "off-box, on
+# the same subnet" runs EXPERIMENTS.md already calls authoritative (see its "Where the generator
+# ran" section) turn out to need the distinction sharpened further than on-box/undetermined gives.
+# Recorded once per run, per arm (not per rung — placement does not change mid-ladder).
 generator_placement() {
   local base="$1"
   case "$base" in
   *127.0.0.1* | *localhost* | *://\[::1\]* | *://::1*) echo "on-box" ;;
-  *) echo "off-box" ;;
+  *) echo "undetermined" ;;
   esac
 }
 
@@ -264,6 +284,28 @@ load1() {
   local v
   v="$(uptime 2>/dev/null | sed -E 's/.*load average[s]?: *//' | awk -F'[, ]+' '{print $1}')"
   [ -n "$v" ] && printf '%s\n' "$v" || printf 'NaN\n'
+}
+
+# Final review fix, round 2, item 4b: `contention_load1` on its own is not comparable across
+# boxes -- a load average of 4 means "saturated" on a 2-core box and "mostly idle" on a 16-core
+# one, and neither e8-density.sh nor e9-tiers.sh recorded which box (or boxes, for E9's two arms)
+# a given run's numbers came from. Recorded once per run (core counts do not change mid-ladder,
+# same rationale as generator_placement above), not per rung, so a reader normalising
+# `contention_load1` later (load1 / cores, a rough utilization fraction) has the denominator
+# without having to go ask whoever ran it. `nproc` (Linux, always present alongside the
+# systemctl/podman/getent this repo's setup-vm.sh already requires) first; `sysctl -n hw.ncpu`
+# (macOS/BSD, this repo's own dev/test environment) as the fallback so this still works when
+# exercised locally. Falls back to "NaN" on any failure -- same "missing metric reads NaN, never
+# 0" contract load1/worker_metrics above already use, because a 0 core count is nonsensical and
+# would make every load1 normalise to infinity rather than visibly read as unmeasured.
+core_count() {
+  local v
+  v="$(nproc 2>/dev/null)"
+  [ -n "$v" ] || v="$(sysctl -n hw.ncpu 2>/dev/null)"
+  case "$v" in
+  '' | *[!0-9]*) printf 'NaN\n' ;;
+  *) printf '%s\n' "$v" ;;
+  esac
 }
 
 # Resolves and validates a duty-basis name against experiments/src/basis.ts's §2.3 table and

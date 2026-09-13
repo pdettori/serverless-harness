@@ -85,12 +85,17 @@ STUB_URL="${V_STUB_URL:?V_STUB_URL must be the model stub URL this supervisors A
 # Final review fix, part 3, item B2: derived (not declared) from $BASE — see generator_placement's
 # comment in lib-vm.sh. Recorded once per run, in the run summary below, not per rung.
 GENERATOR_PLACEMENT="$(generator_placement "$BASE")"
+# Final review fix, round 2, item 4b: recorded once per run, alongside placement, so
+# contention_load1 (recorded per rung below) has the denominator a reader needs to normalise it
+# (load1 / cores) — see core_count's comment in lib-vm.sh.
+CORE_COUNT="$(core_count)"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "== E8 density: W=$WORKERS S=$TURNS_PER_WORKER basis=$BASIS ladder='$LADDER' =="
 echo "generator: $GENERATOR_PLACEMENT (derived from \$BASE=$BASE; loopback means on-box — see EXPERIMENTS.md)"
+echo "cores on this box: $CORE_COUNT (normalise contention_load1 against this — see EXPERIMENTS.md)"
 
 # --- refuse to measure something meaningless -----------------------------------------------
 # detectKnee throws 'detectKnee: no c=1 baseline point' without this rung. Checking here costs
@@ -325,6 +330,9 @@ echo "E8_RESULT knee_floor=$KNEE degrade_x=$DEGRADE_X min_c=$MIN_C workers=$WORK
   echo "  declared). An **on-box** run is a caveated result, not an equivalent one — see"
   echo "  EXPERIMENTS.md's \"Where the generator ran\" section for why and for the off-box/pinning"
   echo "  guidance."
+  echo "- Cores on this box: **$CORE_COUNT** — normalise per-rung \`contention_load1\` against this"
+  echo "  (load1 / cores, a rough utilization fraction), not against a raw load-average number"
+  echo "  alone."
   echo "- Bound observed at: **$BOUND**"
   echo "- \`lease_saturation\` and \`file_op_ms\` are expected to read \`NaN\` above: no lease-pool"
   echo "  state and no file-op-p95 counter exist anywhere in \`harness/src\` or"
