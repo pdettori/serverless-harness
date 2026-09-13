@@ -125,6 +125,13 @@ for C in $LADDER; do
   cut -f2 "$WORK/raw.$C" >"$WORK/code.$C"
 
   OK_N="$(grep -c '^200$' "$WORK/code.$C" || true)"
+
+  # Hard-fail HERE, before any further rung runs, on a dead arm — see lib-vm.sh's
+  # require_live_arm for why (shared with e9-tiers.sh's run_arm, so neither driver can drift
+  # out of sync with this check by omission). Unlike run_arm's own local work dir, $WORK here is
+  # cleaned up by the EXIT trap installed above, so no cleanup is needed before this call.
+  require_live_arm "$C" "$OK_N" "e8" "$BASE"
+
   SPURIOUS_429="$(grep -c '^429$' "$WORK/code.$C" || true)"
   P50="$(percentile 50 <"$WORK/lat.$C")"
   P95="$(percentile 95 <"$WORK/lat.$C")"

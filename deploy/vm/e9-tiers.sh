@@ -156,16 +156,17 @@ run_arm() {
     # forever, so a dead arm reports the ladder's TOP rung as a clean "floor" instead of erroring.
     # This must fire regardless of *why* c=1 saw no 200s — wrong URL, expired cert, firewall,
     # crashed revision — because none of those reasons make the resulting number less fabricated.
-    # run_arm's stdout IS its return channel (VM_POINTS="$(run_arm ...)" below) — every
-    # diagnostic in this function must go to stderr, or it gets prepended/interleaved into the
-    # JSON points payload and knee_of()'s JSON.parse throws. ko (lib-vm.sh:6, shadowed by
-    # knative/lib.sh:37 once that's sourced at :56) echoes to stdout by design — it is normally
-    # read by callers via `grep -q`, not captured — so it must be redirected here explicitly.
+    # Lifted into lib-vm.sh's require_live_arm() so e8-density.sh cannot drift out of sync with
+    # this check by omission (e8 calls the same function at its own OK_N). run_arm's stdout IS
+    # its return channel (VM_POINTS="$(run_arm ...)" below) — every diagnostic in this function
+    # must go to stderr, or it gets prepended/interleaved into the JSON points payload and
+    # knee_of()'s JSON.parse throws; require_live_arm's own `ko` call already redirects for this
+    # reason (lib-vm.sh), but the work dir is THIS function's own state, so it must still be
+    # cleaned up here, before the call, since require_live_arm exits rather than returning.
     if [ "$C" -eq 1 ] && [ "$n" -eq 0 ]; then
       rm -rf "$work"
-      ko "$label arm: ZERO 200 responses at c=1 ($base) — refusing to run the ladder against an arm that never answered" >&2
-      exit 1
     fi
+    require_live_arm "$C" "$n" "$label" "$base"
 
     # A partially-failing arm must be visible, not merely diluted into a lower throughput number
     # (same signal as e8-density.sh's SPURIOUS_429 WARN, generalised to any non-200 — the Knative

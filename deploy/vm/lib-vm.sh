@@ -78,3 +78,28 @@ require_tsx() {
     exit 1
   }
 }
+
+# Dead-arm guard, shared by e8-density.sh and e9-tiers.sh (originally e9-tiers.sh-only; lifted
+# here so no third caller can omit it by omission). Fires when an arm's c=1 baseline rung sees
+# ZERO successful (200) responses. Without this, detectKnee (experiments/src/sharing.ts) seeds
+# `best` from the c=1 throughput; if that throughput is 0, `cur.throughput >= best` is `0 >= 0`,
+# trivially true forever, so a dead arm reports the ladder's TOP rung as a clean "floor" instead
+# of erroring. Must fire regardless of *why* c=1 saw no 200s — wrong URL, expired cert, firewall,
+# crashed revision, a dead supervisor that still answers /health — because none of those reasons
+# make the resulting number less fabricated.
+#
+# Callers must do any of their OWN cleanup (e.g. removing a function-local work dir) BEFORE
+# calling this: on a dead arm it calls `exit 1` rather than returning, so nothing after the call
+# in the caller ever runs. `ko` (defined above) echoes to stdout by design — normally read by
+# callers via `grep -q`, not captured — so callers whose stdout IS their return channel (e.g.
+# e9-tiers.sh's run_arm, which prints a JSON points array to stdout for its caller to capture)
+# must not let this function's message leak into that channel; hence the explicit >&2 here.
+#
+# Args: $1 = the rung's c (only fires when this is 1, the baseline rung); $2 = the success
+# (200) count observed at that rung; $3 = a label naming the arm; $4 = the arm's base URL.
+require_live_arm() {
+  local rung="$1" ok_n="$2" label="$3" base="$4"
+  [ "$rung" -eq 1 ] && [ "$ok_n" -eq 0 ] || return 0
+  ko "$label arm: ZERO 200 responses at c=1 ($base) — refusing to run the ladder against an arm that never answered" >&2
+  exit 1
+}
