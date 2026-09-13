@@ -143,6 +143,66 @@ require_live_arm() {
   exit 1
 }
 
+# Fetches /profile from the model stub actually driving this run and prints it as JSON on
+# stdout: {ttftMs, tokenDelayMs, outputTokens, toolCallRate}. Final review fix, part 3, item A:
+# the stub is a separate long-lived process, configured by its OWN env at its OWN boot, so a
+# driver's SH_STUB_* environment has no causal connection to what that process is actually doing
+# — this is the only source of truth for the §5.7 claim sentence, which must quote what came
+# back from here, never what the driver's own environment says.
+#
+# Unreachable (or a non-JSON body) is a HARD failure, not a fallback to a default — the same
+# principle as require_live_arm above: a run whose profile cannot be established is not a
+# result, and failing loudly here is cheaper than publishing a claim about load nobody verified.
+# Shared by e8-density.sh and e9-tiers.sh so neither driver can drift onto reading its own
+# environment again by omission.
+stub_profile() {
+  local url="$1" body
+  body="$(curl -sf --max-time 5 "$url/profile" 2>/dev/null)" || {
+    ko "stub profile unreachable at $url/profile — refusing to publish a load claim nobody verified" >&2
+    exit 1
+  }
+  printf '%s' "$body" | jq -e '.' >/dev/null 2>&1 || {
+    ko "stub profile at $url/profile did not return valid JSON: $body" >&2
+    exit 1
+  }
+  printf '%s\n' "$body"
+}
+
+# Final review fix, part 3, item B2: where did the generator (this script) actually run,
+# relative to the arm base URL it is about to drive? Derived, not declared: a flag someone sets
+# can be wrong or stale in a way a loopback address cannot, because curl can only reach
+# 127.0.0.1/localhost/::1 when the caller and the callee share a machine — that address IS the
+# on-box proof, not merely a claim about it. Anything else is off-box by the same logic: this
+# driver could not have reached that base URL without leaving the box, so leaving the box is what
+# it did. Recorded once per run, per arm (not per rung — placement does not change mid-ladder).
+generator_placement() {
+  local base="$1"
+  case "$base" in
+  *127.0.0.1* | *localhost* | *://\[::1\]* | *://::1*) echo "on-box" ;;
+  *) echo "off-box" ;;
+  esac
+}
+
+# Final review fix, part 3, item B3: a per-rung contention indicator. The 1-minute load average
+# (`uptime`) is the cheapest honest proxy available without adding a new dependency: it reflects
+# everything else competing for this box's CPU while the rung ran, not just this driver's own
+# curl calls or the supervisor's own workers. It is deliberately labelled `contention_load1`
+# rather than something that implies precision or attribution to one process — it is a proxy for
+# "how busy was this box overall", not a measurement scoped to the generator or the arm alone, and
+# the point is exactly that: a co-located generator run that drives its own supervisor's load
+# average up during a high-c rung will show it here, so that run cannot silently masquerade as a
+# clean one just because throughput and the (failure-filtered) p95 still look healthy. `uptime`'s
+# output differs cosmetically between Linux (comma-separated, "load average:") and macOS/BSD
+# (space-separated, "load averages:") — the regex/awk below normalises both; the FIRST of the
+# three trailing numbers is always the 1-minute average on both platforms. Falls back to "NaN",
+# not "0", on any failure — same "missing metric reads NaN" contract worker_metrics already uses
+# above, because a 0 would read as "no contention" and would exonerate a box that was actually busy.
+load1() {
+  local v
+  v="$(uptime 2>/dev/null | sed -E 's/.*load average[s]?: *//' | awk -F'[, ]+' '{print $1}')"
+  [ -n "$v" ] && printf '%s\n' "$v" || printf 'NaN\n'
+}
+
 # Resolves and validates a duty-basis name against experiments/src/basis.ts's §2.3 table and
 # prints its one-line human-readable description on stdout. Shared by e8-density.sh and
 # e9-tiers.sh — originally e8-density.sh-only, lifted here so a basis mistranscription (or a

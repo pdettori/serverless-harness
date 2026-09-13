@@ -21,23 +21,24 @@ export V_DUTY_BASIS="${V_DUTY_BASIS:-e6-ocp}"
 # Both drivers must read telemetry from the same admin listener, or their attribution columns
 # describe two different supervisors (plan 1 Task 11).
 export V_METRICS_BASE="${V_METRICS_BASE:-http://127.0.0.1:8081}"
-export SH_STUB_TTFT_MS="${SH_STUB_TTFT_MS:-300}"
-export SH_STUB_TOKEN_DELAY_MS="${SH_STUB_TOKEN_DELAY_MS:-12}"
-export SH_STUB_OUTPUT_TOKENS="${SH_STUB_OUTPUT_TOKENS:-64}"
-export SH_STUB_TOOL_CALL_RATE="${SH_STUB_TOOL_CALL_RATE:-0.07}"
+# Final review fix, part 3, item A3: SH_STUB_* used to be exported here unconditionally, but the
+# stub is a separate long-lived process configured by ITS OWN env at ITS OWN boot -- an export
+# here cannot affect a process that is already running. Its only effect was to make a wrong
+# value LOOK deliberate. Both drivers now fetch the stub's own /profile route instead (see
+# stub_profile in lib-vm.sh); this script no longer names a stub config at all.
 
 echo "== P6 VM experiments (stub-driven) =="
 echo "ladder='$V_LADDER' basis=$V_DUTY_BASIS"
-echo "stub: ttft=${SH_STUB_TTFT_MS}ms delay=${SH_STUB_TOKEN_DELAY_MS}ms tokens=$SH_STUB_OUTPUT_TOKENS toolRate=$SH_STUB_TOOL_CALL_RATE"
 echo "This is the stub-driven measurement path. It does NOT prove the VM path works against a"
 echo "real model -- run deploy/vm/v-live-gate.sh separately for that (spec Sec 5.5)."
 
 ./e8-density.sh
-# E9 needs a cluster; skip it rather than fail the whole invocation when there isn't one.
-if [ -n "${KSVC_URL:-}" ] && [ -n "${V_STUB_URL:-}" ]; then
+# E9 needs a cluster and its own second, co-located stub instance (item A4: one stub per arm,
+# never one shared instance); skip it rather than fail the whole invocation when there isn't one.
+if [ -n "${KSVC_URL:-}" ] && [ -n "${V_VM_STUB_URL:-}" ] && [ -n "${V_KNATIVE_STUB_URL:-}" ]; then
   ./e9-tiers.sh
 else
-  echo "SKIP E9 (set KSVC_URL and V_STUB_URL for the tier comparison)"
+  echo "SKIP E9 (set KSVC_URL, V_VM_STUB_URL, and V_KNATIVE_STUB_URL for the tier comparison)"
 fi
 
 echo "Results appended to ./EXPERIMENTS.md"

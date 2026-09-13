@@ -20,24 +20,28 @@ records are in the same units.
 
 ## What every E8 run record must carry (§5.2, §5.7)
 
-This thirteen-field shape describes **E8's** records only — see the note at the end of this
+This fourteen-field shape describes **E8's** records only — see the note at the end of this
 section for what an E9 record actually contains. A missing E8 field is not a result:
 
-| Field               | Why it is load-bearing                                                                   |
-| ------------------- | ---------------------------------------------------------------------------------------- |
-| `duty_basis`        | One §2.3 row, taken whole. A blend implies a wrong sandbox count.                        |
-| `conns_per_turn`    | What the driver actually does (one connection per turn) — see the note below.            |
-| stub profile        | Half the claim. ttft, token delay, output tokens, tool-call rate.                        |
-| `loop_lag_p99`      | Attributes a knee to worker CPU / socket multiplexing.                                   |
-| `rss_bytes`         | Memory per live session.                                                                 |
-| `file_op_ms`        | The relay round trip.                                                                    |
-| `sandbox_cpu`       | `bash -c` churn across the pool.                                                         |
-| `lease_saturation`  | An under-provisioned pool, which reads exactly like worker saturation.                   |
-| `over_admission`    | Bounds IPC staleness; self-correcting, so it is a diagnostic not a failure.              |
-| `spurious_refusals` | Refusals the next `load` convicted. Attributes a `spurious_429` to staleness.            |
-| `spurious_429`      | **The dangerous one.** Refusals truncate a rung, so the knee reads early.                |
-| `attempts`          | Total requests issued at this rung — the denominator for the success rate.               |
-| `ok_n`              | 200-coded requests at this rung — the numerator, and what `p50`/`p95` are computed over. |
+| Field               | Why it is load-bearing                                                                                                  |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `duty_basis`        | One §2.3 row, taken whole. A blend implies a wrong sandbox count.                                                       |
+| `conns_per_turn`    | What the driver actually does (one connection per turn) — see the note below.                                           |
+| stub profile        | Half the claim. ttft, token delay, output tokens, tool-call rate.                                                       |
+| `loop_lag_p99`      | Attributes a knee to worker CPU / socket multiplexing.                                                                  |
+| `rss_bytes`         | Memory per live session.                                                                                                |
+| `file_op_ms`        | The relay round trip.                                                                                                   |
+| `sandbox_cpu`       | `bash -c` churn across the pool.                                                                                        |
+| `lease_saturation`  | An under-provisioned pool, which reads exactly like worker saturation.                                                  |
+| `over_admission`    | Bounds IPC staleness; self-correcting, so it is a diagnostic not a failure.                                             |
+| `spurious_refusals` | Refusals the next `load` convicted. Attributes a `spurious_429` to staleness.                                           |
+| `spurious_429`      | **The dangerous one.** Refusals truncate a rung, so the knee reads early.                                               |
+| `attempts`          | Total requests issued at this rung — the denominator for the success rate.                                              |
+| `ok_n`              | 200-coded requests at this rung — the numerator, and what `p50`/`p95` are computed over.                                |
+| `contention_load1`  | 1-minute load average, a contention PROXY (not a generator-specific measurement) — see "Where the generator ran" below. |
+
+`generator_placement` (on-box/off-box) is recorded once **per run**, not per rung, in the
+run-summary prose rather than this per-rung JSON shape — see "Where the generator ran" below.
 
 ### `p50`/`p95` are computed over successes only, and there is a floor below which a rung is not a result
 
@@ -78,10 +82,10 @@ or either driver's rung loop measures.
 
 ### Two of these columns are permanently `NaN` — this is not a missing run, it is a missing sensor
 
-Of the thirteen fields above, **eight** are real, load-bearing telemetry every **E8** run record
+Of the fourteen fields above, **nine** are real, load-bearing telemetry every **E8** run record
 actually carries: `loop_lag_p99`, `rss_bytes`, `sandbox_cpu`, `over_admission`,
-`spurious_refusals`, `spurious_429`, `attempts`, `ok_n`. The other two, `lease_saturation` and
-`file_op_ms`, will
+`spurious_refusals`, `spurious_429`, `attempts`, `ok_n`, `contention_load1`. The other two,
+`lease_saturation` and `file_op_ms`, will
 read `NaN` in **every E8 record**, on any VM, no matter how it is provisioned — not because the
 run failed to collect them, but because nothing in this repository computes them.
 `harness/src/sandbox-lease.ts` derives a lease _count_ from an array its caller already holds; it
@@ -105,11 +109,14 @@ at the point the sentence is written.
 
 **E9's records do not have the attribution shape above at all — they carry none of the nine
 attribution/basis/stub fields, not even as `NaN`.** `e9-tiers.sh` emits one point per rung as
-`{c, throughput, p95Ms, attempts, non200}` (`deploy/vm/e9-tiers.sh`'s `run_arm`, see the `points`
-assembly near the end of its rung loop) — `attempts` and `non200` (not `ok_n`: E9 records the
-failure count directly, since its existing non200>0 WARN already worked in those terms) are the
-one exception, carried per-point for the same success-rate-floor auditability as E8's
-`attempts`/`ok_n`. The one time `e9-tiers.sh` reads `$METRICS_BASE/metrics` at all (in its PIN 2
+`{c, throughput, p95Ms, attempts, non200, contention_load1}` (`deploy/vm/e9-tiers.sh`'s `run_arm`,
+see the `points` assembly near the end of its rung loop) — `attempts` and `non200` (not `ok_n`: E9
+records the failure count directly, since its existing non200>0 WARN already worked in those
+terms) are carried per-point for the same success-rate-floor auditability as E8's
+`attempts`/`ok_n`; `contention_load1` is carried per-point for the same reason it is carried in
+E8's records (see "Where the generator ran" below) — it is not part of the attribution shape, it
+is the same box-level contention proxy added independently of it. The one time `e9-tiers.sh` reads
+`$METRICS_BASE/metrics` at all (in its PIN 2
 pre-flight check) is to check the VM arm's `.env.ANTHROPIC_BASE_URL` matches the pinned stub, not
 to sample any attribution counter — so none of the six real E8 columns, `lease_saturation`, or
 `file_op_ms` are sampled, recorded, or NaN'd out for E9; they are simply absent from the JSON.
@@ -119,6 +126,68 @@ other requirement), not per-point in the JSON. Do not read an E9
 record's silence on, say, `spurious_429` as "zero refusals were observed and confirmed" — E9
 never samples that column, so its absence means "not measured," not "measured and clean." Zero
 and absent are opposite claims; only E8 records can make the former.
+
+## Where the generator ran, and how busy the box was (final review fix, part 3, items B2–B4)
+
+The load generator **is** `e8-density.sh`/`e9-tiers.sh` themselves — every `vm_turn` call in the
+rung loop originates from wherever the driver process itself is running. Before this item, that
+fact was invisible in the record: a run co-located with the supervisor it drives competes with
+that supervisor for the same CPU the run is trying to measure, and nothing in the output said so.
+Two fields close that gap, and a documentation requirement closes a third.
+
+### `generator_placement` — derived, not declared, once per run per arm
+
+`generator_placement()` (`lib-vm.sh`) classifies a base URL as **on-box** when it is loopback
+(`127.0.0.1`, `localhost`, `::1`) and **off-box** otherwise. This is a derivation, not a flag
+someone sets: curl can only reach a loopback address when the caller and the callee share a
+machine, so the address itself is the proof, not a claim about it. `e8-density.sh` records one
+`GENERATOR_PLACEMENT` (from `$BASE`); `e9-tiers.sh` records one per arm (`$VM_BASE`, `$KSVC_URL`),
+since the same generator process can be on-box relative to one arm and off-box relative to the
+other — a `$VM_BASE` on loopback is common, a `$KSVC_URL` on loopback essentially never happens
+(cluster addresses are not loopback). Recorded once per run, in the run-summary prose, because
+placement does not change mid-ladder — a per-rung field would only repeat the same value.
+
+### `contention_load1` — a proxy, recorded per rung, not a generator-specific measurement
+
+Each rung also records `contention_load1`, the 1-minute load average (`uptime`) of whichever box
+the driver call executes on, sampled fresh at the end of that rung. This is **not** scoped to the
+generator's own process, the supervisor's own process, or any single tier — it is whatever else is
+running on that box, which is exactly the point: a co-located generator that drives its own
+supervisor's load average up during a high-`c` rung will show it here, so that run cannot silently
+masquerade as a clean one just because throughput and the (failure-filtered) `p95` still look
+healthy. Label it as a proxy when quoting it, never as a precise attribution — it says "the box was
+busy," not "the generator caused it" or "the supervisor caused it." 1-minute load average was kept
+as the cheapest honest option available without a new dependency (`uptime` exists on every
+platform this repo already targets, Linux and macOS/BSD alike, and needs no counter this codebase
+would have to add) rather than argued away in favour of something narrower like a per-process CPU
+sample, which would need `/proc` (Linux-only, and this repo's own dev environment is macOS) or an
+additional tool. `e9-tiers.sh` records it per arm per rung, since the two arms can be on different
+boxes and can carry different contention.
+
+### The authoritative run puts the generator off-box, on the same subnet
+
+**An on-box run (`generator_placement: on-box`) is a caveated result, not an equivalent one.**
+The authoritative measurement path for both E8 and E9 runs the generator on a separate machine, on
+the same subnet as the arm(s) it drives, so the generator's own curl/fork/exec overhead and the
+supervisor's/ksvc's own CPU never compete for the same core — B1's `vm_turn` rewrite
+(`lib-vm.sh`) already removed the generator's own _process-count_ overhead per turn, but it cannot
+remove the fact that an on-box generator still shares a CPU budget with the thing it is measuring.
+A run recorded with `generator_placement: on-box` should be read, and cited, with that caveat
+attached; it is informative (useful for local iteration, or when no second machine is available)
+but is not interchangeable with an off-box run when the two disagree.
+
+**If off-box is genuinely impossible, `taskset` (Linux) or an equivalent cpuset/cgroup pin is the
+documented fallback** — pin the generator process to CPUs the supervisor's/ksvc's own workers do
+not use, so contention becomes bounded and visible (via `contention_load1` above) rather than
+silently traded for a faster loopback round trip. This is **not implemented** by either driver:
+a correct implementation is not the "genuinely small" case where implementing beats documenting —
+it would need to know, per platform and per deployment (systemd unit vs. ad hoc shell, kind vs. a
+real VM), which CPUs are already claimed by the supervisor or by Knative's own control-plane pods,
+which this repository does not currently expose anywhere a driver could read it, and getting that
+wrong (pinning the generator onto a CPU the supervisor also uses) would be worse than not pinning
+at all — a false sense of isolation. Documenting the requirement, so a future run configuration
+knows to reach for `taskset -c <cpu-list>` or a systemd `CPUAffinity=` setting explicitly, is the
+deliverable here.
 
 ## Duty bases (spec §2.3) — take a row whole
 

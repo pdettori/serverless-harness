@@ -47,11 +47,25 @@ WORKERS="${SH_WORKERS:?SH_WORKERS must name the worker count this supervisor was
 # No default, deliberately (§3.8): S is the per-worker cap on in-flight turns, and its right
 # value is an OUTPUT of this experiment. A default here would quietly answer the question E8 asks.
 TURNS_PER_WORKER="${SH_TURNS_PER_WORKER:?SH_TURNS_PER_WORKER must be set to the S this supervisor was started with}"
+# Final review fix, part 3, item A: the stub this supervisor's ANTHROPIC_BASE_URL actually points
+# at is a separate long-lived process, configured by ITS OWN env at ITS OWN boot -- this driver's
+# own SH_STUB_* environment (if any) has no causal connection to it. No default: a wrong URL here
+# would make stub_profile below either hang against nothing or, worse, quietly succeed against
+# some OTHER stub, which is precisely the fabrication path this item exists to close.
+# No apostrophe in this message: shellcheck cannot parse one inside a ${VAR:?msg} expansion
+# (SC1073/SC1072 -- verified empirically, not a style nit) -- it reads the apostrophe as opening
+# a single-quoted string and aborts parsing the rest of the file.
+STUB_URL="${V_STUB_URL:?V_STUB_URL must be the model stub URL this supervisors ANTHROPIC_BASE_URL points at, so this driver can fetch /profile from the stub actually driving the run (see deploy/knative/model-stub/README.md)}"
+
+# Final review fix, part 3, item B2: derived (not declared) from $BASE — see generator_placement's
+# comment in lib-vm.sh. Recorded once per run, in the run summary below, not per rung.
+GENERATOR_PLACEMENT="$(generator_placement "$BASE")"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "== E8 density: W=$WORKERS S=$TURNS_PER_WORKER basis=$BASIS ladder='$LADDER' =="
+echo "generator: $GENERATOR_PLACEMENT (derived from \$BASE=$BASE; loopback means on-box — see EXPERIMENTS.md)"
 
 # --- refuse to measure something meaningless -----------------------------------------------
 # detectKnee throws 'detectKnee: no c=1 baseline point' without this rung. Checking here costs
@@ -86,6 +100,17 @@ curl -sf --max-time 5 "$BASE/health" >/dev/null || {
   ko "no supervisor answering at $BASE"
   exit 1
 }
+
+# Final review fix, part 3, item A3: fetch the stub's OWN resolved profile rather than trust this
+# driver's environment. stub_profile (lib-vm.sh) hard-fails (exit 1) if the stub is unreachable
+# or returns something that is not valid JSON -- a run whose profile cannot be established is not
+# a result, same principle as require_live_arm above.
+STUB_PROFILE_JSON="$(stub_profile "$STUB_URL")"
+STUB_TTFT="$(printf '%s' "$STUB_PROFILE_JSON" | jq -r '.ttftMs')"
+STUB_TOKEN_DELAY="$(printf '%s' "$STUB_PROFILE_JSON" | jq -r '.tokenDelayMs')"
+STUB_TOKENS="$(printf '%s' "$STUB_PROFILE_JSON" | jq -r '.outputTokens')"
+STUB_TOOL_RATE="$(printf '%s' "$STUB_PROFILE_JSON" | jq -r '.toolCallRate')"
+echo "model stub profile (from $STUB_URL/profile, as resolved at the stub's own boot): $STUB_PROFILE_JSON"
 
 BODY="${V_BODY:-{\"prompt\":\"summarise the diff\"}}"
 POINTS='[]'
@@ -161,6 +186,10 @@ for C in $LADDER; do
   REFUSALS_CONVICTED="$(printf '%s' "$M1" | jq -r '.counters.spurious_refusals // "NaN"')"
   LEASE_SATURATION="$(printf '%s' "$M1" | jq -r '.lease_saturation // "NaN"')"
   SANDBOX_CPU="$(awk -v a="$CPU0" -v b="$(sandbox_cpu_seconds)" 'BEGIN {printf "%.2f", b-a}')"
+  # Final review fix, part 3, item B3: contention proxy, read fresh at the end of THIS rung (not
+  # once per run) so a rung that drove load up shows it at the rung it happened, not smeared
+  # across the whole run. See load1's comment in lib-vm.sh for why this is 1-minute load average.
+  CONTENTION_LOAD1="$(load1)"
 
   # A 429 storm is the dangerous reading: refusals shorten a rung's completed work, so
   # throughput flattens and the ladder reports a knee that is an admission-control artefact
@@ -179,11 +208,12 @@ for C in $LADDER; do
     --arg over "$OVER_ADMISSION" --arg recon "$REFUSALS_CONVICTED" \
     --argjson s429 "$SPURIOUS_429" --arg basis "$BASIS" \
     --argjson attempts "$ATTEMPTS" --argjson ok_n "$OK_N" \
+    --arg load1 "$CONTENTION_LOAD1" \
     '. + [{c: $c, throughput: $t, p50Ms: $p50, p95Ms: $p95,
            loop_lag_p99: $lag, rss_bytes: $rss, file_op_ms: $fop, sandbox_cpu: $scpu,
            lease_saturation: $lease, over_admission: $over, spurious_refusals: $recon,
            spurious_429: $s429, conns_per_turn: 1, duty_basis: $basis,
-           attempts: $attempts, ok_n: $ok_n}]')"
+           attempts: $attempts, ok_n: $ok_n, contention_load1: $load1}]')"
 done
 
 # --- knee ----------------------------------------------------------------------------------
@@ -257,7 +287,11 @@ echo "E8_RESULT knee_floor=$KNEE degrade_x=$DEGRADE_X min_c=$MIN_C workers=$WORK
   echo "  SH_ROUTING_POLICY=leastInFlight (the only policy either driver sets — routing decides"
   echo "  per request, not per session, so there is no session affinity here to preserve)."
   echo "- Sandbox pool: $SANDBOX_COUNT containers (floor $SANDBOX_FLOOR)."
-  echo "- Model stub profile: ttft=${SH_STUB_TTFT_MS:-default} tokenDelay=${SH_STUB_TOKEN_DELAY_MS:-default} tokens=${SH_STUB_OUTPUT_TOKENS:-default} toolRate=${SH_STUB_TOOL_CALL_RATE:-default}"
+  echo "- Model stub profile (fetched from $STUB_URL/profile, as resolved at the stub's own boot — not this driver's environment): ttft=${STUB_TTFT}ms tokenDelay=${STUB_TOKEN_DELAY}ms tokens=${STUB_TOKENS} toolRate=${STUB_TOOL_RATE}"
+  echo "- Generator placement: **$GENERATOR_PLACEMENT** (derived from \`\$BASE=$BASE\`, not"
+  echo "  declared). An **on-box** run is a caveated result, not an equivalent one — see"
+  echo "  EXPERIMENTS.md's \"Where the generator ran\" section for why and for the off-box/pinning"
+  echo "  guidance."
   echo "- Bound observed at: **$BOUND**"
   echo "- \`lease_saturation\` and \`file_op_ms\` are expected to read \`NaN\` above: no lease-pool"
   echo "  state and no file-op-p95 counter exist anywhere in \`harness/src\` or"
@@ -270,9 +304,10 @@ echo "E8_RESULT knee_floor=$KNEE degrade_x=$DEGRADE_X min_c=$MIN_C workers=$WORK
   echo ""
   echo "> On a single VM, $WORKERS workers each admitting up to $TURNS_PER_WORKER in-flight turns"
   echo "> sustained **$KNEE concurrent turns** with p95 within ${DEGRADE_X}x the single-session"
-  echo "> baseline, with the model tier modelled at ttft=${SH_STUB_TTFT_MS:-default}ms"
-  echo "> tokenDelay=${SH_STUB_TOKEN_DELAY_MS:-default}ms tokens=${SH_STUB_OUTPUT_TOKENS:-default}"
-  echo "> toolRate=${SH_STUB_TOOL_CALL_RATE:-default}, and the bound observed at $BOUND."
+  echo "> baseline, with the model tier modelled at ttft=${STUB_TTFT}ms"
+  echo "> tokenDelay=${STUB_TOKEN_DELAY}ms tokens=${STUB_TOKENS}"
+  echo "> toolRate=${STUB_TOOL_RATE} (as reported by the stub's own /profile route, not this"
+  echo "> driver's environment), and the bound observed at $BOUND."
   if [ "$SATURATED" = no ]; then
     echo ">"
     echo "> _Ladder-limited: $KNEE was the top rung, so the sentence understates the machine._"
@@ -285,7 +320,8 @@ echo "E8_RESULT knee_floor=$KNEE degrade_x=$DEGRADE_X min_c=$MIN_C workers=$WORK
   echo "Per-rung records (§5.2 attribution: loop_lag_p99 -> worker CPU/mux; rss_bytes -> memory per"
   echo "live session; file_op_ms -> relay round trip; sandbox_cpu -> \`bash -c\` churn;"
   echo "lease_saturation -> pool provisioning; over_admission -> IPC staleness; spurious_429 -> a"
-  echo "knee read early rather than a real ceiling):"
+  echo "knee read early rather than a real ceiling; contention_load1 -> 1-minute load average, a"
+  echo "contention PROXY not a generator-specific measurement — see EXPERIMENTS.md):"
   echo ""
   echo '```json'
   printf '%s\n' "$RECORDS" | jq .

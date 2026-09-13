@@ -4,10 +4,19 @@
 # The comparison is only meaningful if everything except the deployment tier is held constant.
 # Two pins, both enforced below rather than merely described:
 #
-#   PIN 1 (model tier). Both arms drive the SAME stub. E6 numbers are not reused here: E6's
-#   existing Knative numbers were taken against a real model, and reusing them would compare
-#   model backends, not deployment tiers. So the Knative arm is RE-RUN with ANTHROPIC_BASE_URL
-#   pointing at the stub.
+#   PIN 1 (model tier). Both arms drive their OWN co-located stub instance — TWO stub processes,
+#   one per arm, not one shared stub reached over two different network paths. Model tier is a
+#   config property (the four SH_STUB_* values a stub resolves at its own boot), not a network
+#   location: a single shared stub would let the two arms differ in SSE-per-flush round-trip time
+#   for a reason unrelated to the tier under comparison (whichever arm is farther from the shared
+#   instance pays extra RTT per flush), and it would not match how a stub is actually deployed in
+#   production (co-located with its consumer, never centralised). Both instances run the
+#   identical image and identical env, and that identity is verified below by comparing what each
+#   stub's own /profile route reports at its own boot — not by comparing URLs or grepping for a
+#   shared string, since with two instances there is no longer one string to grep for. E6 numbers
+#   are not reused here: E6's existing Knative numbers were taken against a real model, and
+#   reusing them would compare model backends, not deployment tiers. So the Knative arm is
+#   RE-RUN with ANTHROPIC_BASE_URL pointing at its own co-located stub.
 #
 #   PIN 2 (tool tier). Both arms run relay + gRPC. Left alone the Knative arm would use
 #   persistentExecInPod's fast channel, which the VM arm has no equivalent for — gRPC has no
@@ -50,7 +59,18 @@ METRICS_BASE="${V_METRICS_BASE:-http://127.0.0.1:8081}"
 # against a cluster this invocation never configured (its failures are swallowed by `|| true`,
 # so a bogus patch here would fail silently and mutate state on the way out).
 KSVC_URL="${KSVC_URL:?KSVC_URL must point at the Knative arm}"
-STUB_URL="${V_STUB_URL:?V_STUB_URL must be the stub URL the CLUSTER can reach (not 127.0.0.1)}"
+# Two separate stub instances, one per arm (see PIN 1 above) — no default of one from the other,
+# because defaulting would silently resurrect the single-shared-stub design this item removed.
+VM_STUB_URL="${V_VM_STUB_URL:?V_VM_STUB_URL must be the stub URL the VM ARM can reach (its own co-located instance)}"
+KNATIVE_STUB_URL="${V_KNATIVE_STUB_URL:?V_KNATIVE_STUB_URL must be the stub URL the CLUSTER can reach (its own co-located instance)}"
+
+# Final review fix, part 3, item B2: derived (not declared) per arm, from that arm's own base
+# URL — see generator_placement's comment in lib-vm.sh. This driver drives BOTH arms from wherever
+# it itself runs, so the two can differ: a VM_BASE on loopback is on-box relative to the VM arm
+# even when KSVC_URL (necessarily a routable cluster address, never loopback) is off-box relative
+# to the Knative arm. Recorded once per run, per arm, in the run summary below, not per rung.
+VM_GENERATOR_PLACEMENT="$(generator_placement "$VM_BASE")"
+KNATIVE_GENERATOR_PLACEMENT="$(generator_placement "$KSVC_URL")"
 
 # shellcheck source=../knative/lib.sh
 source ../knative/lib.sh
@@ -103,7 +123,7 @@ KSVC_MUTATED=0
 warn_ksvc_left_mutated() {
   [ "$KSVC_MUTATED" = 1 ] || return 0
   echo "" >&2
-  echo "NOTE: ksvc $KSVC (namespace $NS) is left pointed at ANTHROPIC_BASE_URL=$STUB_URL," >&2
+  echo "NOTE: ksvc $KSVC (namespace $NS) is left pointed at ANTHROPIC_BASE_URL=$KNATIVE_STUB_URL," >&2
   echo "      SH_REMOTE_SANDBOX=1, SH_SANDBOX_DISCOVERY=records, SH_RELAY_ADDR=$RELAY_ADDR." >&2
   echo "      restore_ksvc_env() does not reset these four. Reset them by hand (or re-apply" >&2
   echo "      service.yaml) before anyone else uses this cluster." >&2
@@ -111,6 +131,7 @@ warn_ksvc_left_mutated() {
 trap 'restore_ksvc_env; warn_ksvc_left_mutated' EXIT
 
 echo "== E9 tier comparison: ladder='$LADDER' basis=$BASIS =="
+echo "generator: vm=$VM_GENERATOR_PLACEMENT (from \$VM_BASE=$VM_BASE) knative=$KNATIVE_GENERATOR_PLACEMENT (from \$KSVC_URL=$KSVC_URL) — loopback means on-box, see EXPERIMENTS.md"
 
 # --- PIN 1 + PIN 2 applied to the Knative arm ----------------------------------------------
 # ANTHROPIC_BASE_URL: the same stub, so the model tier is identical.
@@ -119,28 +140,50 @@ echo "== E9 tier comparison: ladder='$LADDER' basis=$BASIS =="
 # persistentExecInPod's fast channel while the VM arm has no equivalent (#245) and the VM loses
 # on a difference E9 is not measuring. One JSON-patch call, one new Revision (set_ksvc_env takes
 # NAME=value tokens, not "NAME value" pairs — each var below is a single argument).
-set_ksvc_env "ANTHROPIC_BASE_URL=$STUB_URL" "SH_REMOTE_SANDBOX=1" \
+set_ksvc_env "ANTHROPIC_BASE_URL=$KNATIVE_STUB_URL" "SH_REMOTE_SANDBOX=1" \
   "SH_SANDBOX_DISCOVERY=records" "SH_RELAY_ADDR=$RELAY_ADDR"
 wait_ksvc_ready
 KSVC_MUTATED=1
 
-# The VM arm's supervisor must already be running with the same two pins; assert rather than
-# assume, because a mismatched arm produces a plausible-looking number that means nothing. Both
-# SH_REMOTE_SANDBOX and SH_SANDBOX_DISCOVERY are in /metrics' env allowlist alongside
-# ANTHROPIC_BASE_URL (packages/supervisor/src/admin.ts's ENV_ALLOWLIST), so they are checkable
-# exactly the same way the stub URL is. This is a hard failure, not a WARN: an unpinned VM arm
-# is not a degraded tier comparison, it is not a tier comparison at all, and letting the run
-# continue would still write a labelled "floor" into EXPERIMENTS.md that means nothing.
+# PIN 1 verification, profile comparison (final review fix, part 3, item A4): with two
+# co-located stub instances there is no longer one shared URL to grep for, so "are both arms
+# pointed at the same address" is not the question — by design they are NOT. The question is
+# "are the two stubs running the identical resolved config", and the only source of truth for
+# that is each stub's own /profile route (never this driver's or the ksvc's environment — see
+# stub_profile's own comment in lib-vm.sh). A field-by-field diff, not just "not equal", so the
+# operator is told exactly which of the four values drifted rather than an opaque "not ok".
+VM_STUB_PROFILE="$(stub_profile "$VM_STUB_URL")"
+KN_STUB_PROFILE="$(stub_profile "$KNATIVE_STUB_URL")"
+if [ "$VM_STUB_PROFILE" != "$KN_STUB_PROFILE" ]; then
+  DIFF_FIELDS="$(jq -n --argjson vm "$VM_STUB_PROFILE" --argjson kn "$KN_STUB_PROFILE" -r \
+    '($vm | keys_unsorted) as $ks | $ks | map(select($vm[.] != $kn[.])) | join(", ")')"
+  ko "the two stub instances are not running the same resolved profile — differing field(s): $DIFF_FIELDS (vm=$VM_STUB_PROFILE knative=$KN_STUB_PROFILE)"
+fi
+
+# The VM arm's supervisor must already be pointed at ITS OWN stub instance and running with pin
+# 2; assert rather than assume, because a mismatched arm produces a plausible-looking number that
+# means nothing. Both SH_REMOTE_SANDBOX and SH_SANDBOX_DISCOVERY are in /metrics' env allowlist
+# alongside ANTHROPIC_BASE_URL (packages/supervisor/src/admin.ts's ENV_ALLOWLIST), so they are
+# checkable the same way. This is a hard failure, not a WARN: an unpinned VM arm is not a
+# degraded tier comparison, it is not a tier comparison at all, and letting the run continue
+# would still write a labelled "floor" into EXPERIMENTS.md that means nothing.
 # `|| true`: under `set -euo pipefail`, a curl failure (wrong port, closed connection, non-200
 # with -f) or a jq parse failure on a non-JSON body would abort the WHOLE SCRIPT right here,
 # before any of the three pin-diagnostic checks below get a chance to run and say why. The
 # emptiness check below turns that silent abort into a named, actionable ko instead.
 VM_ENV="$(curl -sf --max-time 5 "$METRICS_BASE/metrics" | jq -r '.env // {} | @json')" || true
 if [ -z "$VM_ENV" ]; then
-  ko "VM arm's /metrics at $METRICS_BASE did not return usable JSON (curl failure, non-200, or a mis-pointed data port reaching this admin endpoint) — cannot verify pin 2"
+  ko "VM arm's /metrics at $METRICS_BASE did not return usable JSON (curl failure, non-200, or a mis-pointed data port reaching this admin endpoint) — cannot verify pins 1/2"
 else
-  printf '%s' "$VM_ENV" | grep -q "$STUB_URL" ||
-    ko "VM arm's /metrics does not show ANTHROPIC_BASE_URL=$STUB_URL — verify /etc/serverless-harness/supervisor.env"
+  # Exact match via jq -e, not a substring grep: $VM_ENV is already the pre-extracted `.env`
+  # object (see the curl|jq line above), so the filter is `.ANTHROPIC_BASE_URL == $u`, not
+  # `.env.ANTHROPIC_BASE_URL == $u` — the latter would look for a nested `.env` key that does not
+  # exist at this point and would always evaluate false. A substring grep would also pass on a
+  # URL that merely CONTAINS $VM_STUB_URL as a substring (e.g. a stray query string or a decoy
+  # host sharing a suffix), which is a weaker guarantee than the exact equality this arm's
+  # correctness actually depends on.
+  printf '%s' "$VM_ENV" | jq -e --arg u "$VM_STUB_URL" '.ANTHROPIC_BASE_URL == $u' >/dev/null ||
+    ko "VM arm's /metrics does not show ANTHROPIC_BASE_URL=$VM_STUB_URL exactly — verify /etc/serverless-harness/supervisor.env"
   printf '%s' "$VM_ENV" | grep -q '"SH_REMOTE_SANDBOX":"1"' ||
     ko "VM arm's /metrics does not show SH_REMOTE_SANDBOX=1 — pin 2 (tool tier) is not satisfied"
   printf '%s' "$VM_ENV" | grep -q '"SH_SANDBOX_DISCOVERY":"records"' ||
@@ -216,11 +259,17 @@ run_arm() {
     # own (0.95-f)/(1-f) quantile, where f is the failure fraction).
     p95="$(awk -F'\t' '$2==200{print $1}' "$work/raw.$C" | percentile 95)"
     tput="$(awk -v n="$n" -v ms="$wall" 'BEGIN {printf "%.3f", ms>0 ? n*1000/ms : 0}')"
-    echo "-- $label c=$C p95=${p95}ms tput=$tput" >&2
+    # Final review fix, part 3, item B3: contention proxy, read fresh at the end of THIS rung —
+    # see load1's comment in lib-vm.sh. Recorded per arm per rung, since the two arms can be on
+    # different boxes and can carry different contention.
+    local load1_now
+    load1_now="$(load1)"
+    echo "-- $label c=$C p95=${p95}ms tput=$tput load1=$load1_now" >&2
     points="$(printf '%s' "$points" | jq -c \
       --argjson c "$C" --argjson t "$tput" --argjson p "$p95" \
       --argjson attempts "$attempts" --argjson non200 "$non200" \
-      '. + [{c: $c, throughput: $t, p95Ms: $p, attempts: $attempts, non200: $non200}]')"
+      --arg load1 "$load1_now" \
+      '. + [{c: $c, throughput: $t, p95Ms: $p, attempts: $attempts, non200: $non200, contention_load1: $load1}]')"
   done
   rm -rf "$work"
   printf '%s' "$points"
@@ -296,9 +345,11 @@ echo "E9_RESULT vm_knee_floor=$VM_KNEE knative_knee_floor=$KN_KNEE degrade_x=$DE
   echo ""
   echo "Pins that make this a tier comparison (§5.3):"
   echo ""
-  echo "- **Model tier:** both arms drove the same stub at \`$STUB_URL\`. E6's existing Knative"
-  echo "  numbers were taken against a real model and are **not** comparable, so the Knative arm"
-  echo "  was re-run here rather than reused."
+  echo "- **Model tier:** each arm drove its OWN co-located stub instance — the VM arm at"
+  echo "  \`$VM_STUB_URL\`, the Knative arm at \`$KNATIVE_STUB_URL\` — verified to be running the"
+  echo "  identical resolved profile via /profile (\`$VM_STUB_PROFILE\`), not merely pointed at the"
+  echo "  same address. E6's existing Knative numbers were taken against a real model and are"
+  echo "  **not** comparable, so the Knative arm was re-run here rather than reused."
   echo "- **Tool tier:** both arms ran relay + gRPC (\`SH_REMOTE_SANDBOX=1\`,"
   echo "  \`SH_SANDBOX_DISCOVERY=records\`). Leaving \`persistentExecInPod\`'s fast channel enabled"
   echo "  on the Knative arm would penalise the VM for a tool-tier difference — gRPC has no"
@@ -309,6 +360,12 @@ echo "E9_RESULT vm_knee_floor=$VM_KNEE knative_knee_floor=$KN_KNEE degrade_x=$DE
   echo "  knob either), so routing decides per request, not per session, and there is no session"
   echo "  affinity for a per-turn connection to defeat."
   echo "- duty_basis: $BASIS (one §2.3 row, taken whole)."
+  echo "- Generator placement: VM arm **$VM_GENERATOR_PLACEMENT** (from \`\$VM_BASE=$VM_BASE\`),"
+  echo "  Knative arm **$KNATIVE_GENERATOR_PLACEMENT** (from \`\$KSVC_URL=$KSVC_URL\`) — derived,"
+  echo "  not declared. Either arm reading **on-box** makes that arm's numbers a caveated result,"
+  echo "  not an equivalent one — see EXPERIMENTS.md's \"Where the generator ran\" section."
+  echo "- Per-rung \`contention_load1\` (1-minute load average) is a contention PROXY, not a"
+  echo "  generator-specific measurement — see EXPERIMENTS.md."
   echo ""
   echo '```json'
   jq -n --argjson vm "$VM_POINTS" --argjson kn "$KN_POINTS" '{vm: $vm, knative: $kn}'

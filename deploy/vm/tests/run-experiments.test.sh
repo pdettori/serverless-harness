@@ -2,10 +2,12 @@
 # Structural tests for deploy/vm/run-experiments.sh — the shared-configuration runner.
 #
 # The property under test is narrower than "it runs E8 and E9": it is that an operator CANNOT
-# give the two drivers different ladders or stub profiles, because a difference in either makes
-# their records incomparable (§5.7). This file also asserts the runner cannot be mistaken for
-# v-live-gate.sh's real-model validation path — that confusion is the thing Task 5 exists to
-# prevent.
+# give the two drivers different ladders, because a difference makes their records incomparable
+# (§5.7). Stub profile is NOT part of that shared configuration (final review fix, part 3, item
+# A3): the stub is a separate long-lived process configured by its own env at its own boot, so
+# both drivers instead fetch its live /profile route rather than trust a value declared here.
+# This file also asserts the runner cannot be mistaken for v-live-gate.sh's real-model validation
+# path — that confusion is the thing Task 5 exists to prevent.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 FAIL=0
@@ -52,16 +54,24 @@ for var in V_LADDER V_DEGRADE_X V_MIN_C V_DUTY_BASIS V_METRICS_BASE; do
     ko "$var must be exported exactly once so E8 and E9 cannot diverge (found $N export sites)"
 done
 
-# --- 5. The stub profile is shared too: half the claim per §5.2's run-record table. ---------
+# --- 5. The stub profile is NOT re-declared here (final review fix, part 3, item A3): the stub
+# is a separate long-lived process configured by its OWN env at its OWN boot, so an SH_STUB_*
+# export in this runner cannot affect it -- it can only make a wrong value look deliberate. Both
+# drivers instead fetch the stub's own /profile route (stub_profile in lib-vm.sh). This is a
+# regression guard: none of the old SH_STUB_* knobs should reappear here.
 for var in SH_STUB_TTFT_MS SH_STUB_TOKEN_DELAY_MS SH_STUB_OUTPUT_TOKENS SH_STUB_TOOL_CALL_RATE; do
-  grep -q "$var" run-experiments.sh && ok "shares $var across both drivers" ||
-    ko "missing shared stub-profile knob: $var"
+  grep -q "$var" run-experiments.sh &&
+    ko "$var must not be exported here -- it cannot affect an already-running stub process (item A3)" ||
+    ok "does not re-declare stub-profile knob $var (stub self-reports via /profile instead)"
 done
 
-# --- 6. E9 is skipped, not failed, when there is no cluster to compare against. -------------
-grep -qE 'KSVC_URL' run-experiments.sh && grep -qE 'V_STUB_URL' run-experiments.sh &&
-  ok "gates the E9 invocation on KSVC_URL/V_STUB_URL" ||
-  ko "must skip E9 (not fail the whole run) when no cluster is configured"
+# --- 6. E9 is skipped, not failed, when there is no cluster / second stub to compare against. -
+# item A4: E9 needs its own two co-located stub instances (one per arm), never one shared
+# instance, so the gate names both stub URLs, not a single shared one.
+grep -qE 'KSVC_URL' run-experiments.sh && grep -qE 'V_VM_STUB_URL' run-experiments.sh &&
+  grep -qE 'V_KNATIVE_STUB_URL' run-experiments.sh &&
+  ok "gates the E9 invocation on KSVC_URL/V_VM_STUB_URL/V_KNATIVE_STUB_URL" ||
+  ko "must skip E9 (not fail the whole run) when no cluster/second stub is configured"
 grep -q '\./e9-tiers\.sh' run-experiments.sh && ok "invokes e9-tiers.sh when a cluster is present" ||
   ko "runner never invokes e9-tiers.sh"
 
