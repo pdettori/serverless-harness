@@ -113,13 +113,21 @@ KSVC_MUTATED=1
 # exactly the same way the stub URL is. This is a hard failure, not a WARN: an unpinned VM arm
 # is not a degraded tier comparison, it is not a tier comparison at all, and letting the run
 # continue would still write a labelled "floor" into EXPERIMENTS.md that means nothing.
-VM_ENV="$(curl -sf --max-time 5 "$METRICS_BASE/metrics" | jq -r '.env // {} | @json')"
-printf '%s' "$VM_ENV" | grep -q "$STUB_URL" ||
-  ko "VM arm's /metrics does not show ANTHROPIC_BASE_URL=$STUB_URL — verify /etc/serverless-harness/supervisor.env"
-printf '%s' "$VM_ENV" | grep -q '"SH_REMOTE_SANDBOX":"1"' ||
-  ko "VM arm's /metrics does not show SH_REMOTE_SANDBOX=1 — pin 2 (tool tier) is not satisfied"
-printf '%s' "$VM_ENV" | grep -q '"SH_SANDBOX_DISCOVERY":"records"' ||
-  ko "VM arm's /metrics does not show SH_SANDBOX_DISCOVERY=records — pin 2 (tool tier) is not satisfied"
+# `|| true`: under `set -euo pipefail`, a curl failure (wrong port, closed connection, non-200
+# with -f) or a jq parse failure on a non-JSON body would abort the WHOLE SCRIPT right here,
+# before any of the three pin-diagnostic checks below get a chance to run and say why. The
+# emptiness check below turns that silent abort into a named, actionable ko instead.
+VM_ENV="$(curl -sf --max-time 5 "$METRICS_BASE/metrics" | jq -r '.env // {} | @json')" || true
+if [ -z "$VM_ENV" ]; then
+  ko "VM arm's /metrics at $METRICS_BASE did not return usable JSON (curl failure, non-200, or a mis-pointed data port reaching this admin endpoint) — cannot verify pin 2"
+else
+  printf '%s' "$VM_ENV" | grep -q "$STUB_URL" ||
+    ko "VM arm's /metrics does not show ANTHROPIC_BASE_URL=$STUB_URL — verify /etc/serverless-harness/supervisor.env"
+  printf '%s' "$VM_ENV" | grep -q '"SH_REMOTE_SANDBOX":"1"' ||
+    ko "VM arm's /metrics does not show SH_REMOTE_SANDBOX=1 — pin 2 (tool tier) is not satisfied"
+  printf '%s' "$VM_ENV" | grep -q '"SH_SANDBOX_DISCOVERY":"records"' ||
+    ko "VM arm's /metrics does not show SH_SANDBOX_DISCOVERY=records — pin 2 (tool tier) is not satisfied"
+fi
 [ "$FAIL" = 0 ] || {
   echo "refusing to run: the VM arm is not pinned the same way as the Knative arm (§5.3)" >&2
   exit 1
