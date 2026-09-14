@@ -17,21 +17,47 @@
 # target band -- because the cost depends on the box's storage, and a hardcoded number would be a
 # fabricated basis of exactly the kind this rig exists to refuse.
 #
+# WHAT IS CALIBRATED, AND WHY IT IS NOT A MILLISECOND FIGURE
+#
+# An earlier version of this script aimed at ~470ms per tool call, that being the reference
+# workload's git cost. That is the wrong target. The quantity the rest of the rig computes from is
+# the DUTY -- `sandboxFloor = ceil(W * S * duty)` and `N ~ 1/duty` both use it, and it is what the
+# §2.3 table records -- and duty is not a millisecond figure:
+#
+#   duty = toolCallRate * toolCostMs / turnMs
+#
+# With the stub's own turn at ttft + outputTokens * tokenDelay = 1068ms and its shipped rate of 0.07,
+# a 470ms tool call yields duty 0.031 -- less than half the e6-ocp band. Aiming at 470ms would have
+# produced a run still incomparable with its own denominator, just less obviously so.
+#
+# So this script solves for the cost that lands DUTY in the basis band, given the rate and turn
+# duration the stub actually reports. All four numbers go in the output, because a duty quoted
+# without them cannot be checked.
+#
+# A related trap, worth knowing before changing the rate: SH_STUB_TOOL_CALL_RATE's default of 0.07 is
+# numerically equal to the e6-ocp duty but is a DIFFERENT quantity -- the README defines it as the
+# fraction of turns emitting a tool_use block, whereas duty is the fraction of wall time a sandbox is
+# occupied. They coincide only if a tool call occupies the sandbox for exactly one turn's duration.
+# Back-solving the reference workload (470ms of git inside a ~7s real-model turn) puts its actual
+# tool-call rate near 1, not 0.07.
+#
 # USAGE (on the target, as root)
 #
-#   ./prepare-workload.sh                 # seed + calibrate, print the SH_STUB_TOOL_INPUT
-#   TARGET_MS=470 ./prepare-workload.sh   # aim for a different cost
+#   ./prepare-workload.sh                       # calibrate against the e6-ocp duty band
+#   BASIS=e6-kind ./prepare-workload.sh         # a different §2.3 row
 #   SH_SANDBOX_COUNT=6 ./prepare-workload.sh
+#   STUB_URL=http://127.0.0.1:18081 ./prepare-workload.sh
 #
 # It is idempotent: re-running reseeds from scratch.
 set -euo pipefail
 
 : "${SH_SANDBOX_COUNT:=3}"
-: "${TARGET_MS:=470}"          # spec §2.3's git-operation cost on network-attached storage
-: "${TOLERANCE_MS:=120}"       # accept TARGET +/- this; the band, not a point, is what matters
+: "${BASIS:=e6-ocp}"
 : "${WORKSPACE:=/workspace}"
+: "${STUB_URL:=http://127.0.0.1:18081}"
 : "${MAX_ROUNDS:=8}"
 : "${FILES_START:=64}"
+: "${TSX:=../../experiments/node_modules/.bin/tsx}"
 
 log() { printf '==> %s\n' "$*"; }
 die() {
@@ -40,7 +66,31 @@ die() {
 }
 
 command -v podman >/dev/null || die "podman not found; run this on the target"
+command -v curl >/dev/null || die "curl not found"
 [ "$(id -u)" -eq 0 ] || die "run as root: the sandboxes are under root podman (setup-vm.sh requires root)"
+
+# The duty band comes from experiments/src/basis.ts, never from a number typed here. That file throws
+# on an unknown basis and on a blended row, so reading it is also the validation -- and transcribing
+# 0.061/0.079 into this script would be exactly the drift the §2.3 conventions exist to prevent.
+read_duty_band() {
+  cd "$(dirname "$0")"
+  [ -x "$TSX" ] || die "tsx not found at $TSX (run pnpm install in the workspace; see require_tsx in lib-vm.sh)"
+  "$TSX" -e '
+    import { resolveBasis } from "../../experiments/src/basis.ts";
+    const b = resolveBasis(process.argv[1]);
+    console.log(`${b.duty[0]} ${b.duty[1]} ${b.cite}`);
+  ' "$BASIS"
+}
+
+# The stub reports its RESOLVED profile, so the turn duration and tool-call rate are read from the
+# process actually generating the load rather than from this shell's idea of it -- the same reason
+# both drivers fetch /profile instead of echoing their own environment.
+read_stub_profile() {
+  curl -sf --max-time 5 "$STUB_URL/profile" ||
+    die "cannot reach the model stub at $STUB_URL/profile. Start it first: the turn duration and
+    tool-call rate must come from the stub, because a duty computed from assumed values describes a
+    workload nobody ran."
+}
 
 sandboxes() {
   local i
@@ -118,6 +168,48 @@ measure_ms() {
 main() {
   preflight
 
+  # --- what duty are we aiming at, and what cost does that imply here? ------------------------
+  local dlow dhigh cite
+  read -r dlow dhigh cite <<<"$(read_duty_band)"
+  log "duty basis $BASIS: $dlow-$dhigh [$cite]"
+
+  local profile turn_ms rate
+  profile="$(read_stub_profile)"
+  # turnMs is the stub's own turn: time-to-first-token plus every token's delay.
+  read -r turn_ms rate <<<"$(printf '%s' "$profile" | python3 -c '
+import json, sys
+p = json.load(sys.stdin)
+print(p["ttftMs"] + p["outputTokens"] * p["tokenDelayMs"], p["toolCallRate"])
+')"
+  log "stub profile: turn ${turn_ms}ms, toolCallRate $rate"
+  [ "$(printf '%s' "$rate" | awk '{ exit !($1 > 0) }' && echo ok)" = ok ] ||
+    die "toolCallRate is $rate: with no tool calls the sandbox is never occupied, so no corpus size
+    can reach a non-zero duty. Start the stub with a non-zero SH_STUB_TOOL_CALL_RATE."
+
+  # cost = duty * turnMs / rate, at the middle of the band.
+  local target_ms tol_ms
+  read -r target_ms tol_ms <<<"$(python3 -c "
+low, high, turn, rate = $dlow, $dhigh, $turn_ms, $rate
+mid = (low + high) / 2
+target = mid * turn / rate
+# The band's own width, expressed in milliseconds of tool cost, so the tolerance is the basis's
+# rather than a number invented here.
+tol = (high - low) / 2 * turn / rate
+print(int(round(target)), max(1, int(round(tol))))
+")"
+  log "to land duty in $dlow-$dhigh at rate $rate, a tool call must cost ${target_ms}ms (+/- ${tol_ms}ms)"
+
+  # A required cost at or above the whole turn means the rate is too low to reach this duty at all:
+  # the sandbox would have to be busy for longer than the turn that is using it.
+  if [ "$target_ms" -ge "$turn_ms" ]; then
+    die "the required tool cost (${target_ms}ms) is not below the turn duration (${turn_ms}ms), so
+    rate $rate cannot reach duty $dlow-$dhigh: a tool call would have to occupy the sandbox for
+    longer than the turn making it. Raise SH_STUB_TOOL_CALL_RATE -- 0.5 gives EVERY=2, the smallest
+    value that avoids the rate-1.0 degeneracy where every response is another tool_use (an infinite
+    tool loop). At rate 0.5 the required cost is about $((turn_ms / 14))ms."
+  fi
+
+  local TARGET_MS="$target_ms" TOLERANCE_MS="$tol_ms"
   local files="$FILES_START" round=0 ms=0
   while [ "$round" -lt "$MAX_ROUNDS" ]; do
     round=$((round + 1))
@@ -170,16 +262,26 @@ main() {
 
   cat <<EOF
 
-==> calibrated: $files files, median ${ms}ms per tool call (target ${TARGET_MS}ms)
+==> calibrated against the $BASIS duty band
 
-Start the model stub with this, so a tool call costs what spec §2.3's duty basis assumes:
+  corpus                 $files files
+  tool cost (median)     ${ms}ms      (target ${TARGET_MS} +/- ${TOLERANCE_MS})
+  stub turn              ${turn_ms}ms
+  tool-call rate         $rate
+  DERIVED DUTY           $(python3 -c "print(round($rate * $ms / $turn_ms, 4))")   (band $dlow-$dhigh)
+
+Start the model stub with this, so the sandbox is occupied for the fraction of wall time the §2.3
+basis actually describes:
 
   SH_STUB_TOOL_INPUT='{"command":"$TURN_CMD"}'
 
-Record BOTH the file count and the measured cost in the run record: the number is a property of this
-box's storage, not of the software, so a run on different hardware must recalibrate rather than reuse
-it. The stub's /profile reports the tool-call RATE; it cannot report the tool call's COST, so the cost
-has no other witness.
+Record ALL FIVE numbers above in the run record, not just the duty. duty = rate * cost / turn, so a
+duty quoted without its three inputs cannot be checked, and the cost is a property of THIS box's
+storage -- a run on different hardware must recalibrate rather than reuse it. The stub's /profile
+reports the rate and the turn duration; nothing reports the cost, so it has no other witness.
+
+Do NOT carry this corpus size to another box, and do not quote a density number against $BASIS
+without showing the derived duty.
 EOF
 }
 
