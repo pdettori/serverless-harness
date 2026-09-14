@@ -38,6 +38,41 @@ import { promotedLoaderOptions, type PromotedConfig } from './config-resolver.js
 export { SandboxPoolSaturatedError };
 
 /**
+ * One session store per process, not per turn.
+ *
+ * `executeTurnCore` used to `new RedisSessionBackend(...)` on every call and never close it. Its
+ * constructor connects eagerly, so each turn leaked one live Redis connection — and this predates
+ * the supervisor, but the supervisor is what makes it fatal: before P6 a turn was served by a
+ * Knative container that went away afterwards, whereas a supervisor worker is process-lived and
+ * admits S concurrent turns for hours. The leak then climbs to `maxclients` (10000), Redis answers
+ * `ERR max number of clients reached`, and node-redis raises that as an `'error'` on a client with
+ * no listener, so every worker exits at once. Measured: all four died simultaneously ~13 minutes
+ * into a sustained ladder.
+ *
+ * Sharing is safe because the store is stateless per session — the URL is the only construction
+ * input and every method takes the session id — and node-redis multiplexes concurrent commands over
+ * one connection. Unlike the stores in select-sandbox.ts there is no drop-on-failure wrapper here:
+ * node-redis reconnects a live client by itself, and the failure mode that wrapper guards against is
+ * caching a client that never connected in the first place.
+ */
+let sessionStoreMemo: { url: string; store: RedisSessionBackend<FileEntry> } | null = null;
+
+function sharedSessionStore(url: string): RedisSessionBackend<FileEntry> {
+  if (!sessionStoreMemo || sessionStoreMemo.url !== url) {
+    // A changed REDIS_URL is a different Redis; replace rather than silently address the old one.
+    if (sessionStoreMemo) void sessionStoreMemo.store.close().catch(() => {});
+    sessionStoreMemo = { url, store: new RedisSessionBackend<FileEntry>(url) };
+  }
+  return sessionStoreMemo.store;
+}
+
+/** Test-only: drop the cached session store. */
+export function resetSharedSessionStore(): void {
+  if (sessionStoreMemo) void sessionStoreMemo.store.close().catch(() => {});
+  sessionStoreMemo = null;
+}
+
+/**
  * The sandbox a turn's tool calls run in: a resolved pod/pool config (null ⇒ run tools in the
  * harness process itself) plus, for a leased grpc presence record, the transport that carries
  * exec frames to it.
@@ -561,7 +596,9 @@ async function executeTurnCore(
   const redisUrl = config?.redisUrl ?? 'redis://localhost:6379';
   const cwd = config?.cwd ?? process.cwd();
 
-  const store = new RedisSessionBackend<FileEntry>(redisUrl);
+  // Shared per process, not per turn — see sharedSessionStore's note. One connection per turn leaked
+  // to maxclients and killed every worker simultaneously on a sustained run.
+  const store = sharedSessionStore(redisUrl);
   const backend = new BufferedRedisBackend(store);
 
   let sessionManager;
