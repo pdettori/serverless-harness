@@ -79,8 +79,25 @@ percentile() {
 # this file deserves to know the two are not directly comparable to a pre-B1 run's numbers.
 vm_turn() {
   local base="$1" sid="$2" body="$3" out ms code us
+  # --max-time is LOAD-BEARING, and its absence cost a whole run. Without a deadline a turn the
+  # server never answers blocks this curl forever, the rung's `wait` never returns, and the driver
+  # hangs with no timeout at any level -- there is no rung deadline either. Observed: all four
+  # supervisor workers exited simultaneously mid-rung (a Redis client leak, fixed separately), and
+  # the four turns in flight on them simply never completed. The run sat at 874/960 for 19 minutes
+  # until it was killed by hand, having reported nothing.
+  #
+  # A timeout converts that into data: curl exits 28, still emits its -w output with
+  # %{http_code}=000 (the comment below verified exactly this case), so the turn is counted in
+  # `attempts` but not in `ok_n` -- which drags the rung's success rate down and trips the 0.95
+  # floor, i.e. the rung is correctly reported as not a capacity result instead of stalling.
+  #
+  # 60s default against a measured p95 of ~1.42s even at c=64 -- ~40x headroom, so it cannot clip a
+  # legitimately slow turn, including spec §5.5's real-model gate. It bounds a pathological rung at
+  # TURNS_PER_RUNG x 60s; a total hang at c=1 still fails fast, because require_live_arm rejects the
+  # arm on the baseline rung before any taller one runs.
   # shellcheck disable=SC2086  # CURL_OPTS is intentionally word-split
-  out="$(curl -s ${CURL_OPTS:-} -o /dev/null -w '%{time_total}\t%{http_code}' -XPOST "$base/turn" \
+  out="$(curl -s ${CURL_OPTS:-} --max-time "${V_TURN_TIMEOUT_S:-60}" \
+    -o /dev/null -w '%{time_total}\t%{http_code}' -XPOST "$base/turn" \
     ${CURL_HDR[@]+"${CURL_HDR[@]}"} \
     -H 'content-type: application/json' -H "X-SH-Session-Id: $sid" -d "$body" || true)"
   # Verified empirically (connection-refused, DNS failure, --max-time timeout): curl still emits

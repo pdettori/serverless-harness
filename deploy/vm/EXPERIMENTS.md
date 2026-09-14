@@ -286,6 +286,39 @@ table is enforced rather than merely documented. Sources, cited by line so a fut
 file from this one — it holds E1/E3/E4/E6/E7 Knative-only results; this file, `deploy/vm/EXPERIMENTS.md`,
 holds P6's VM results. Always cite the directory, not just the filename.)
 
+### The workload must cost what the basis assumes — it does not by default
+
+**Read this before quoting a density number against a duty basis.** The table above was measured
+against workloads whose git operations cost **~470 ms** on network-attached storage. The stub's tool
+call defaults to `ls -la /workspace`, which costs a few milliseconds at most. So a stock run exercises
+the hands tier **structurally** — the exec genuinely traverses relay → leaf → container, which is
+verifiable by side effect — while it carries almost no load.
+
+Two consequences, both in the optimistic direction:
+
+- The measured duty cycle describes a cheaper workload than the basis it is being compared against,
+  so concurrency figures are flattering relative to their own denominator.
+- `file_op_p95_ms` stays `NaN` partly because nothing performs file operations, so the relay tier has
+  no sensor and no bound can be attributed to it.
+
+`./prepare-workload.sh` closes this. It seeds each sandbox with a deterministic git working copy,
+**measures** what a candidate per-turn command actually costs inside the sandbox, and tunes the corpus
+size until the cost lands in a band around the basis figure — then prints the `SH_STUB_TOOL_INPUT` to
+start the stub with. It measures rather than assumes because the cost is a property of the box's
+storage; a hardcoded number would be a fabricated basis of exactly the kind this file's other
+conventions exist to refuse. It also verifies **every** sandbox lands in band, not just the one used
+to search, since rungs that lease a slower sandbox would carry a different workload from rungs that
+lease the others.
+
+Requirements it enforces, each of which was a real failure: every sandbox must exist, must contain
+`/workspace` (without it every exec dies on `cd` before running the command), and must have `git` —
+the leaf advertises `git` in `cmd/worker/main.go`'s `probed` capability list, so an image lacking it is
+advertising falsely, and the workload cannot resemble the basis.
+
+**Record both the file count and the measured cost in the run record.** The stub's `/profile` reports
+the tool-call _rate_; it cannot report the tool call's _cost_, so the cost has no other witness, and a
+run on different hardware must recalibrate rather than reuse the number.
+
 ## Runs
 
 **No live run has been recorded in this file yet.** `e8-density.sh` and `e9-tiers.sh` were
