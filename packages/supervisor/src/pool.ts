@@ -50,6 +50,13 @@ export interface WorkerTelemetry {
 export interface TelemetryAggregates {
   readonly leaseSaturation: number;
   readonly fileOpP95Ms: number;
+  /**
+   * Leasable sandboxes as the workers' most recent selection saw them; NaN until one has looked.
+   * NOT a container count — a container running but never attached to the relay has no presence
+   * record, so nothing can lease it. E8's precondition gate needs this rather than
+   * `leaseSaturation`, which cannot tell an idle pool from an absent one.
+   */
+  readonly leasePoolSize: number;
 }
 
 /** The narrow slice of `ChildProcess` the pool uses, so tests can hand it a fake. */
@@ -187,7 +194,12 @@ export class WorkerPool {
 
     const ops = this.slots.map((s) => s.fileOpP95Ms).filter((n) => Number.isFinite(n));
     const fileOpP95Ms = ops.length === 0 ? Number.NaN : Math.max(...ops);
-    return { leaseSaturation, fileOpP95Ms };
+    // Reported raw as well as folded into leaseSaturation, because a precondition gate needs the
+    // COUNT: saturation cannot distinguish "3 sandboxes, none leased" from "no sandboxes at all",
+    // and both give 0/NaN. `Math.max` above collapses to 0 when no worker has ever reported, so
+    // hand back NaN for that case — 0 would read as an observed-empty pool.
+    const anyObserved = this.slots.some((s) => Number.isFinite(s.leasePoolSize));
+    return { leaseSaturation, fileOpP95Ms, leasePoolSize: anyObserved ? size : Number.NaN };
   }
 
   handOff(preferred: number, socket: Socket, head?: Buffer): number | undefined {

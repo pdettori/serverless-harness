@@ -51,6 +51,27 @@ describe('metricsBody', () => {
     expect(h.pool.aggregates().leaseSaturation).toBeCloseTo(0.75);
   });
 
+  it('reports the sandbox pool size raw, because saturation cannot express an ABSENT pool', () => {
+    const h = ready();
+    h.forked[0]!.stats({ leasesHeld: 0, leasePoolSize: 3 });
+    // leaseSaturation is 0 for "3 sandboxes, none leased" AND for "no sandboxes" — E8's
+    // precondition needs the count itself to tell those apart.
+    expect(metricsBody(h.pool, {}).sandbox_pool_size).toBe(3);
+    expect(h.pool.aggregates().leasePoolSize).toBe(3);
+  });
+
+  it('distinguishes a pool observed to be EMPTY from one never observed', () => {
+    // The distinction the whole field turns on. Never observed ⇒ 'NaN' ⇒ E8 refuses to measure,
+    // because after a live rung it means no turn went through pool selection at all. Observed as 0
+    // ⇒ a real, empty pool ⇒ E8 fails the floor. Collapsing both to 0 would make a healthy run
+    // fail; collapsing both to NaN would let a run with no sandbox tier proceed.
+    expect(metricsBody(ready().pool, {}).sandbox_pool_size).toBe('NaN');
+
+    const h = ready();
+    h.forked[0]!.stats({ leasesHeld: 0, leasePoolSize: 0 });
+    expect(metricsBody(h.pool, {}).sandbox_pool_size).toBe(0);
+  });
+
   it('takes the worst worker s file-op p95, not the mean', () => {
     const h = ready();
     h.forked[0]!.stats({ fileOpP95Ms: 12 });

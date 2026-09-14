@@ -117,14 +117,45 @@ SANDBOX_FLOOR="$(duty_basis_sandbox_floor "$BASIS" "$WORKERS" "$TURNS_PER_WORKER
 echo "duty_basis: $DUTY_BASIS_DESC"
 echo "sandbox floor for W=$WORKERS S=$TURNS_PER_WORKER: K >= $SANDBOX_FLOOR"
 
-SANDBOX_COUNT="$(podman ps --format '{{.Names}}' | grep -c '^sh-sandbox-' || true)"
-if [ "$SANDBOX_COUNT" -lt "$SANDBOX_FLOOR" ]; then
-  # Do NOT proceed. Turns would queue on lease acquisition, and lease waits on a rung look
-  # exactly like the worker tier saturating — the knee would be attributed to the wrong bound.
-  ko "sandbox pool has $SANDBOX_COUNT containers, floor is $SANDBOX_FLOOR (SH_SANDBOX_COUNT=$SANDBOX_FLOOR ./setup-vm.sh)"
-  exit 1
-fi
-ok "sandbox pool satisfies the floor ($SANDBOX_COUNT >= $SANDBOX_FLOOR)"
+# The floor check itself is DEFERRED to just after the c=1 rung (see check_sandbox_floor below).
+# It used to live here as `podman ps | grep -c '^sh-sandbox-'`, which was wrong twice over, and
+# only one of the two was obvious:
+#
+#   1. It described whatever box the DRIVER ran on. setup-vm.sh starts every container under root
+#      podman, so a driver run as a normal user counted 0 with three containers up; and off-box —
+#      the placement B4 and §8 require — it enumerates the GENERATOR's containers, which hold no
+#      sandboxes at all, so the gate could never pass on the required topology.
+#   2. It counted the wrong QUANTITY. What can be leased is a presence record, not a container: on
+#      hardware, three healthy `sh-sandbox-*` containers sat alongside an EMPTY record set because
+#      the image carried no relay leaf. A container count would have passed this gate against a
+#      pool of zero — precisely the run this gate exists to refuse.
+#
+# So the count now comes from the supervisor's own /metrics `sandbox_pool_size`, which is the pool
+# as the selection path itself last saw it. That number does not exist until a turn has leased,
+# which is why the check waits for c=1 — and why "not yet observed" must stay distinct from 0.
+SANDBOX_COUNT="unknown"
+
+check_sandbox_floor() {
+  local size
+  size="$(curl -sf --max-time 5 "$METRICS_BASE/metrics" 2>/dev/null |
+    jq -r '.sandbox_pool_size // "NaN"' 2>/dev/null)" || size="NaN"
+  SANDBOX_COUNT="$size"
+  if [ "$size" = "NaN" ] || [ "$size" = "null" ] || ! [ "$size" -eq "$size" ] 2>/dev/null; then
+    # Never observed. Not the same as an empty pool, and not something to shrug at either: after a
+    # successful c=1 rung a turn HAS selected, so an unobserved pool means the turn never went
+    # through pool selection at all — which is exactly the /turn-ran-tools-locally defect this rig
+    # was blind to before. Refuse rather than measure a run with no hands tier.
+    ko "sandbox pool size unreported by $METRICS_BASE/metrics after a live c=1 rung — the turn did not go through pool selection (tools may be running in the worker itself)"
+    exit 1
+  fi
+  if [ "$size" -lt "$SANDBOX_FLOOR" ]; then
+    # Do NOT proceed. Turns would queue on lease acquisition, and lease waits on a rung look
+    # exactly like the worker tier saturating — the knee would be attributed to the wrong bound.
+    ko "sandbox pool has $size leasable sandboxes, floor is $SANDBOX_FLOOR (SH_SANDBOX_COUNT=$SANDBOX_FLOOR ./setup-vm.sh)"
+    exit 1
+  fi
+  ok "sandbox pool satisfies the floor ($size >= $SANDBOX_FLOOR, from the supervisor's own view)"
+}
 
 curl -sf --max-time 5 "$BASE/health" >/dev/null || {
   ko "no supervisor answering at $BASE"
@@ -194,6 +225,14 @@ for C in $LADDER; do
   # out of sync with this check by omission). Unlike run_arm's own local work dir, $WORK here is
   # cleaned up by the EXIT trap installed above, so no cleanup is needed before this call.
   require_live_arm "$C" "$OK_N" "e8" "$BASE"
+
+  # Sandbox-pool floor, checked once, immediately after the FIRST rung. It has to come after a
+  # live rung because the supervisor learns its pool size from a worker's own selection, and it has
+  # to come before any further rung because a pool below the floor makes every later rung's knee
+  # attributable to lease queuing rather than to the tier it will be blamed on. require_live_arm
+  # above guarantees this rung actually answered, so an unreported size here is a real signal
+  # (no pool selection happened) rather than a race.
+  if [ "$SANDBOX_COUNT" = "unknown" ]; then check_sandbox_floor; fi
 
   # Percentiles are computed over 200-coded rows ONLY. A latency sample that mixes fast
   # failures (a refused or errored request returns in a fraction of a real response's time)
@@ -336,7 +375,9 @@ echo "E8_RESULT knee_floor=$KNEE degrade_x=$DEGRADE_X min_c=$MIN_C workers=$WORK
   echo "- conns_per_turn: 1. Each vm_turn call is its own connection; harmless under"
   echo "  SH_ROUTING_POLICY=leastInFlight (the only policy either driver sets — routing decides"
   echo "  per request, not per session, so there is no session affinity here to preserve)."
-  echo "- Sandbox pool: $SANDBOX_COUNT containers (floor $SANDBOX_FLOOR)."
+  echo "- Sandbox pool: $SANDBOX_COUNT leasable sandboxes (floor $SANDBOX_FLOOR), as reported by the"
+  echo "  supervisor's own /metrics — presence records the selection path can actually lease, not a"
+  echo "  container count on whichever box the driver happened to run on."
   echo "- Model stub profile (fetched from $STUB_URL/profile, as resolved at the stub's own boot — not this driver's environment): ttft=${STUB_TTFT}ms tokenDelay=${STUB_TOKEN_DELAY}ms tokens=${STUB_TOKENS} toolRate=${STUB_TOOL_RATE}"
   echo "- Generator placement: **$GENERATOR_PLACEMENT** (derived from \`\$BASE=$BASE\`, not"
   echo "  declared). An **on-box** run is a caveated result, not an equivalent one — see"

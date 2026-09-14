@@ -40,6 +40,14 @@ export interface MetricsBody {
   };
   readonly lease_saturation: number | 'NaN';
   readonly file_op_p95_ms: number | 'NaN';
+  /**
+   * Leasable sandboxes as the workers' last selection saw them, `'NaN'` until one has looked.
+   * E8's sandbox-pool precondition reads THIS instead of counting containers locally: the driver's
+   * own `podman ps` describes whatever box the driver runs on (nothing, off-box) and counts
+   * containers rather than leasable records — which on hardware showed three running containers
+   * against an empty pool.
+   */
+  readonly sandbox_pool_size: number | 'NaN';
   /** Echoed so a run record can prove which model tier and policy produced it (§5.3 pin 1). */
   readonly env: Readonly<Record<string, string>>;
 }
@@ -74,6 +82,7 @@ export function metricsBody(pool: WorkerPool, env: NodeJS.ProcessEnv): MetricsBo
     },
     lease_saturation: num(agg.leaseSaturation),
     file_op_p95_ms: num(agg.fileOpP95Ms),
+    sandbox_pool_size: num(agg.leasePoolSize),
     env: picked,
   };
 }

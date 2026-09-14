@@ -21,6 +21,7 @@ import { k8sSandboxExtension, type K8sSandboxConfig, type SandboxTransport } fro
 // Value import, and safe: select-sandbox.ts imports nothing from run-turn.js, so unlike the
 // run-leaf↔run-turn pair below there is no cycle to avoid here.
 import { selectPoolSandbox, SandboxPoolSaturatedError, type SelectDeps } from './select-sandbox.js';
+import { noteLeaseAcquired, noteLeaseReleased } from './sandbox-telemetry.js';
 import { checkpointExtension } from './checkpoint-extension.js';
 import { budgetVoterExtension, branchSpend } from './budget-voter.js';
 import { toolChoiceExtension } from './tool-choice-extension.js';
@@ -526,6 +527,10 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<TurnResult> 
 
   let leaseRenewal: ReturnType<typeof setInterval> | undefined;
   if (acquired.leased) {
+    // Counted here rather than inside acquireTurnSandbox so the increment and the decrement in the
+    // finally below are the same pair of statements — a count incremented in one function and
+    // decremented in another drifts the first time an early return is added between them.
+    noteLeaseAcquired();
     const hbMs = Number(process.env.KAGENTI_SANDBOX_HEARTBEAT_MS ?? '20000');
     leaseRenewal = setInterval(() => {
       // Best-effort: a failed renewal must not reject into an unhandled rejection and kill the
@@ -541,6 +546,10 @@ export async function executeTurn(input: ExecuteTurnInput): Promise<TurnResult> 
     // left running against a lease nobody holds.
     if (leaseRenewal) clearInterval(leaseRenewal);
     await acquired.release().catch(() => {});
+    // Decremented even if release() rejected: the lease is no longer held by this turn either way,
+    // and leaving the count high would report saturation that does not exist for the rest of the
+    // process's life. The lease's own TTL is what actually frees a failed release server-side.
+    if (acquired.leased) noteLeaseReleased();
   }
 }
 

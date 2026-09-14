@@ -2,6 +2,7 @@ import { createServer, type RequestListener, type Server } from 'node:http';
 import type { Socket } from 'node:net';
 import { pathToFileURL } from 'node:url';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { sandboxTelemetry } from '@sh/harness/sandbox-telemetry';
 import { handler } from './server.js';
 
 /**
@@ -17,6 +18,12 @@ export type WorkerToSupervisor =
       type: 'stats';
       loopLagP99Ms?: number;
       rssBytes?: number;
+      /**
+       * Declared since Task 11 and, until now, never SENT by anything — which is the whole reason
+       * `lease_saturation` reads `NaN` in every run record to date and E8 reports
+       * `bound=unattributed`. pool.ts has always stored both and derived saturation from them; only
+       * the producer was missing.
+       */
       leasesHeld?: number;
       leasePoolSize?: number;
       fileOpP95Ms?: number;
@@ -153,6 +160,8 @@ export function startStatsReporter(opts: {
   intervalMs: number;
   lag?: () => number;
   rss?: () => number;
+  /** Injection seam for the sandbox observations, mirroring `lag`/`rss` above. */
+  sandbox?: () => { leasePoolSize: number; leasesHeld: number };
 }): () => void {
   const h = opts.lag ? undefined : monitorEventLoopDelay({ resolution: 10 });
   h?.enable();
@@ -161,10 +170,18 @@ export function startStatsReporter(opts: {
     // Reset per interval: an un-reset histogram reports the p99 since boot, so rung 32's
     // reading would carry rung 1's and no rung would be attributable.
     h?.reset();
+    // Read, not computed: both numbers are by-products of the selection path's own work, so this
+    // tick adds no Redis round trip to the process being measured.
+    const sandbox = opts.sandbox ? opts.sandbox() : sandboxTelemetry();
     opts.send({
       type: 'stats',
       loopLagP99Ms: lag,
       rssBytes: opts.rss ? opts.rss() : process.memoryUsage.rss(),
+      leasesHeld: sandbox.leasesHeld,
+      // Omitted while NaN so the supervisor's `Number.isFinite` filter keeps treating it as
+      // "never observed" rather than storing a NaN that later reads as a real sample. JSON has no
+      // NaN anyway — over the IPC channel it would arrive as null.
+      ...(Number.isFinite(sandbox.leasePoolSize) ? { leasePoolSize: sandbox.leasePoolSize } : {}),
     });
   }, opts.intervalMs);
   timer.unref(); // telemetry must never be the reason a worker refuses to exit

@@ -10,6 +10,7 @@ import {
   type ExecClientLike,
 } from '@sh/k8s-sandbox';
 import { RedisLeaseStore, type LeaseStore } from './sandbox-lease.js';
+import { recordPoolObservation } from './sandbox-telemetry.js';
 import { RedisRecordStore, type RecordStore, type SandboxRecord } from './pool-records.js';
 
 /** Pure: pods ordered ascending by active load (stable — ties keep input order). */
@@ -138,6 +139,10 @@ export async function selectPoolSandbox(
   const grpcById = new Map(grpcRecs.map((r) => [r.sandboxId, r]));
 
   const candidates = [...pods, ...grpcRecs.map((r) => r.sandboxId)];
+  // Recorded BEFORE the empty check, so an empty pool is reported as the 0 it is rather than left
+  // at NaN by the throw below. That distinction is what lets a precondition gate say "the pool is
+  // empty" instead of "I never looked".
+  recordPoolObservation(candidates.length);
   if (candidates.length === 0) throw new Error(`no Running pods for pool selector '${selector}'`);
 
   const loads = await Promise.all(
