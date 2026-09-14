@@ -376,6 +376,17 @@ SATURATED=yes
 # statement about the run. A guessed tier would put a cause into a document people cite, and
 # `spurious_429` is checked FIRST because a truncated rung is not a tier bound at all — it is
 # the knee reading early (§3.9).
+#
+# A tier is only attributed when the ladder actually FOUND a limit. With saturated=no the top rung
+# was still healthy, so nothing ran out and there is no bound to name — attributing one anyway is
+# how a run that degraded nowhere acquires a cause. Observed: at W=4 S=16 every rung answered
+# 1920/1920 with p95 flat at 1420ms and loop lag flat at 11ms, and the run still reported
+# `bound=sandbox-pool` because `lease_saturation` 1.33 cleared a 0.95 threshold — 1.33 leases per
+# sandbox against a cap of 13, i.e. roughly a tenth of the pool, named as the binding constraint.
+# The scale mismatch behind that threshold is recorded separately; this branch is independent of it,
+# because with nothing saturated no threshold should be consulted at all.
+BOUND_JSON='{ "tag": "not-observed", "prose": "not observed — the top rung was still healthy, so this ladder found no limit to attribute (extend V_LADDER, or raise W/S, to look further)" }'
+if [ "$SATURATED" = yes ]; then
 BOUND_JSON="$(printf '%s' "$RECORDS" | jq -c \
   --argjson knee "$KNEE" --argjson budget "$RSS_BUDGET_BYTES" '
   def num($x): if ($x | type) == "number" then $x else null end;
@@ -401,6 +412,7 @@ BOUND_JSON="$(printf '%s' "$RECORDS" | jq -c \
     { tag: "unattributed",
       prose: "unattributed — no tier crossed its threshold at the knee, so the bound is not identified by this run" }
   end')"
+fi
 BOUND_TAG="$(printf '%s' "$BOUND_JSON" | jq -r .tag)"
 BOUND="$(printf '%s' "$BOUND_JSON" | jq -r .prose)"
 [ "$BOUND_TAG" != unattributed ] ||
