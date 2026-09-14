@@ -134,11 +134,18 @@ echo "sandbox floor for W=$WORKERS S=$TURNS_PER_WORKER: K >= $SANDBOX_FLOOR"
 # as the selection path itself last saw it. That number does not exist until a turn has leased,
 # which is why the check waits for c=1 — and why "not yet observed" must stay distinct from 0.
 SANDBOX_COUNT="unknown"
+# The per-sandbox lease cap, read from the supervisor rather than from this shell: it sets the scale
+# `lease_saturation` saturates at, so a record that names the saturation without the cap cannot be
+# read. "NaN" when the supervisor does not echo it (an older build whose ENV_ALLOWLIST predates it).
+SANDBOX_CAP="NaN"
 
 check_sandbox_floor() {
-  local size
-  size="$(curl -sf --max-time 5 "$METRICS_BASE/metrics" 2>/dev/null |
-    jq -r '.sandbox_pool_size // "NaN"' 2>/dev/null)" || size="NaN"
+  local size body
+  body="$(curl -sf --max-time 5 "$METRICS_BASE/metrics" 2>/dev/null)" || body=""
+  size="$(printf '%s' "$body" | jq -r '.sandbox_pool_size // "NaN"' 2>/dev/null)" || size="NaN"
+  # One fetch serves both: the cap is only ever read here, beside the size it scales.
+  SANDBOX_CAP="$(printf '%s' "$body" | jq -r '.env.KAGENTI_SANDBOX_CAP // "NaN"' 2>/dev/null)" ||
+    SANDBOX_CAP="NaN"
   SANDBOX_COUNT="$size"
   if [ "$size" = "NaN" ] || [ "$size" = "null" ] || ! [ "$size" -eq "$size" ] 2>/dev/null; then
     # Never observed. Not the same as an empty pool, and not something to shrug at either: after a
@@ -306,12 +313,54 @@ for C in $LADDER; do
 done
 
 # --- knee ----------------------------------------------------------------------------------
+# Rungs below the 0.95 success-rate floor are TRUNCATED before the knee is computed, because
+# EXPERIMENTS.md's contract is that such a rung "is not a capacity result and must not be quoted as
+# one" -- and the knee IS the quote. Warning about it and then selecting it anyway is the same
+# defect the WARN was added to catch, one level up.
+#
+# Observed on the first authoritative run: c=16 succeeded on 360/480 (0.75) and c=32 on 360/960
+# (0.38), yet knee_floor came back 16. Neither criterion can catch that by construction -- the
+# filtered p95 excludes every failure, so it stayed flat at ~1420ms on EVERY rung, and throughput
+# plateaus at whatever the arm completed (10.4/s, the lease pool's ceiling) rather than falling. So
+# a 25%-failing rung read healthy on both, exactly as EXPERIMENTS.md's own prose predicts.
+#
+# Truncate rather than filter out: failures grow with offered load, so below-floor rungs are a
+# suffix of the ladder, and dropping one from the middle would hand detectKnee a non-contiguous
+# series its patience window cannot interpret. Truncating says the honest thing instead -- the
+# ladder cannot see past its last capacity result, which is the same shape as GC8's "a knee is a
+# floor, never a ceiling".
+# The success counts live in $RECORDS, not in $POINTS: this driver keeps TWO parallel arrays -- the
+# lean {c, throughput, p95Ms} that detectKnee consumes, and the full per-rung record written to the
+# results file. They are appended in lockstep, one entry per rung in ladder order, so an index found
+# in one addresses the same rung in the other. Reading .attempts off $POINTS instead yields null,
+# `null > 0` is false, and the ladder truncates at its FIRST rung -- which is exactly what this code
+# did on its first run, refusing a healthy c=1 as "below the success floor".
+CUT_INDEX="$(printf '%s' "$RECORDS" | jq -r '
+  (map((.attempts // 0) > 0 and ((.ok_n // 0) / (.attempts // 1)) >= 0.95) | index(false)) as $i |
+  if $i == null then -1 else $i end')"
+if [ "$CUT_INDEX" = "-1" ]; then
+  POINTS_FOR_KNEE="$POINTS"
+  TRUNCATED_AT="none"
+else
+  POINTS_FOR_KNEE="$(printf '%s' "$POINTS" | jq -c --argjson i "$CUT_INDEX" '.[0:$i]')"
+  TRUNCATED_AT="$(printf '%s' "$RECORDS" | jq -r --argjson i "$CUT_INDEX" '.[$i].c')"
+fi
+if [ "$TRUNCATED_AT" != "none" ]; then
+  echo "NOTE ladder truncated at c=$TRUNCATED_AT for knee selection: that rung and every rung above it fell below the 0.95 success-rate floor, so they are not capacity results (EXPERIMENTS.md)"
+fi
+# A ladder whose FIRST rung is already below the floor leaves nothing to compute a knee from.
+# require_live_arm only guarantees c=1 answered at all, not that it answered 95% of the time.
+if [ "$(printf '%s' "$POINTS_FOR_KNEE" | jq -r 'length')" = "0" ]; then
+  ko "every rung fell below the 0.95 success-rate floor — there is no capacity result to report"
+  exit 1
+fi
+
 KNEE_JSON="$("$TSX" -e '
   import { detectKnee, sanityFloorPass } from "../../experiments/src/sharing.ts";
   const points = JSON.parse(process.argv[1]);
   const knee = detectKnee(points, Number(process.argv[2]), 2);
   console.log(JSON.stringify({ knee, pass: sanityFloorPass(knee, Number(process.argv[3])) }));
-' "$POINTS" "$DEGRADE_X" "$MIN_C")"
+' "$POINTS_FOR_KNEE" "$DEGRADE_X" "$MIN_C")"
 KNEE="$(printf '%s' "$KNEE_JSON" | jq -r .knee)"
 PASS="$(printf '%s' "$KNEE_JSON" | jq -r .pass)"
 [ "$PASS" = "true" ] || ko "knee floor $KNEE is below the sanity floor $MIN_C"
@@ -387,11 +436,18 @@ echo "E8_RESULT knee_floor=$KNEE degrade_x=$DEGRADE_X min_c=$MIN_C workers=$WORK
   echo "  (load1 / cores, a rough utilization fraction), not against a raw load-average number"
   echo "  alone."
   echo "- Bound observed at: **$BOUND**"
-  echo "- \`lease_saturation\` and \`file_op_ms\` are expected to read \`NaN\` above: no lease-pool"
-  echo "  state and no file-op-p95 counter exist anywhere in \`harness/src\` or"
-  echo "  \`packages/k8s-sandbox/src\` for a worker to report (plan 1 Task 11's note). That is a"
-  echo "  known gap in the shipped surface, not a defect in this driver — the sandbox-pool and"
-  echo "  relay tiers are therefore **unattributed** by this run rather than given a fabricated"
+  echo "- \`lease_saturation\` is now sourced: a worker reports the leases it holds and the pool its"
+  echo "  own selection last saw, so the sandbox-pool tier is attributable. **Read its scale with"
+  echo "  care** — it is leases per SANDBOX (held ÷ pool size), so it saturates at the per-sandbox"
+  echo "  lease cap (\`KAGENTI_SANDBOX_CAP=$SANDBOX_CAP\`), not at 1.0. A reader who assumes a 0–1"
+  echo "  ratio will overstate how full the pool was, and the attribution threshold fires at 0.95 —"
+  echo "  around one lease per sandbox, well under real lease capacity. Corroborate a sandbox-pool"
+  echo "  verdict against the arithmetic ($SANDBOX_COUNT sandboxes × $SANDBOX_CAP = concurrent"
+  echo "  leases available) before quoting it."
+  echo "- \`file_op_ms\` still reads \`NaN\`: no file-op-p95 counter exists anywhere in"
+  echo "  \`harness/src\` or \`packages/k8s-sandbox/src\` for a worker to report (plan 1 Task 11's"
+  echo "  note). That is a known gap in the shipped surface, not a defect in this driver — the"
+  echo "  relay tier is therefore **unattributed** by this run rather than given a fabricated"
   echo "  reading."
   echo ""
   echo "**§5.7 claim, as measured.** Quote this sentence; do not rewrite it from the numbers above:"

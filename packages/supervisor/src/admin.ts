@@ -17,6 +17,11 @@ const ENV_ALLOWLIST = [
   'SH_PERSISTENT_EXEC',
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_MODEL',
+  // The per-sandbox lease cap. Needed to READ `lease_saturation`, which is leases per sandbox
+  // (held ÷ pool size) and therefore saturates at this value rather than at 1.0 — without it in
+  // the record, a reader cannot tell a full pool from a quarter-full one. Non-secret config, which
+  // is exactly what this allowlist is for (§5.3 pin 1: prove which configuration produced a run).
+  'KAGENTI_SANDBOX_CAP',
 ] as const;
 
 /** The exact JSON plan 2's `worker_metrics()` parses. Wire names are snake_case. */
