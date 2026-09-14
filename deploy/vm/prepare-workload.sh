@@ -12,25 +12,32 @@
 # is compared against. Concurrency figures from that configuration are optimistic against their own
 # denominator.
 #
-# WHAT IS CALIBRATED, AND WHY IT IS NOT A MILLISECOND FIGURE
+# WHAT IS CALIBRATED, AND WHY DUTY IS MEASURED RATHER THAN COMPUTED
 #
-# An earlier version aimed at ~470ms per tool call, that being the reference workload's git cost. Wrong
-# target. The quantity the rest of the rig computes from is the DUTY -- `sandboxFloor = ceil(W*S*duty)`
-# and `N ~ 1/duty` both use it -- and duty is not a millisecond figure:
+# The quantity the rest of the rig computes from is the DUTY -- `sandboxFloor = ceil(W*S*duty)` and
+# `N ~ 1/duty` both use it -- so that is what this calibrates. It MEASURES it end to end:
 #
-#   duty = toolCallRate * toolCostMs / turnMs
+#   duty = (sandbox execs x per-exec cost) / (total turn wall time)
 #
-# With the stub's own turn at ttft + outputTokens*tokenDelay = 1068ms and its shipped rate of 0.07, a
-# 470ms tool call yields duty 0.031, less than half the e6-ocp band. So this script solves for the cost
-# that lands DUTY in the band, given the rate and turn duration the stub actually reports, and prints
-# all of them plus the derived duty -- a duty quoted without its inputs cannot be checked.
+# It used to compute duty from the stub's profile as `rate * cost / (ttft + outputTokens*tokenDelay)`,
+# and that model was wrong twice over. Both errors were found by driving real turns:
 #
-# A related trap, worth knowing before changing the rate: SH_STUB_TOOL_CALL_RATE's default of 0.07 is
-# numerically equal to the e6-ocp duty but is a DIFFERENT quantity -- the README defines it as the
-# fraction of turns emitting a tool_use block, whereas duty is the fraction of wall time a sandbox is
-# occupied. They coincide only if a tool call occupies the sandbox for exactly one turn's duration.
-# Back-solving the reference workload (470ms of git inside a ~7s real-model turn) puts its actual rate
-# near 1, not 0.07. At rate 0.07 this script REFUSES, because the required cost is not below the turn.
+#  - SH_STUB_TOOL_CALL_RATE is per REQUEST, not per turn, and a tool turn costs TWO requests (the
+#    tool_use, then the follow-up after the tool result). So at rate 0.5 (EVERY=2) the tool fires on
+#    every even request, which is once per TURN -- an effective calls-per-turn of 1.0, not 0.5.
+#    Measured: 10 turns produced exactly 10 execs.
+#  - `ttft + outputTokens*tokenDelay` is the cost of ONE model response. A tool turn pays a short
+#    tool_use response, then the exec, then a full 64-token response, so the real turn is ~1.5x that:
+#    1068ms computed against 1579ms measured.
+#
+# Those errors pull in opposite directions and do not cancel: the profile model put duty at 0.0707
+# when the measured value was 0.0950, i.e. above the band while reporting itself inside it. Measuring
+# needs no model of the stub's schedule or of the harness's tool loop, and cannot drift from them.
+#
+# A related trap worth knowing: SH_STUB_TOOL_CALL_RATE's default of 0.07 is numerically equal to the
+# e6-ocp duty but is a different quantity -- fraction of REQUESTS emitting a tool_use, versus fraction
+# of wall time a sandbox is occupied. Rate 1.0 is unusable (every response is another tool_use: an
+# infinite tool loop), so 0.5 is the working setting, and it yields one tool call per turn.
 #
 # WHY THE KNOB IS A REPEAT COUNT AND NOT THE CORPUS SIZE
 #
@@ -58,6 +65,11 @@ set -euo pipefail
 : "${BASIS:=e6-ocp}"
 : "${WORKSPACE:=/workspace}"
 : "${STUB_URL:=http://127.0.0.1:18081}"
+# The supervisor's data port: duty is measured by driving real turns through it, so this script needs
+# the supervisor up, not just the sandboxes.
+: "${BASE:=http://127.0.0.1:8080}"
+# Turns per probe. Enough that one slow turn cannot move the ratio much; small enough to iterate.
+: "${TURNS:=10}"
 : "${MAX_ROUNDS:=10}"
 : "${REPS_START:=8}"
 : "${SAMPLES:=9}"
@@ -67,6 +79,8 @@ set -euo pipefail
 # Fixed, deliberately small: large enough that git has real work per iteration, small enough to stay
 # in page cache so the cost is repeatable.
 : "${FILES:=256}"
+# This script restarts the stub each round to change the workload, so it needs the entry point.
+: "${STUB_JS:=/opt/serverless-harness/deploy/knative/model-stub/stub.js}"
 
 log() { printf '==> %s\n' "$*"; }
 die() {
@@ -160,7 +174,17 @@ turn_cmd() {
     "$WORKSPACE" "$1"
 }
 
-# Raw per-run millisecond samples.
+# The same command with one appended line to a counter file, so execs can be COUNTED exactly rather
+# than inferred from the stub's schedule. Inferring is what produced a wrong duty: the rate is
+# per-request and a tool turn spends two requests, so the calls-per-turn cannot be read off the rate.
+# The append is a single line to a cached file; its cost is noise against a 100ms+ body.
+turn_cmd_counting() {
+  printf 'echo x >> %s && %s' "$COUNTER" "$(turn_cmd "$1")"
+}
+
+COUNTER="$WORKSPACE/.exec-count"
+
+# Raw per-run millisecond samples of the tool command AS RUN IN THE SANDBOX.
 #
 # The command is wrapped in braces before the redirect. Written `$cmd >/dev/null 2>&1` the redirect
 # binds to the LAST simple command only -- `&&` and `;` bind looser -- so every earlier command still
@@ -208,6 +232,59 @@ require_numeric() {
   esac
 }
 
+# Restart the stub with the counting tool command at this repeat count. The stub's other four values
+# are preserved from its own /profile, so this changes the workload and nothing else.
+restart_stub() {
+  local reps="$1" ttft="$2" delay="$3" tokens="$4" rate="$5"
+  systemctl stop p6-model-stub 2>/dev/null || true
+  systemctl reset-failed p6-model-stub 2>/dev/null || true
+  sleep 1
+  systemd-run --unit=p6-model-stub --setenv=PORT=18081 \
+    --setenv="SH_STUB_TTFT_MS=$ttft" --setenv="SH_STUB_TOKEN_DELAY_MS=$delay" \
+    --setenv="SH_STUB_OUTPUT_TOKENS=$tokens" --setenv="SH_STUB_TOOL_CALL_RATE=$rate" \
+    --setenv="SH_STUB_TOOL_INPUT={\"command\":\"$(turn_cmd_counting "$reps")\"}" \
+    /usr/bin/node "$STUB_JS" >/dev/null ||
+    die "could not start the model stub. This script owns its lifecycle during calibration; restart it
+    yourself afterwards if this failed midway."
+  sleep 2
+}
+
+# Drive TURNS turns and report "duty execs_per_turn mean_turn_ms cost_ms spread_pct".
+probe_duty() {
+  local reps="$1" ttft="$2" delay="$3" tokens="$4" rate="$5"
+  local sb total=0 t ms execs=0 c cost spread
+
+  for sb in $(sandboxes); do podman exec "$sb" sh -c "rm -f $COUNTER" 2>/dev/null || true; done
+  restart_stub "$reps" "$ttft" "$delay" "$tokens" "$rate"
+
+  local i
+  for ((i = 0; i < TURNS; i++)); do
+    t="$(curl -sf --max-time 180 -o /dev/null -w '%{time_total}' -XPOST "$BASE/turn" \
+      -H 'content-type: application/json' -H "X-SH-Session-Id: calib-$reps-$i" \
+      -d '{"prompt":"summarise the diff"}' || echo 0)"
+    ms="$(python3 -c "print(int(round(float('$t') * 1000)))")"
+    [ "$ms" -gt 0 ] || die "a turn against $BASE failed during calibration; the supervisor must be up
+    and serving before duty can be measured."
+    total=$((total + ms))
+  done
+
+  for sb in $(sandboxes); do
+    c="$(podman exec "$sb" sh -c "wc -l < $COUNTER 2>/dev/null || echo 0" 2>/dev/null | tr -d ' \r')"
+    case "$c" in '' | *[!0-9]*) c=0 ;; esac
+    execs=$((execs + c))
+  done
+  [ "$execs" -gt 0 ] || die "no sandbox exec was recorded across $TURNS turns. The tool call is not
+  reaching a sandbox at all, so there is no duty to calibrate -- check that /turn routes to the pool."
+
+  read -r cost spread <<<"$(measure_stats sh-sandbox-0 "$reps")"
+  require_numeric "$cost"
+
+  python3 -c "
+execs, cost, total, turns = $execs, $cost, $total, $TURNS
+print(round(execs * cost / total, 4), round(execs / turns, 2), round(total / turns), cost, $spread)
+"
+}
+
 main() {
   preflight
 
@@ -215,123 +292,107 @@ main() {
   read -r dlow dhigh cite <<<"$(read_duty_band)"
   log "duty basis $BASIS: $dlow-$dhigh [$cite]"
 
-  local profile turn_ms rate
+  local profile ttft delay tokens rate
   profile="$(read_stub_profile)"
-  read -r turn_ms rate <<<"$(printf '%s' "$profile" | python3 -c '
+  read -r ttft delay tokens rate <<<"$(printf '%s' "$profile" | python3 -c '
 import json, sys
 p = json.load(sys.stdin)
-print(p["ttftMs"] + p["outputTokens"] * p["tokenDelayMs"], p["toolCallRate"])
+print(p["ttftMs"], p["tokenDelayMs"], p["outputTokens"], p["toolCallRate"])
 ')"
-  log "stub profile: turn ${turn_ms}ms, toolCallRate $rate"
+  log "stub profile: ttft=${ttft}ms delay=${delay}ms tokens=$tokens rate=$rate"
   printf '%s' "$rate" | awk '{ exit !($1 > 0) }' ||
     die "toolCallRate is $rate: with no tool calls the sandbox is never occupied, so no repeat count
-    can reach a non-zero duty. Start the stub with a non-zero SH_STUB_TOOL_CALL_RATE."
+    can reach a non-zero duty. Start the stub with a non-zero SH_STUB_TOOL_CALL_RATE (0.5 works; 1.0
+    is an infinite tool loop)."
 
-  local target_ms tol_ms
-  read -r target_ms tol_ms <<<"$(python3 -c "
-low, high, turn, rate = $dlow, $dhigh, $turn_ms, $rate
-mid = (low + high) / 2
-print(int(round(mid * turn / rate)), max(1, int(round((high - low) / 2 * turn / rate))))
-")"
-  log "to land duty in $dlow-$dhigh at rate $rate, a tool call must cost ${target_ms}ms (+/- ${tol_ms}ms)"
+  local mid
+  mid="$(python3 -c "print(($dlow + $dhigh) / 2)")"
+  log "target duty: $mid (band $dlow-$dhigh), measured end to end over $TURNS turns per round"
 
-  # A required cost at or above the whole turn means the rate is too low to reach this duty at all: the
-  # sandbox would have to be busy for longer than the turn using it.
-  if [ "$target_ms" -ge "$turn_ms" ]; then
-    local at_half
-    at_half="$(python3 -c "print(int(round(($dlow + $dhigh) / 2 * $turn_ms / 0.5)))")"
-    die "the required tool cost (${target_ms}ms) is not below the turn duration (${turn_ms}ms), so
-    rate $rate cannot reach duty $dlow-$dhigh: a tool call would have to occupy the sandbox for longer
-    than the turn making it. Raise SH_STUB_TOOL_CALL_RATE -- 0.5 gives EVERY=2, the smallest value that
-    avoids the rate-1.0 degeneracy where every response is another tool_use (an infinite tool loop). At
-    rate 0.5 the required cost would be about ${at_half}ms."
-  fi
+  log "seeding $SH_SANDBOX_COUNT sandbox(es) with $FILES files (fixed; the repeat count is the knob)"
+  local sb
+  for sb in $(sandboxes); do seed_one "$sb"; done
 
-  local low=$((target_ms - tol_ms)) high=$((target_ms + tol_ms))
-
-  log "seeding sh-sandbox-0 with $FILES files (fixed; the repeat count is the knob)"
-  seed_one sh-sandbox-0
-
-  local reps="$REPS_START" round=0 ms=0 spread=0
+  local reps="$REPS_START" round=0 duty=0 cpt=0 turn_ms=0 cost=0 spread=0
   while [ "$round" -lt "$MAX_ROUNDS" ]; do
     round=$((round + 1))
-    read -r ms spread <<<"$(measure_stats sh-sandbox-0 "$reps")"
-    require_numeric "$ms"
-    log "round $round: reps=$reps costs ${ms}ms (spread ${spread}%, target $target_ms +/- $tol_ms)"
-    [ "$ms" -gt 0 ] ||
-      die "measured 0ms at reps=$reps: either the command is too cheap to time at millisecond
-      resolution, or \`date +%s%N\` is not giving nanoseconds in this image."
-    if [ "$ms" -ge "$low" ] && [ "$ms" -le "$high" ]; then
+    read -r duty cpt turn_ms cost spread <<<"$(probe_duty "$reps" "$ttft" "$delay" "$tokens" "$rate")"
+    log "round $round: reps=$reps -> duty $duty (execs/turn $cpt, turn ${turn_ms}ms, cost ${cost}ms, spread ${spread}%)"
+
+    if python3 -c "import sys; sys.exit(0 if $dlow <= $duty <= $dhigh else 1)"; then
       log "in band after $round round(s)"
       break
     fi
-    # Cost is linear in reps, so scale straight at the target; clamp the step so one noisy reading
-    # cannot send the search somewhere it takes every remaining round to walk back.
-    local next=$((reps * target_ms / ms))
-    [ "$next" -lt $((reps / 4)) ] && next=$((reps / 4))
-    [ "$next" -gt $((reps * 4)) ] && next=$((reps * 4))
-    [ "$next" -lt 1 ] && next=1
-    [ "$next" = "$reps" ] && next=$((reps + 1))
+    # duty rises with cost, and cost is linear in reps -- but the turn lengthens too, so scale on the
+    # non-sandbox remainder rather than on duty directly, and clamp so one noisy round cannot bolt.
+    local next
+    next="$(python3 -c "
+mid, duty, reps, cpt, cost, turn = $mid, $duty, $reps, $cpt, $cost, $turn_ms
+non_sandbox = turn - cpt * cost
+want_cost = mid * non_sandbox / (cpt * (1 - mid)) if cpt else cost
+n = round(reps * want_cost / cost) if cost else reps
+n = max(1, min(n, reps * 4), reps // 4 or 1)
+print(n if n != reps else reps + 1)
+")"
     reps="$next"
   done
 
-  if [ "$ms" -lt "$low" ] || [ "$ms" -gt "$high" ]; then
-    die "could not land duty in $dlow-$dhigh within $MAX_ROUNDS rounds (last: ${ms}ms at reps=$reps,
-    target ${target_ms}+/-${tol_ms}). Do NOT run E8 against an uncalibrated workload and quote it
-    against this basis."
-  fi
-  if [ "$spread" -gt "$MAX_SPREAD_PCT" ]; then
-    die "the cost varies ${spread}% across samples (limit ${MAX_SPREAD_PCT}%), so this workload cannot
-    pin a duty: the duty would vary by the same proportion during a run. Reduce \$FILES so the repo
-    stays in page cache, or raise \$SAMPLES, before treating any number from it as a basis."
-  fi
+  python3 -c "import sys; sys.exit(0 if $dlow <= $duty <= $dhigh else 1)" ||
+    die "could not land duty in $dlow-$dhigh within $MAX_ROUNDS rounds (last: $duty at reps=$reps).
+    Do NOT run E8 against an uncalibrated workload and quote it against this basis."
+  [ "$spread" -le "$MAX_SPREAD_PCT" ] ||
+    die "the per-exec cost varies ${spread}% across samples (limit ${MAX_SPREAD_PCT}%), so this
+    workload cannot pin a duty: the duty would vary by the same proportion during a run. Reduce
+    \$FILES so the repo stays in page cache, or raise \$SAMPLES."
 
-  log "seeding the remaining sandbox(es)"
-  local sb
-  for sb in $(sandboxes); do
-    [ "$sb" = sh-sandbox-0 ] && continue
-    seed_one "$sb"
-  done
-
-  # Verify EVERY sandbox lands in band, not just the one the search used. A sandbox that is slower
-  # (different storage, a busy neighbour) would give rungs that lease it a different workload from
-  # rungs that lease the others, and the ladder would not be comparable.
+  # Every sandbox must agree, not just the one the search measured: rungs that lease a slower sandbox
+  # would carry a different workload from rungs that lease the others.
   for sb in $(sandboxes); do
     local each espread
     read -r each espread <<<"$(measure_stats "$sb" "$reps")"
     require_numeric "$each"
-    log "$sb: ${each}ms (spread ${espread}%)"
-    if [ "$each" -lt "$low" ] || [ "$each" -gt "$high" ]; then
-      die "$sb measures ${each}ms, outside $low-$high. Rungs that lease it would carry a different
-      workload from rungs that lease the others."
-    fi
-    if [ "$espread" -gt "$MAX_SPREAD_PCT" ]; then
-      die "$sb's cost varies ${espread}% across samples (limit ${MAX_SPREAD_PCT}%)."
-    fi
+    log "$sb: per-exec ${each}ms (spread ${espread}%)"
+    python3 -c "
+import sys
+lo, hi = $cost * 0.85, $cost * 1.15
+sys.exit(0 if lo <= $each <= hi else 1)" ||
+      die "$sb costs ${each}ms against ${cost}ms on sh-sandbox-0 (>15% apart). Rungs that lease it
+      would carry a different workload from rungs that lease the others."
   done
 
-  local duty
-  duty="$(python3 -c "print(round($rate * $ms / $turn_ms, 4))")"
+  # Leave the stub running the workload WITHOUT the counter: the counter exists for calibration and
+  # would grow a file unboundedly across a real ladder.
+  restart_stub_final() {
+    systemctl stop p6-model-stub 2>/dev/null || true
+    systemctl reset-failed p6-model-stub 2>/dev/null || true
+    sleep 1
+    systemd-run --unit=p6-model-stub --setenv=PORT=18081 \
+      --setenv="SH_STUB_TTFT_MS=$ttft" --setenv="SH_STUB_TOKEN_DELAY_MS=$delay" \
+      --setenv="SH_STUB_OUTPUT_TOKENS=$tokens" --setenv="SH_STUB_TOOL_CALL_RATE=$rate" \
+      --setenv="SH_STUB_TOOL_INPUT={\"command\":\"$(turn_cmd "$reps")\"}" \
+      /usr/bin/node "$STUB_JS" >/dev/null
+    sleep 2
+  }
+  restart_stub_final
+  for sb in $(sandboxes); do podman exec "$sb" sh -c "rm -f $COUNTER" 2>/dev/null || true; done
+
   cat <<EOF
 
-==> calibrated against the $BASIS duty band
+==> calibrated against the $BASIS duty band, MEASURED end to end
 
   repo                   $FILES files (fixed)
   repeat count           $reps      <-- the calibrated knob
-  tool cost (median)     ${ms}ms    (target ${target_ms} +/- ${tol_ms}, spread ${spread}%)
-  stub turn              ${turn_ms}ms
+  per-exec cost          ${cost}ms   (spread ${spread}%)
+  execs per turn         $cpt        (measured, not inferred from the rate)
+  mean turn              ${turn_ms}ms
   tool-call rate         $rate
-  DERIVED DUTY           $duty   (band $dlow-$dhigh)
+  MEASURED DUTY          $duty    (band $dlow-$dhigh)
 
-Start the model stub with this, so the sandbox is occupied for the fraction of wall time the §2.3
-basis actually describes:
+The stub is already running this workload. Its /profile reports the rate and the token timings; it
+cannot report the tool COST, so record everything above in the run record -- a duty quoted without its
+inputs cannot be checked, and the cost belongs to THIS box's storage, so another box must recalibrate.
 
   SH_STUB_TOOL_INPUT='{"command":"$(turn_cmd "$reps")"}'
-
-Record ALL of the above in the run record, not just the duty. duty = rate * cost / turn, so a duty
-quoted without its three inputs cannot be checked, and the cost is a property of THIS box's storage --
-a run on different hardware must recalibrate rather than reuse it. The stub's /profile reports the rate
-and the turn duration; nothing reports the cost, so it has no other witness.
 EOF
 }
 
