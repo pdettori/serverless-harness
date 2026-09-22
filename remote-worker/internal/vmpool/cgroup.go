@@ -456,63 +456,7 @@ func sweepOneCgroup(dir string) (swept bool, err error) {
 // legitimately fails with ENOTEMPTY. The fallback clears only plain files directly in
 // dir — no recursion into subdirectories, so this is not rm -rf in spirit or effect,
 // and a real VM cgroup is a leaf with no subdirectories for it to ever touch.
-// cgroupReclaimOnDestroy asks the kernel to reclaim a cgroup's charges before its directory is
-// removed. OPT-IN via SH_CGROUP_RECLAIM_ON_DESTROY=1, and off by default on purpose.
-//
-// THE PROBLEM. rmdir removes the directory but does not free the cgroup: the memory controller
-// keeps it alive while any page is charged to it, so the kernel parks it as "dying". Measured on
-// srv-r16b14s16 with the #255 fix in and zero stale directories: 12,454 dying descendants under
-// the VM slice with ZERO live children. Cgroup operation cost grows with that population -- the
-// same host measured ~24% slower at 64 concurrency slots (232.63 -> ~176 Exec/s) than it had two
-// hours and ~100,000 VM lifecycles earlier. So it is a real degradation, not only the confound
-// that invalidated an earlier sweep.
-//
-// WHY IT IS OPT-IN RATHER THAN THE DEFAULT. The sign of the effect is unknown. A large share of
-// those charges will be page cache for the golden snapshot's 704 MiB memory file, which EVERY
-// restore reads and which we want resident; cgroup v2 does not migrate charges when a cgroup
-// dies, so forcing reclaim may evict shared snapshot pages and make the restore path slower.
-// That would trade a dying-cgroup count for page-cache misses, which is not obviously a win at
-// any concurrency. It ships dark so the two can be A/B'd in one session on the rig, and flipping
-// the default is a one-line follow-up once there is a measurement.
-var cgroupReclaimOnDestroy = reclaimEnabledFrom(os.Getenv("SH_CGROUP_RECLAIM_ON_DESTROY"))
-
-// reclaimEnabledFrom is the gate's parsing, separated from the environment read so a test can
-// assert the DEFAULT rather than whatever the running environment happens to say. Asserting the
-// package var directly fails whenever the suite is run with the flag set, which is exactly how
-// the flag will be exercised.
-func reclaimEnabledFrom(v string) bool { return v == "1" }
-
-// reclaimCgroupCharges asks the kernel to reclaim everything charged to dir. Best effort in every
-// direction: reclaiming is an optimisation, and failing a Destroy over it would trade a 195 ms
-// phase for a counted destroyFailed.
-//
-// It requests exactly memory.current rather than a large sentinel because memory.reclaim returns
-// EAGAIN when it could not reclaim the full amount asked for -- so asking for more than is
-// present makes every call look like a failure even when it reclaimed all it could.
-func reclaimCgroupCharges(dir string, enabled bool) {
-	if !enabled {
-		return
-	}
-	raw, err := os.ReadFile(filepath.Join(dir, "memory.current"))
-	if err != nil {
-		return // no memory controller here, or already gone
-	}
-	cur, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
-	if err != nil || cur <= 0 {
-		return // nothing charged: writing a zero-byte request is a syscall for no reason
-	}
-	// EAGAIN (partial reclaim) and ENOENT (kernel without memory.reclaim, pre-5.19) are both
-	// expected and both ignored -- there is nobody to report them to by this point.
-	_ = os.WriteFile(filepath.Join(dir, "memory.reclaim"), []byte(strconv.FormatInt(cur, 10)), 0o644)
-}
-
 func removeCgroupDir(dir string) error {
-	// Before the rmdir, so the kernel can free the structure rather than parking it as dying.
-	// Placed here rather than in Destroy so every removal path gets it -- Destroy, Restore's
-	// cleanup() and SweepOrphans -- which is the same single-authority reasoning that keeps
-	// SweepOrphans and Destroy from disagreeing about what removal means.
-	reclaimCgroupCharges(dir, cgroupReclaimOnDestroy)
-
 	if err := os.Remove(dir); err == nil || os.IsNotExist(err) {
 		return nil
 	}
