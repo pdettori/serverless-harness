@@ -17,12 +17,18 @@ import (
 // loads; kernel, rootfs and agent are kept alongside so the hash covers what actually
 // determines guest behaviour rather than only the serialized state.
 const (
-	fileVMState  = "vmstate"
-	fileMemory   = "memfile"
-	fileKernel   = "kernel"
-	fileRootfs   = "rootfs"
-	fileAgent    = "agent"
-	fileManifest = "manifest.json"
+	fileVMState = "vmstate"
+	fileMemory  = "memfile"
+	fileKernel  = "kernel"
+	fileRootfs  = "rootfs"
+	fileAgent   = "agent"
+
+	// fileWorkspaceImg is the per-run workspace image's name inside the jail. Named here beside
+	// the golden components because jailPool's allowlist has to recognise every file Restore
+	// puts in a jail, and a literal in two places is exactly the drift spec section 5.3 warns
+	// about -- an allowlist that no longer matches what is written refuses every jail.
+	fileWorkspaceImg = "workspace.img"
+	fileManifest     = "manifest.json"
 )
 
 // Manifest pins one golden snapshot.

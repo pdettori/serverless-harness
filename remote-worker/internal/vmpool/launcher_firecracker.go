@@ -368,12 +368,12 @@ func (l *firecrackerLauncher) Restore(ctx context.Context, req RestoreRequest) (
 	// depends on build-snapshot.sh closing: nothing makes the guest see this file as
 	// /dev/vdb until the golden image is built with that drive already attached.
 	phPrep = time.Since(phaseStart)
-	imgPath := filepath.Join(req.WorkspaceDir, "workspace.img")
+	imgPath := filepath.Join(req.WorkspaceDir, fileWorkspaceImg)
 	if err := ensureWorkspaceImage(ctx, imgPath, l.opts.WorkspaceImageBytes); err != nil {
 		return nil, errors.Join(fmt.Errorf("firecracker: restore %s: workspace image: %w", req.ID, err), cleanup())
 	}
 	phWsImg = time.Since(phaseStart) - phPrep
-	workspaceDst := filepath.Join(jailRoot, "workspace.img")
+	workspaceDst := filepath.Join(jailRoot, fileWorkspaceImg)
 	_ = os.Remove(workspaceDst)
 	if err := os.Link(imgPath, workspaceDst); err != nil {
 		return nil, errors.Join(fmt.Errorf("firecracker: restore %s: hardlink workspace.img: %w", req.ID, err), cleanup())

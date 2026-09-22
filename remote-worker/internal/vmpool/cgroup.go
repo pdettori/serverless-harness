@@ -133,6 +133,22 @@ const (
 	// survive a restart is a PROCESS inside one, not the directory.
 	pooledCgroupPrefix = "pool-"
 
+	// pooledJailPrefix names jailPool's REUSABLE jail ids (#328). Not a cgroup directory, so it is
+	// the one name in this block that does not describe one -- but it belongs here because
+	// vmIDPrefix's own doc says that id "is jailer's --id, so it names the VM's JAIL directory",
+	// and a second namespace feeding --id is exactly the drift this block exists to prevent.
+	//
+	// Deliberately NOT vmIDPrefix, for the same reason pooledCgroupPrefix is not: jailer's --id
+	// must stay monotonic, because a live VMM holding a jail id is what Restore's collision guard
+	// refuses on. A pooled jail is reused, so naming it vm-<n> would make the jail vm-3 stop
+	// corresponding to VM vm-3.
+	//
+	// It inverts the same invariant pooledCgroupPrefix does: a jail-<n> directory present at
+	// startup is normal rather than an orphan, and what must not survive a restart is a PROCESS
+	// holding one. jailPool.acquire applies its allowlist to a minted name for that reason, so a
+	// previous incarnation's residue cannot be inherited on trust.
+	pooledJailPrefix = "jail-"
+
 	// Cgroup2Root is where the unified hierarchy is mounted. SH_PARENT_CGROUP is
 	// SLICE-RELATIVE (see DefaultParentCgroup), so this is what turns it into a
 	// filesystem path for the sweep.
