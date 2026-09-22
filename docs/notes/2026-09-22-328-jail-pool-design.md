@@ -215,3 +215,83 @@ Carried from #328 with its evidence, plus one of our own:
   and `hardlink(2)` cannot cross devices, so the jail must share a filesystem with both.
 
 Refs #328, #319, #307, #274. Supersedes the reuse figures in #328's third comment.
+
+## 7. Measured in-harness: the saving is a fixed ~1.64 ms, not a percentage
+
+Driven by `vmpoolctl` against the real launcher on `srv-r16b14s16`, comparing a binary built from
+upstream `main` ("base") against this branch ("pool"). Arms are **interleaved and order-swapped per
+rep**, so host drift lands on both equally, and caches are deliberately not dropped so both arms
+share cache state. `sockwait_us` is the comparison field because it exists in both builds — which is
+why §1's phase split kept it.
+
+Significance is a 20,000-iteration permutation test on the median difference: the distributions are
+heavy-tailed and overlap at the quartiles, so a median difference needs a test rather than an eye.
+
+**Floor — one driver, n = 123 base / 126 pool over 3 interleaved reps:**
+
+| field                   | base  | pool  | delta                | perm p |
+| ----------------------- | ----- | ----- | -------------------- | ------ |
+| `sockwait_us`           | 16680 | 15048 | **−1632 us (−9.8%)** | 0.0150 |
+| restore `total_us`      | 19226 | 17445 | −1781 us (−9.3%)     | 0.0123 |
+| `loadsnap_us` (control) | 2023  | 1994  | −28 us (−1.4%)       | 0.3161 |
+| `prep_us` (control)     | 188   | 182   | −6 us (−2.9%)        | 0.3214 |
+
+**Under load — 8 concurrent drivers, n = 425 / 430 over 2 interleaved reps:**
+
+| field                   | base  | pool | delta                 | perm p |
+| ----------------------- | ----- | ---- | --------------------- | ------ |
+| `sockwait_us`           | 8413  | 6769 | **−1644 us (−19.5%)** | 0.0002 |
+| restore `total_us`      | 11623 | 9861 | −1762 us (−15.2%)     | 0.0016 |
+| `loadsnap_us` (control) | 2022  | 2035 | +13 us (+0.6%)        | 0.5311 |
+
+### What this says
+
+**The saving is a constant.** −1632 us at one driver, −1644 us at eight, and −1457 us out-of-harness
+in §1: three independent measurements, agreeing within 12%, of a fixed per-restore cost removed. The
+percentage differs only because the denominator does. So the honest headline is **~1.6 ms per
+restore**, and any percentage quoted must name the load it was measured at.
+
+**It moves the floor, not the slope.** That was the question §5 said one number could not answer, and
+the answer is the less exciting of the two: the load-dependent component of `sockwait` is untouched.
+Base's own curve reproduces #328's U-shape closely — 16.68 ms at one driver against that issue's
+16.73 ms at c=1, and 8.41 ms at eight against its 9.78 ms at c=8 — so `sockwait` still minimises
+near c=8 and still rises toward idle, with the pool's curve simply shifted down. Whatever causes the
+rise at low load is not the chroot, and remains unexplained.
+
+**The split holds in-harness.** `jailer_setup` is **93.7%** of `sockwait`; `fc_bind`'s median is
+46 us. Firecracker is not the cost, measured now by the instrument rather than by strace.
+
+**A bonus on the teardown side.** `removeall_us` — which now measures the release rather than an
+`os.RemoveAll` — falls from 996 us to 308 us, −69%, while `wait_us` is unchanged at +0.7%. Not
+counted in the headline, since it was not what the change was for.
+
+Reuse rates were 93% (floor) and 89% (loaded); the misses are the initial mints for the standby
+depth. `nr_dying_descendants` grew by 37 over ~850 VMs and no cgroups were left under the slice, so
+pooling the jail did not reintroduce the accumulation #319 removed.
+
+### Three limitations, stated rather than buried
+
+1. **The loaded arm is 8 separate single-key drivers, not one pool serving 8 keys.** The Firecracker
+   launcher sets `SerializesExecsPerRun = true`, so one workspace key structurally cannot produce
+   concurrent restores. Each driver therefore needed its own `SH_CHROOT_BASE` _and_ its own
+   `SH_PARENT_CGROUP` — the first because two jail pools would otherwise both mint `jail-0` into one
+   directory, the second because one driver's startup orphan sweep would reclaim another's live VMs.
+   It is a faithful proxy for concurrent restore pressure, not for one pool under eight keys.
+2. **`fc_bind` is right-censored.** The boundary and the socket share one poll loop capped at 1 ms,
+   so when both become visible in the same iteration `fc_bind` reads ~0. It is an upper bound on
+   Firecracker's share and a lower bound on `jailer_setup`'s, which strengthens the conclusion rather
+   than weakening it.
+3. **The delegation that is easy to miss.** A per-driver parent cgroup needs `+memory` written to its
+   `cgroup.subtree_control`, or `cgroupPool` creates `pool-<n>` directories with no `memory.max` to
+   write and every restore fails `EPERM`. Both arms failed identically on the first attempt, which is
+   the useful shape: a setup fault hits both, a regression hits one.
+
+### The rig caught a bug no unit test could
+
+Shipping this with `--id req.ID` while deriving `jailRoot` from the pooled id produced a silent,
+expensive failure: the jailer built a **complete, working jail** at `vm-1` — device nodes, API
+socket, pid file, exec copy, all present — while `waitForUnixSocket` watched `jail-0`, and the
+restore died 5 s later as "API socket never appeared", pointing at Firecracker rather than at the id.
+No unit test could see it because none spawns a real jailer. The fix extracted
+`firecrackerJailerArgs` and `firecrackerJailRoot` so both the argv and the watched directory derive
+from one id, and `TestJailerArgsCarryThePooledJailIdNotTheVMId` pins it.

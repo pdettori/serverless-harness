@@ -302,3 +302,44 @@ func TestJailPoolNeverReclaimsANameAfterAFailedMint(t *testing.T) {
 		t.Fatalf("mintedCount = %d; a failed mint still consumes its name", p.mintedCount())
 	}
 }
+
+// THE REGRESSION THIS FILE EXISTS FOR, and the one the unit tests could not see before the seam
+// was extracted. jailer's --id is the ONLY thing that determines the chroot path, so it must carry
+// the POOLED jail id, not the VM id. Shipping `--id req.ID` alongside a pooled jailRoot produced a
+// silent, expensive failure on the rig: the jailer built a complete working jail at vm-1 -- dev
+// nodes, API socket, pid file, exec copy, all present -- while waitForUnixSocket watched jail-0,
+// and the restore died 5 s later as "API socket never appeared", which points at Firecracker
+// rather than at the id.
+func TestJailerArgsCarryThePooledJailIdNotTheVMId(t *testing.T) {
+	opts := FirecrackerOptions{
+		FirecrackerBin: "/usr/local/bin/firecracker",
+		JailerBin:      "/usr/local/bin/jailer",
+		ChrootBase:     "/srv/jail",
+		UID:            0, GID: 0,
+	}
+	args := firecrackerJailerArgs("jail-7", opts, "microvm.slice/microvm-vms.slice/pool-3")
+
+	var id string
+	for i, a := range args {
+		if a == "--id" && i+1 < len(args) {
+			id = args[i+1]
+		}
+		if a == "--" {
+			break // everything after is Firecracker's own argv
+		}
+	}
+	if id != "jail-7" {
+		t.Fatalf("--id = %q, want the pooled jail id \"jail-7\"; args: %v", id, args)
+	}
+
+	// And the directory the launcher prepares must be the one that id names, by the SAME
+	// derivation the pool uses -- that shared derivation is what stops the two drifting again.
+	p := newJailPool(opts.ChrootBase, opts.FirecrackerBin, opts.UID, opts.GID)
+	want := firecrackerJailRoot(opts.ChrootBase, opts.FirecrackerBin, id)
+	if got := p.jailRoot(id); got != want {
+		t.Fatalf("pool jailRoot=%q but launcher derives %q for the same id", got, want)
+	}
+	if want != "/srv/jail/firecracker/jail-7/root" {
+		t.Fatalf("jail layout changed: %q; jailer's convention is <chroot-base>/<exec basename>/<id>/root", want)
+	}
+}

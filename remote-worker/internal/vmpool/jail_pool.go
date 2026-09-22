@@ -80,7 +80,7 @@ func (p *jailPool) execName() string { return filepath.Base(p.execPath) }
 // jailRoot resolves a jail id to the directory jailer will chroot into. The single place this
 // layout is spelled, so Restore and the pool cannot disagree about which directory is being pooled.
 func (p *jailPool) jailRoot(id string) string {
-	return filepath.Join(p.chrootBase, p.execName(), id, "root")
+	return firecrackerJailRoot(p.chrootBase, p.execPath, id)
 }
 
 // jailRemovableNames is the allowlist's complement: everything a jail may legitimately contain

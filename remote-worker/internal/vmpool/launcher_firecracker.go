@@ -227,6 +227,39 @@ func (l *firecrackerLauncher) checkDeviceSharing(cfg Config) error {
 // concurrent Execs for the same run would mount it twice and corrupt it.
 func (l *firecrackerLauncher) SerializesExecsPerRun() bool { return true }
 
+// firecrackerJailerArgs builds the jailer argv.
+//
+// EXTRACTED SO THE ID CAN BE TESTED. jailID -- not the VM id -- is what must reach --id, because
+// --id is the ONLY thing that determines the chroot path, and Restore separately derives the
+// jailRoot it prepares and the apiSockHost it waits on from that same id. When the two disagree the
+// failure is silent and expensive: the jailer happily builds a complete, working jail at the other
+// id (dev nodes, socket, pid file, exec copy) while waitForUnixSocket watches a directory nothing
+// will ever write to, and the restore dies 5 s later as "API socket never appeared" -- pointing at
+// Firecracker rather than at the id. That is exactly what shipping this with `--id req.ID` did on
+// the rig, and no unit test could see it because none spawns a real jailer. Hence the seam.
+func firecrackerJailerArgs(jailID string, opts FirecrackerOptions, cgroupRel string) []string {
+	args := []string{
+		"--id", jailID,
+		"--exec-file", opts.FirecrackerBin,
+		"--uid", strconv.Itoa(opts.UID),
+		"--gid", strconv.Itoa(opts.GID),
+		"--chroot-base-dir", opts.ChrootBase,
+	}
+	// firecrackerCgroupArgs appends --cgroup-version and --parent-cgroup, and deliberately
+	// not --cgroup: see its doc comment.
+	args = append(args, firecrackerCgroupArgs(cgroupRel)...)
+	// Coordinator finding #5: this launcher never issues PUT /network-interfaces —
+	// standbys are headless by construction, not by omission. Nothing below adds one.
+	return append(args, "--", "--api-sock", apiSockRelPath)
+}
+
+// firecrackerJailRoot resolves an id to the directory jailer will chroot into, which is the SAME
+// derivation jailPool.jailRoot uses. Shared so a pooled jail and the launcher watching it cannot
+// disagree about where it is.
+func firecrackerJailRoot(chrootBase, firecrackerBin, id string) string {
+	return filepath.Join(chrootBase, filepath.Base(firecrackerBin), id, "root")
+}
+
 // Restore brings up one VM from the golden snapshot into its own jail and returns
 // it PAUSED. Every failure path below cleans up whatever it already created (kills
 // any spawned process, removes the jail directory) and returns (nil, err) — never a
@@ -268,7 +301,7 @@ func (l *firecrackerLauncher) Restore(ctx context.Context, req RestoreRequest) (
 			return nil, fmt.Errorf("firecracker: restore %s: jail: %w", req.ID, jErr)
 		}
 	}
-	jailRoot := filepath.Join(l.opts.ChrootBase, filepath.Base(l.opts.FirecrackerBin), jailID, "root")
+	jailRoot := firecrackerJailRoot(l.opts.ChrootBase, l.opts.FirecrackerBin, jailID)
 	apiSockHost := filepath.Join(jailRoot, apiSockRelPath)
 
 	// Refuse a jail some OTHER live VMM is still holding, before creating, spawning or
@@ -433,21 +466,7 @@ func (l *firecrackerLauncher) Restore(ctx context.Context, req RestoreRequest) (
 	// relative to the jail root rather than to some other directory. If either
 	// assumption is wrong, waitForUnixSocket below times out rather than failing
 	// with a clear cause — that timeout is the first place to look.
-	args := []string{
-		"--id", req.ID,
-		"--exec-file", l.opts.FirecrackerBin,
-		"--uid", strconv.Itoa(l.opts.UID),
-		"--gid", strconv.Itoa(l.opts.GID),
-		"--chroot-base-dir", l.opts.ChrootBase,
-	}
-	// firecrackerCgroupArgs appends --cgroup-version and --parent-cgroup, and deliberately
-	// not --cgroup: see its doc comment.
-	args = append(args, firecrackerCgroupArgs(cgroupRel)...)
-	// Coordinator finding #5: this launcher never issues PUT /network-interfaces —
-	// standbys are headless by construction, not by omission. Nothing below adds one.
-	args = append(args, "--", "--api-sock", apiSockRelPath)
-
-	cmd = exec.Command(l.opts.JailerBin, args...)
+	cmd = exec.Command(l.opts.JailerBin, firecrackerJailerArgs(jailID, l.opts, cgroupRel)...)
 	// NOT exec.CommandContext — see this file's package-level comment on process
 	// lifetime. Stdin is deliberately left nil (not e.g. os.Stdin): a jailed process
 	// that inherits a controlling terminal's stdin can be sent SIGTTIN and stop the
