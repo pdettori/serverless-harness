@@ -12,12 +12,12 @@ that much and not for the reason implied, and it does not work at all in the for
 Four arms, n=20 each, **shuffled and interleaved**, timing jailer spawn to the API socket being a
 socket, with the previous VMM reaped and the socket file deleted before every timed run:
 
-| arm | jail state | median | vs cold |
-| --- | --- | --- | --- |
-| A | cold, nothing exists | 4831 us | — |
-| B | `root/` + `root/run/` pre-created | 4685 us | -3% |
-| **C** | **reuse, `dev/` wiped, `root/firecracker` kept** | **3228 us** | **-33%** |
-| D | reuse, `dev/` wiped, `root/firecracker` deleted too | 4591 us | -5% |
+| arm   | jail state                                          | median      | vs cold  |
+| ----- | --------------------------------------------------- | ----------- | -------- |
+| A     | cold, nothing exists                                | 4831 us     | —        |
+| B     | `root/` + `root/run/` pre-created                   | 4685 us     | -3%      |
+| **C** | **reuse, `dev/` wiped, `root/firecracker` kept**    | **3228 us** | **-33%** |
+| D     | reuse, `dev/` wiped, `root/firecracker` deleted too | 4591 us     | -5%      |
 
 ### Correction 1 — `--id` reuse fails outright unless `root/dev/` is wiped
 
@@ -54,13 +54,13 @@ C against D isolates the entire effect to `root/firecracker` (3.6 MiB). But the 
 skip the copy on reuse — planting tampered content at that path and running again restored the
 original md5 at the same inode, and a reused jail whose previous VMM still has it mapped fails with
 `Text file busy`. So the jailer opens it for writing every single run, and what reuse avoids is
-*allocating* 3.6 MiB of fresh blocks, not the write.
+_allocating_ 3.6 MiB of fresh blocks, not the write.
 
 Two consequences, and they point in opposite directions:
 
 - **For isolation, this is good news**: a tenant's tampering of that file is destroyed by the next
   jailer run, unconditionally.
-- **For the ceiling, this is bad news**: pooling *mitigates* the copy rather than removing it. Only
+- **For the ceiling, this is bad news**: pooling _mitigates_ the copy rather than removing it. Only
   #328's option 2 (bypassing the jailer) eliminates it. Pooling is still the right next step — it is
   ~31% for a well-understood change with a proven precedent — but it should not be described as
   removing the per-VM exec-file cost.
@@ -70,19 +70,19 @@ Two consequences, and they point in opposite directions:
 `/proc/<pid>/comm` flips `jailer` -> `firecracker` at the jailed `execve`, and because the jailer
 `execve`s rather than forking, `cmd.Process.Pid` is the same pid throughout. n=8, cold:
 
-| boundary | median from spawn |
-| --- | --- |
-| jail directory appears | 1.55 ms |
-| `firecracker.pid` appears | 4.66 ms |
-| **`comm` flips -> firecracker** | **4.86 ms** |
-| API socket bound | 5.23 ms |
+| boundary                        | median from spawn |
+| ------------------------------- | ----------------- |
+| jail directory appears          | 1.55 ms           |
+| `firecracker.pid` appears       | 4.66 ms           |
+| **`comm` flips -> firecracker** | **4.86 ms**       |
+| API socket bound                | 5.23 ms           |
 
 So **`jailer_setup` is 93% of the pre-socket window and `fc_bind` is 7%** (0.37 ms). That
 independently corroborates #328's 82-85% strace split by a different method, and is the stronger
 form of it: Firecracker binds in well under a millisecond.
 
 It also settles the note's open question about which observable marks the boundary. `comm` is not a
-proxy — it *is* the `execve`. Of the two proxies the note floats, `firecracker.pid` is 0.20 ms early
+proxy — it _is_ the `execve`. Of the two proxies the note floats, `firecracker.pid` is 0.20 ms early
 (the jailer writes it just before `execve`) and the jail directory is useless at 1.55 ms, i.e. 68%
 of the window too early.
 
@@ -91,7 +91,7 @@ of the window too early.
 **A pooled jail is a directory the previous VM had write access to.** The jail root is
 `drwx------` owned by `--uid/--gid`, and every VM on the host runs as that same uid — but each VMM
 is `pivot_root`ed into its own jail, so an idle jail is unreachable by another tenant. The exposure
-is strictly *sequential*: what tenant N leaves behind, tenant N+1 inherits.
+is strictly _sequential_: what tenant N leaves behind, tenant N+1 inherits.
 
 ### 3.1 What the note asks, answered
 
@@ -112,15 +112,15 @@ unrecognised means the jail is not reused: `RemoveAll` it and count a leak.
 
 **"What must be removed, and what may persist?"**
 
-| path | policy | why |
-| --- | --- | --- |
-| `firecracker` | **keep**, behind an `lstat` check | the whole -31%; see 3.2 |
-| `dev/` and its four nodes | **delete** | not optional — jailer `EEXIST`s otherwise (correction 1) |
-| `workspace.img` | **delete** | tenant data, and keeping it pins the previous run's inode |
-| `vmstate`, `memfile`, `kernel`, `rootfs`, `agent` | **delete** | `Restore` relinks these unconditionally; keeping them would risk a stale hardlink surviving a golden-snapshot rebuild, which fails *open* into restoring an old snapshot |
-| `run/` | keep the directory, empty it | jailer creates it `0700`; the socket inside is residue |
-| `firecracker.pid`, `vsock.sock`, `run/firecracker.socket` | **delete** | per-VM residue |
-| anything else | **refuse the jail** | fail closed |
+| path                                                      | policy                            | why                                                                                                                                                                      |
+| --------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `firecracker`                                             | **keep**, behind an `lstat` check | the whole -31%; see 3.2                                                                                                                                                  |
+| `dev/` and its four nodes                                 | **delete**                        | not optional — jailer `EEXIST`s otherwise (correction 1)                                                                                                                 |
+| `workspace.img`                                           | **delete**                        | tenant data, and keeping it pins the previous run's inode                                                                                                                |
+| `vmstate`, `memfile`, `kernel`, `rootfs`, `agent`         | **delete**                        | `Restore` relinks these unconditionally; keeping them would risk a stale hardlink surviving a golden-snapshot rebuild, which fails _open_ into restoring an old snapshot |
+| `run/`                                                    | keep the directory, empty it      | jailer creates it `0700`; the socket inside is residue                                                                                                                   |
+| `firecracker.pid`, `vsock.sock`, `run/firecracker.socket` | **delete**                        | per-VM residue                                                                                                                                                           |
+| anything else                                             | **refuse the jail**               | fail closed                                                                                                                                                              |
 
 Deleting the six hardlinks rather than keeping them is deliberate: it leaves `Restore`'s prep path
 completely unchanged, so the pool's blast radius is the jailer's work only. Prep is 0.62 ms and not
@@ -137,8 +137,8 @@ about:
   the jailer opens that path `O_NOFOLLOW`, so a planted symlink gives
   `Symbolic link loop (os error 40)`, the jailer exits, and the canary target was verified byte-for-byte
   intact. The pool inherits this for free.
-- **Hardlink.** `O_NOFOLLOW` does not stop a hardlink, and the jail *contains hardlinks to the golden
-  snapshot* that our own prep put there. A compromised VMM could `link("/memfile", "/firecracker")`,
+- **Hardlink.** `O_NOFOLLOW` does not stop a hardlink, and the jail _contains hardlinks to the golden
+  snapshot_ that our own prep put there. A compromised VMM could `link("/memfile", "/firecracker")`,
   and the next jailer run would then write 3.6 MiB of the Firecracker binary into the shared golden
   `memfile` — corrupting the snapshot every VM on the host restores from. This one is real and is why
   the check is not optional.
@@ -150,9 +150,9 @@ The check, run before a jail rejoins the free list, is a single `lstat`:
 - **`st_nlink == 1`** — the load-bearing one; this is what the hardlink attack trips.
 - `st_size` equal to the configured `FirecrackerBin`, and `st_uid` equal to `--uid`.
 
-Content is deliberately *not* hashed: the jailer overwrites it unconditionally (correction 4), so
+Content is deliberately _not_ hashed: the jailer overwrites it unconditionally (correction 4), so
 content cannot survive, and hashing 3.6 MiB per restore would cost more than the 1.46 ms the whole
-change saves. What must be guaranteed is the *inode's* identity, not its bytes.
+change saves. What must be guaranteed is the _inode's_ identity, not its bytes.
 
 A jail failing any of these is removed and counted, never repaired in place — the same posture as
 `cgroupPool.release`, and for the same reason: "cannot tell" is not "clean".
