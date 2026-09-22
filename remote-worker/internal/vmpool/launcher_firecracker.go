@@ -179,6 +179,10 @@ type firecrackerLauncher struct {
 	// cgroups hands out reusable per-VM cgroups (#258). Nil when ParentCgroup is unset, in which
 	// case jailer's own default placement is used and there is no cgroup of ours at all.
 	cgroups *cgroupPool
+	// jails hands out reusable jail ids (#328). Always present: unlike the cgroup pool there is
+	// nothing to configure, since the jail is created either way and the only question is whether
+	// its id is reused. Nil only on a firecrackerVM built outside this launcher, i.e. in tests.
+	jails *jailPool
 }
 
 // NewFirecrackerLauncher validates opts, applies defaults, and returns a Launcher.
@@ -190,6 +194,7 @@ func NewFirecrackerLauncher(opts FirecrackerOptions) (Launcher, error) {
 		return nil, err
 	}
 	l := &firecrackerLauncher{opts: opts}
+	l.jails = newJailPool(opts.ChrootBase, opts.FirecrackerBin, opts.UID, opts.GID)
 	if opts.ParentCgroup != "" {
 		l.cgroups = newCgroupPool(opts.ParentCgroup, opts.CgroupMemoryMaxBytes, opts.cgroupRoot)
 	}
@@ -246,7 +251,24 @@ func (l *firecrackerLauncher) Restore(ctx context.Context, req RestoreRequest) (
 	// so they are unconditional and only the log line is gated.
 	phaseStart := time.Now()
 	var phPrep, phWsImg, phSpawn, phSock time.Duration
-	jailRoot := filepath.Join(l.opts.ChrootBase, filepath.Base(l.opts.FirecrackerBin), req.ID, "root")
+
+	// The JAIL id, which is not the VM id (#328). jailer's --id determines the chroot path, so
+	// reusing a jail means reusing an id -- and VM ids must stay monotonic, because a live VMM
+	// holding a jail id is what the collision guard below refuses on. cgroup.go's naming authority
+	// records both namespaces and why they are separate. req.ID remains the VM's identity in every
+	// log line, the sweep and that guard; jailID names only the directory.
+	//
+	// Acquired before anything else touches the filesystem: the pool refuses an id a live VMM still
+	// holds rather than stripping it, which is the same collision this function guards against,
+	// caught one layer earlier.
+	jailID, jailReused := req.ID, false
+	if l.jails != nil {
+		var jErr error
+		if jailID, jailReused, jErr = l.jails.acquire(); jErr != nil {
+			return nil, fmt.Errorf("firecracker: restore %s: jail: %w", req.ID, jErr)
+		}
+	}
+	jailRoot := filepath.Join(l.opts.ChrootBase, filepath.Base(l.opts.FirecrackerBin), jailID, "root")
 	apiSockHost := filepath.Join(jailRoot, apiSockRelPath)
 
 	// Refuse a jail some OTHER live VMM is still holding, before creating, spawning or
@@ -270,6 +292,11 @@ func (l *firecrackerLauncher) Restore(ctx context.Context, req RestoreRequest) (
 	// with no live process restored cleanly — so this asks the socket, not the
 	// filesystem. See TestFirecrackerRefusesAJailALiveVMMStillHolds and its
 	// free-jail converse.
+	// SECOND LINE since #328. jailPool.acquire asks this same question, the same way, before it
+	// strips a jail -- it has to, because stripping deletes run/ and with it a live VMM's socket --
+	// so for a pooled jail the refusal now comes from there with the same information. This stays
+	// because it is the ONLY line when there is no pool (a VM built outside this launcher), and
+	// because two guards asking one question the same way is what stopped them disagreeing.
 	if fcJailOccupied(apiSockHost) {
 		return nil, fmt.Errorf("firecracker: restore %s: a live VMM already holds this VM id's API socket at %s "+
 			"— refusing to load a snapshot into another microVM (an earlier run leaked a VMM at this id; "+
@@ -304,7 +331,15 @@ func (l *firecrackerLauncher) Restore(ctx context.Context, req RestoreRequest) (
 			}
 			_ = cmd.Wait()
 		}
-		if err := os.RemoveAll(jailRoot); err != nil {
+		// RETURNED to the pool rather than removed (#328), for the same reason the cgroup is: this
+		// is the path that leaked one directory per failed restore, and every replenish retry drew
+		// a fresh id. release() strips the jail and refuses one it cannot vouch for, so a
+		// half-started jailer cannot be handed to the next tenant -- and it runs after the kill and
+		// Wait above, which is required and not merely tidy: a jail whose old VMM still has the
+		// exec file mapped fails the next restore with `Text file busy`.
+		if l.jails != nil {
+			l.jails.release(jailID)
+		} else if err := os.RemoveAll(jailRoot); err != nil {
 			errs = append(errs, fmt.Errorf("remove jail %s: %w", jailRoot, err))
 		}
 		// The same per-VM cgroup Destroy removes (#255), on the path that actually
@@ -468,6 +503,7 @@ func (l *firecrackerLauncher) Restore(ctx context.Context, req RestoreRequest) (
 			prep: phPrep, wsimg: phWsImg, spawn: phSpawn,
 			jailerSetup: setup, fcBind: phSock - setup, boundaryObserved: seen,
 			sock: phSock, load: phLoad, total: time.Since(phaseStart),
+			jailReused: jailReused,
 		})
 	}
 	return &firecrackerVM{
@@ -475,6 +511,8 @@ func (l *firecrackerLauncher) Restore(ctx context.Context, req RestoreRequest) (
 		key:           req.Key,
 		cmd:           cmd,
 		jailRoot:      jailRoot,
+		jails:         l.jails,
+		jailID:        jailID,
 		cgroups:       l.cgroups,
 		cgroupRel:     cgroupRel,
 		apiSockHost:   apiSockHost,
@@ -752,6 +790,11 @@ type firecrackerVM struct {
 
 	cmd      *exec.Cmd // the jailer process; execve's into FirecrackerBin, same pid
 	jailRoot string
+	// jails is the pool jailID came from, and where Destroy returns it instead of removing the
+	// directory (#328). Nil means there is nothing pooled -- a VM built outside the launcher --
+	// in which case Destroy removes the jail as it always did.
+	jails  *jailPool
+	jailID string
 	// cgroups is the pool cgroupRel came from, and where Destroy returns it. Nil means there is
 	// nothing pooled: either no ParentCgroup, or a VM built outside the launcher.
 	cgroups *cgroupPool
@@ -892,8 +935,17 @@ func (v *firecrackerVM) Destroy() error {
 		_ = cmd.Wait() // reap; "signal: killed" is the expected outcome, not a failure
 		phWait = time.Since(waitStart)
 	}
+	// RETURNED to the pool, not removed (#328). This runs after the kill and Wait above, which the
+	// pool requires rather than prefers: a jail whose previous VMM still has the exec file mapped
+	// fails the next restore with `Text file busy`.
+	//
+	// The phase name is kept so a run's aggregate tooling is unchanged, exactly as #319 kept
+	// cgrouprmdir_us: removeall_us now measures the RELEASE, which strips the jail of everything
+	// except the exec copy and verifies that copy before the jail can be reused.
 	removeAllStart := time.Now()
-	if err := os.RemoveAll(v.jailRoot); err != nil {
+	if v.jails != nil {
+		v.jails.release(v.jailID)
+	} else if err := os.RemoveAll(v.jailRoot); err != nil {
 		errs = append(errs, fmt.Errorf("remove jail %s: %w", v.jailRoot, err))
 	}
 	phRemoveAll = time.Since(removeAllStart)

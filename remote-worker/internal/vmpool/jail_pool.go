@@ -1,6 +1,7 @@
 package vmpool
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -51,8 +52,22 @@ type jailPool struct {
 	issued   int
 	refused  atomic.Int64
 	healed   atomic.Int64
+	leaked   atomic.Int64
 	reusedOK atomic.Int64
 }
+
+// errJailOccupied means a live VMM still answers on this jail's API socket, so the jail must be
+// neither stripped nor removed.
+//
+// Load-bearing, because makeReusable deletes run/ -- which holds that socket. Without this guard a
+// minted name colliding with an orphan left by a previous incarnation would tear down the live VM's
+// socket while leaving its process running: precisely the "silently destructive in both directions"
+// collision Restore's own guard documents, reached from the other side.
+//
+// A socket FILE with no listener is NOT occupancy, for the reason fcJailOccupied gives: a crashed
+// VMM leaves the file behind and treating that as occupied would refuse every jail after an unclean
+// exit.
+var errJailOccupied = errors.New("a live VMM still holds this jail")
 
 func newJailPool(chrootBase, execPath string, uid, gid int) *jailPool {
 	return &jailPool{chrootBase: chrootBase, execPath: execPath, uid: uid, gid: gid}
@@ -91,10 +106,10 @@ func (p *jailPool) jailRemovableNames() map[string]bool {
 }
 
 // acquire returns a jail id for jailer's --id, reusing an idle one when there is one.
-func (p *jailPool) acquire() (string, error) {
+func (p *jailPool) acquire() (id string, reused bool, err error) {
 	p.mu.Lock()
 	if n := len(p.free); n > 0 {
-		id := p.free[n-1]
+		id = p.free[n-1]
 		p.free = p.free[:n-1]
 		p.mu.Unlock()
 		// VERIFY ON POP, the asymmetry #319's review caught in cgroupPool: release is careful, but
@@ -109,39 +124,54 @@ func (p *jailPool) acquire() (string, error) {
 		// crash, not the previous tenant -- whereas a release-time failure is attributable to the
 		// VM that just ran, which is why that one retires the name.
 		if err := p.makeReusable(id); err != nil {
-			p.healed.Add(1)
 			root := p.jailRoot(id)
+			if errors.Is(err, errJailOccupied) {
+				// Not ours to clear. The name goes out of rotation rather than being handed to a
+				// second VMM at the same chroot and API socket path.
+				p.leaked.Add(1)
+				log.Printf("vmpool: jail pool: leaking %s, %v", root, err)
+				return "", false, err
+			}
+			p.healed.Add(1)
 			log.Printf("vmpool: jail pool: resetting idle jail %s before reuse: %v", root, err)
 			if rmErr := os.RemoveAll(root); rmErr != nil {
 				// Now it can be neither vouched for nor cleared, so the name goes out of
 				// rotation rather than being handed over.
-				return "", fmt.Errorf("vmpool: jail pool: reset %s: %w", root, rmErr)
+				return "", false, fmt.Errorf("vmpool: jail pool: reset %s: %w", root, rmErr)
 			}
+			return id, false, nil
 		}
 		p.reusedOK.Add(1)
-		return id, nil
+		return id, true, nil
 	}
 	seq := p.issued
 	p.issued++
 	p.mu.Unlock()
-	id := pooledJailPrefix + strconv.Itoa(seq)
+	id = pooledJailPrefix + strconv.Itoa(seq)
 	// A MINTED name can still have a directory: a restarted worker mints jail-0 again and may find
 	// one left by the previous incarnation, holding that incarnation's residue. Applying the same
 	// allowlist instead of trusting it also tightens today's behaviour, where Restore tolerates a
 	// pre-existing jail with a best-effort remove of six known names and no statement about
 	// anything else.
 	if err := p.makeReusable(id); err != nil {
+		root := p.jailRoot(id)
+		if errors.Is(err, errJailOccupied) {
+			// A minted name collided with a live orphan from a previous incarnation. Refusing is
+			// the whole point of the guard: stripping would have deleted its socket.
+			p.leaked.Add(1)
+			log.Printf("vmpool: jail pool: leaking %s, %v", root, err)
+			return "", false, err
+		}
 		// Same heal-then-proceed as the pop path, and for a stronger reason: this is a restart
 		// leftover, so failing here would fail the FIRST restore after every worker restart.
 		p.healed.Add(1)
-		root := p.jailRoot(id)
 		log.Printf("vmpool: jail pool: clearing a leftover jail at the minted name %s: %v", root, err)
 		if rmErr := os.RemoveAll(root); rmErr != nil {
 			// The name is NOT reclaimed -- see issued.
-			return "", fmt.Errorf("vmpool: jail pool: clear %s: %w", root, rmErr)
+			return "", false, fmt.Errorf("vmpool: jail pool: clear %s: %w", root, rmErr)
 		}
 	}
-	return id, nil
+	return id, false, nil
 }
 
 // release returns a jail for reuse, having first made it safe to reuse.
@@ -155,12 +185,20 @@ func (p *jailPool) acquire() (string, error) {
 // old VMM still has the exec file mapped fails the next restore with `Text file busy`.
 func (p *jailPool) release(id string) {
 	if err := p.makeReusable(id); err != nil {
-		// Refused, not leaked. cgroupPool must LEAVE a cgroup it cannot vouch for, because
-		// something may still be running inside it; a jail can always be removed, so nothing
-		// accumulates here and the counter means "a jail was not trusted", not "a directory was
-		// abandoned". Removal is what makes the refusal safe rather than merely recorded.
-		p.refused.Add(1)
 		root := p.jailRoot(id)
+		if errors.Is(err, errJailOccupied) {
+			// A child escaped the process group and survived Destroy's kill + Wait -- the same
+			// case cgroupPool refuses on a non-empty cgroup.procs, and the one place this pool
+			// genuinely LEAKS: the directory is left alone precisely because something is using
+			// it. Counted so it cannot be silent.
+			p.leaked.Add(1)
+			log.Printf("vmpool: jail pool: leaking %s, %v", root, err)
+			return
+		}
+		// Refused, and unlike a leak the directory goes: a jail can always be removed once nothing
+		// is running in it, so nothing accumulates and the counter means "not trusted" rather than
+		// "abandoned". Removal is what makes the refusal safe rather than merely recorded.
+		p.refused.Add(1)
 		log.Printf("vmpool: jail pool: refusing %s and removing it: %v", root, err)
 		if rmErr := os.RemoveAll(root); rmErr != nil {
 			log.Printf("vmpool: jail pool: could not remove refused jail %s: %v", root, rmErr)
@@ -185,6 +223,16 @@ func (p *jailPool) makeReusable(id string) error {
 	}
 	if err != nil {
 		return fmt.Errorf("read jail %s: %w", root, err)
+	}
+	// Asked BEFORE anything is deleted, and asked the same way Restore's collision guard asks it,
+	// since a disagreement between the two is what let a collision through in the first place.
+	if sock := filepath.Join(root, apiSockRelPath); fcJailOccupied(sock) {
+		// The SOCKET, not the directory: it is what was dialed, what an operator greps for, and
+		// what the collision guard's own message names. A message naming neither the collision nor
+		// the path is the original defect this guard exists to replace.
+		return fmt.Errorf("%w: a live VMM is still accept()ing at %s "+
+			"(kill it by cgroup membership under the worker's parent slice, never by "+
+			"process-name pattern)", errJailOccupied, sock)
 	}
 	keep := p.execName()
 	removable := p.jailRemovableNames()
@@ -277,6 +325,11 @@ func (p *jailPool) refusals() int64 { return p.refused.Load() }
 // clearing the chroot base, or a restart leftover. Distinct from refusals, which are attributable
 // to the tenant that just ran, because the two want different responses from whoever reads them.
 func (p *jailPool) heals() int64 { return p.healed.Load() }
+
+// leaks counts jails LEFT IN PLACE because a live VMM still held them, which is the only case this
+// pool abandons a directory. Distinct from refusals, which are removed: an operator reading a
+// non-zero leak count has a process to find, not a directory to delete.
+func (p *jailPool) leaks() int64 { return p.leaked.Load() }
 
 // reuses counts jails handed back out of the free list, which is what the -31% is earned on. A
 // reuse rate far below one per restore means the pool is refusing or dropping more than it keeps.

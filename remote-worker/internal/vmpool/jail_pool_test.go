@@ -54,11 +54,11 @@ func populateJail(t *testing.T, p *jailPool, id string, src string) string {
 
 func TestJailPoolReusesAnIdAndMintsDistinctOnesOtherwise(t *testing.T) {
 	p, bin := testJailPool(t)
-	first, err := p.acquire()
+	first, _, err := p.acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := p.acquire()
+	second, _, err := p.acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestJailPoolReusesAnIdAndMintsDistinctOnesOtherwise(t *testing.T) {
 	if got := p.idle(); got != 1 {
 		t.Fatalf("idle() = %d after one release, want 1 (refused=%d)", got, p.refusals())
 	}
-	again, err := p.acquire()
+	again, _, err := p.acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestJailPoolReusesAnIdAndMintsDistinctOnesOtherwise(t *testing.T) {
 // reusable.
 func TestJailPoolStripsEveryPerVMPathButTheExecFile(t *testing.T) {
 	p, bin := testJailPool(t)
-	id, err := p.acquire()
+	id, _, err := p.acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestJailPoolStripsEveryPerVMPathButTheExecFile(t *testing.T) {
 // help here -- a hardlink is not a symlink -- so st_nlink == 1 is what has to catch it.
 func TestJailPoolRefusesAnExecFileHardlinkedToSomethingElse(t *testing.T) {
 	p, bin := testJailPool(t)
-	id, err := p.acquire()
+	id, _, err := p.acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestJailPoolRefusesAnExecFileHardlinkedToSomethingElse(t *testing.T) {
 
 func TestJailPoolRefusesASymlinkedExecFile(t *testing.T) {
 	p, bin := testJailPool(t)
-	id, err := p.acquire()
+	id, _, err := p.acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestJailPoolRefusesASymlinkedExecFile(t *testing.T) {
 
 func TestJailPoolRefusesAnExecFileOfTheWrongSize(t *testing.T) {
 	p, bin := testJailPool(t)
-	id, err := p.acquire()
+	id, _, err := p.acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestJailPoolRefusesAnExecFileOfTheWrongSize(t *testing.T) {
 // it visible.
 func TestJailPoolRefusesAJailWithAnUnexplainedEntry(t *testing.T) {
 	p, bin := testJailPool(t)
-	id, err := p.acquire()
+	id, _, err := p.acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestJailPoolRefusesAJailWithAnUnexplainedEntry(t *testing.T) {
 // the chroot base by hand.
 func TestJailPoolTreatsAnAbsentJailAsReusable(t *testing.T) {
 	p, bin := testJailPool(t)
-	id, err := p.acquire()
+	id, _, err := p.acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestJailPoolTreatsAnAbsentJailAsReusable(t *testing.T) {
 // review added for exactly this asymmetry.
 func TestJailPoolResetsADirtyJailOnPop(t *testing.T) {
 	p, bin := testJailPool(t)
-	id, err := p.acquire()
+	id, _, err := p.acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestJailPoolResetsADirtyJailOnPop(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(p.jailRoot(id), "appeared-while-idle"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := p.acquire()
+	got, _, err := p.acquire()
 	if err != nil {
 		t.Fatalf("acquire on a dirty idle jail: %v", err)
 	}
@@ -288,10 +288,10 @@ func TestJailPoolNeverReclaimsANameAfterAFailedMint(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(root, 0o700) })
 
-	if _, err := p.acquire(); err == nil {
+	if _, _, err := p.acquire(); err == nil {
 		t.Fatal("acquire must fail when it cannot make the jail reusable")
 	}
-	next, err := p.acquire()
+	next, _, err := p.acquire()
 	if err != nil {
 		t.Fatalf("second acquire: %v", err)
 	}

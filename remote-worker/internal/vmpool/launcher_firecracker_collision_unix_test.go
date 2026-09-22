@@ -87,9 +87,16 @@ func occupyJail(t *testing.T, base, id string) string {
 // A collision can arise from causes no amount of Close-side tidiness can prevent
 // (SIGKILL, OOM-kill, a crash), so this guard is not redundant with fixing the leak:
 // it is what makes the next run fail honestly instead of hijacking a stranger.
+// Since #328 the collision is staged at the JAIL id rather than the VM id, because those are now
+// separate namespaces: jailer's --id comes from jailPool and the first mint is jail-0, while vm-6
+// stays the VM's identity in the error, the sweep and the logs. The property under test is
+// unchanged -- Restore must refuse rather than hijack a stranger's microVM and then delete its
+// files -- and the refusal now comes from jailPool.acquire, which asks the same question, the same
+// way, BEFORE it strips the jail. It has to ask first: stripping deletes run/, and with it exactly
+// the live socket this test guards.
 func TestFirecrackerRefusesAJailALiveVMMStillHolds(t *testing.T) {
 	lc, base, marker := collisionLauncher(t)
-	sock := occupyJail(t, base, "vm-6")
+	sock := occupyJail(t, base, pooledJailPrefix+"0")
 
 	_, err := lc.Restore(context.Background(), RestoreRequest{
 		ID: "vm-6", Key: "run-a", WorkspaceDir: t.TempDir(), GuestRAMBytes: 256 << 20,

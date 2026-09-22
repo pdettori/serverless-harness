@@ -98,6 +98,10 @@ type restorePhases struct {
 	jailerSetup, fcBind time.Duration
 	boundaryObserved    bool
 	sock, load, total   time.Duration
+	// jailReused says whether this restore drew a pooled jail rather than a fresh one, which is
+	// what separates the -31% case from the baseline WITHIN a single run. Without it a rung's mean
+	// mixes both and the floor cannot be read off it.
+	jailReused bool
 }
 
 // logRestorePhases emits one line per restore. Kept beside the boundary rather than inline in
@@ -114,12 +118,17 @@ func logRestorePhases(id string, p restorePhases) {
 	if phaseLog == nil {
 		return
 	}
+	reuse := 0
+	if p.jailReused {
+		reuse = 1
+	}
 	setup, bind := int64(-1), int64(-1)
 	if p.boundaryObserved {
 		setup, bind = p.jailerSetup.Microseconds(), p.fcBind.Microseconds()
 	}
 	phaseLog("vmpool: restore phases id=%s prep_us=%d wsimg_us=%d spawn_us=%d jailersetup_us=%d "+
-		"fcbind_us=%d sockwait_us=%d loadsnap_us=%d total_us=%d",
+		"fcbind_us=%d sockwait_us=%d loadsnap_us=%d total_us=%d jailreuse=%d",
 		id, p.prep.Microseconds(), p.wsimg.Microseconds(), p.spawn.Microseconds(),
-		setup, bind, p.sock.Microseconds(), p.load.Microseconds(), p.total.Microseconds())
+		setup, bind, p.sock.Microseconds(), p.load.Microseconds(), p.total.Microseconds(),
+		reuse)
 }
