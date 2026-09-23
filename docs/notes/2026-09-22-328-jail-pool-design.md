@@ -295,3 +295,72 @@ restore died 5 s later as "API socket never appeared", pointing at Firecracker r
 No unit test could see it because none spawns a real jailer. The fix extracted
 `firecrackerJailerArgs` and `firecrackerJailRoot` so both the argv and the watched directory derive
 from one id, and `TestJailerArgsCarryThePooledJailIdNotTheVMId` pins it.
+
+## 8. Throughput: the pool is a ~9% REGRESSION at the operating point
+
+§7 measured the component and got it right. It was still the wrong thing to conclude from, and this
+section is the correction: **a faster restore did not make the pool faster.**
+
+Measured with a throwaway driver built from identical source against each `internal/vmpool`, driving
+one workspace key per concurrent slot (the launcher sets `SerializesExecsPerRun = true`, so one key
+cannot produce concurrent Execs). Arms interleaved and order-swapped per rep.
+
+| slots  | base Exec/s (per rep) | pool Exec/s (per rep) | median delta |
+| ------ | --------------------- | --------------------- | ------------ |
+| **64** | 559.5 / 556.5 / 552.3 | 522.0 / 497.1 / 505.1 | **−9.24%**   |
+| 8      | 115.4 / 114.9 / 112.8 | 117.6 / 115.2 / 115.7 | +0.70%       |
+
+The 64-slot reps do not overlap, so this is not noise. At 8 slots the two arms are indistinguishable.
+
+### The mechanism: elided writes become real ones
+
+Instrumented re-run at 64 slots, `/proc/diskstats` and `/proc/stat` deltas across the timed window:
+
+| arm  | Exec/s        | bytes written to disk per Exec | host CPU      |
+| ---- | ------------- | ------------------------------ | ------------- |
+| base | 534.1 / 549.0 | 0.16 / 0.12 MiB                | 42.9% / 42.0% |
+| pool | 507.8 / 499.1 | 0.29 / 0.30 MiB                | 47.2% / 47.9% |
+
+**The pool writes ~2.1x more to disk and burns ~12% more CPU.** The cause is correction 4 turned
+around: the jailer rewrites the 3.6 MiB exec copy on every run either way, but
+
+- **base creates a fresh file and `Destroy` unlinks it ~30 ms later**, so most of those dirty pages
+  are dropped before writeback ever reaches them. Only 0.12-0.16 MiB per Exec survives to disk.
+- **the pool keeps the file and the jailer overwrites it in place**, which cannot be elided. The
+  dirty pages belong to a file that still exists, so writeback has to do them.
+
+Not creating a file you are about to delete is cheaper than reusing one. The pool's whole saving was
+keeping that file, so the saving and the cost are the same decision, and at a sustained 550
+restores/s the cost is larger.
+
+### Why the component measurement could not see this
+
+A per-restore latency measurement times the restore's own clock. Avoided block allocation lands on
+that clock, which is why §1 and §7 both measured it cleanly and consistently at ~1.6 ms. Writeback
+does not: it is asynchronous, done by kernel threads, charged to nobody's restore, and only becomes
+visible as a _rate_ under sustained load. So the instrument was correct and the inference from it was
+wrong, in a way no amount of care with the same instrument would have caught.
+
+This is the second time in this issue that a latency measurement pointed the wrong way — the first
+was #328's own `sockwait` attribution. The lesson is the same both times: **a component measurement
+is not a throughput claim**, and on this change the two have opposite signs.
+
+### Recommendation
+
+**Do not merge the jail pool.** It is a measured regression at the operating point, the mechanism is
+understood, and there is no cheap fix:
+
+- Keeping the jail but deleting the exec copy (§1 arm D) is not a fallback: it was −94 us, i.e. noise.
+  The binary was the only thing worth pooling and the binary is what costs the throughput.
+- Putting `ChrootBase` on tmpfs would make the write cheap, but `checkDeviceSharing` forbids it: the
+  golden snapshot and the workspace image are hardlinked into the jail and `hardlink(2)` cannot cross
+  devices.
+- Hardlinking the jail's exec copy to the real binary would have the jailer write _through_ it into
+  `/usr/local/bin/firecracker`, which is the attack `verifyExec` exists to refuse.
+
+**Do merge the phase split.** It is independently correct, it is what localised the cost to the
+jailer in the first place, and it is what caught this. `jailer_setup` at 93.7% of `sockwait` stands.
+
+**#328's remaining lever is option 2, and this strengthens the case for it.** Bypassing the jailer
+avoids the 3.6 MiB copy outright rather than relocating it, so it removes both the allocation _and_
+the writeback. Pooling could only ever move that cost around, which is exactly what it did.
