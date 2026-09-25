@@ -1,0 +1,22 @@
+# Build the images from this checkout instead of pulling the published ones. Layer it on top:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# The harness image needs pi-fork populated (git submodule update --init --recursive); the root
+# Dockerfile builds it, so no host-side pi-fork build is required.
+services:
+  sandbox-relay:
+    image: dev.local/serverless-harness:compose
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+  supervisor:
+    image: dev.local/serverless-harness:compose
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+  sandbox:
+    image: dev.local/remote-worker:compose
+    build:
+      context: ../..
+      dockerfile: remote-worker/Dockerfile

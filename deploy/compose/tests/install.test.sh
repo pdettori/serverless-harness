@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# Docker-free test for install.sh (#342). Mocks docker/docker-compose/curl onto PATH, wraps every
+# other external command install.sh could reach in a logging shim, runs the script the way a
+# `curl | sh` user would (under sh, from a pipe), and asserts on the recorded argv and the files it
+# leaves behind. Same approach as deploy/vm/tests/setup-vm.test.sh.
+set -euo pipefail
+
+COMPOSE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT="$COMPOSE_DIR/install.sh"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+export MOCK_LOG="$TMP/mock.log"
+mkdir -p "$TMP/bin"
+
+fail() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
+pass() { echo "ok - $*"; }
+
+# Logging shims for the ordinary externals. A secret that reaches ANY process's argv is readable
+# by every local user through /proc/<pid>/cmdline, so mocking only docker would miss a token handed
+# to `sed`, `tee` or `od` on its way into .env. Each shim logs its argv and execs the real binary.
+for cmd in awk basename cat chmod cp cut dirname grep head id mkdir mktemp mv od printf rm sed \
+  tail tee touch tr uname wc; do
+  real="$(command -v "$cmd" 2>/dev/null)" || continue
+  [[ "$real" == /* ]] || continue # a builtin with no binary on this host: nothing to shim
+  printf '#!/bin/sh\nprintf "%%s %%s\\n" %s "$*" >>"$MOCK_LOG"\nexec %s "$@"\n' \
+    "$cmd" "$real" >"$TMP/bin/$cmd"
+  chmod +x "$TMP/bin/$cmd"
+done
+
+# curl: "download" by copying the file named by the URL's last path segment out of this checkout,
+# so the test proves install.sh fetches exactly the compose file that ships next to it.
+cat >"$TMP/bin/curl" <<MOCK
+#!/bin/sh
+printf 'curl %s\n' "\$*" >>"\$MOCK_LOG"
+out=''
+url=''
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+  -o) out="\$2"; shift 2 ;;
+  -*) shift ;;
+  *) url="\$1"; shift ;;
+  esac
+done
+src="$COMPOSE_DIR/\${url##*/}"
+[ -f "\$src" ] || { echo "mock curl: 404 \$url" >&2; exit 22; }
+if [ -n "\$out" ]; then /bin/cp "\$src" "\$out"; else /bin/cat "\$src"; fi
+MOCK
+
+# docker: records argv and the working directory (compose reads .env from the project dir).
+# MOCK_NO_COMPOSE_PLUGIN=1 makes `docker compose` behave like a docker without the v2 plugin.
+cat >"$TMP/bin/docker" <<'MOCK'
+#!/bin/sh
+printf 'docker %s [cwd=%s]\n' "$*" "$PWD" >>"$MOCK_LOG"
+if [ "${1-}" = compose ] && [ -n "${MOCK_NO_COMPOSE_PLUGIN-}" ]; then
+  echo "docker: 'compose' is not a docker command." >&2
+  exit 1
+fi
+exit 0
+MOCK
+cat >"$TMP/bin/docker-compose" <<'MOCK'
+#!/bin/sh
+printf 'docker-compose %s [cwd=%s]\n' "$*" "$PWD" >>"$MOCK_LOG"
+MOCK
+chmod +x "$TMP/bin/curl" "$TMP/bin/docker" "$TMP/bin/docker-compose"
+
+export PATH="$TMP/bin:/usr/bin:/bin"
+# The test's own commands must bypass the shims: a shimmed `grep -q curl "$MOCK_LOG"` logs its own
+# argv before it runs, so it matches itself and passes vacuously -- and grepping for the token would
+# put the token in a logged argv. Functions win over PATH, so these cover every call below.
+grep() { PATH=/usr/bin:/bin command grep "$@"; }
+tail() { PATH=/usr/bin:/bin command tail "$@"; }
+cut() { PATH=/usr/bin:/bin command cut "$@"; }
+# A developer's own shell may carry these; the script must not pick them up by accident.
+unset SH_RELAY_TOKEN SH_TURNS_PER_WORKER ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL \
+  OPENAI_API_KEY SH_MODEL MOCK_NO_COMPOSE_PLUGIN 2>/dev/null || true
+export SH_COMPOSE_BASE_URL="https://example.invalid/deploy/compose"
+
+# Runs install.sh exactly as the README's one-liner does: the script body on sh's stdin, so
+# nothing may depend on BASH_SOURCE, $0 or the script's own location on disk.
+run_install() {
+  : >"$MOCK_LOG"
+  sh <"$SCRIPT"
+}
+
+# Asserts no logged argv contains the value. Also asserts the log is non-empty, so a shim setup
+# that silently logged nothing cannot turn this into a vacuous pass.
+assert_not_in_argv() {
+  local value="$1"
+  [[ -s "$MOCK_LOG" ]] || fail "mock log is empty -- the argv check would be vacuous"
+  if grep -qF -- "$value" "$MOCK_LOG"; then
+    fail "the relay token reached a process argv (world-readable via /proc/<pid>/cmdline):" \
+      "$(grep -F -- "$value" "$MOCK_LOG")"
+  fi
+}
+
+env_value() { grep -E "^$1=" "$2" | tail -1 | cut -d= -f2-; }
+
+mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
+
+# --- 1. fresh install with an operator-supplied token ------------------------------------------
+export SH_COMPOSE_DIR="$TMP/one"
+SH_RELAY_TOKEN='s3cr3t-operator-value' run_install || fail "fresh install exited non-zero"
+[[ -f "$SH_COMPOSE_DIR/docker-compose.yml" ]] || fail "docker-compose.yml was not fetched"
+cmp -s "$SH_COMPOSE_DIR/docker-compose.yml" "$COMPOSE_DIR/docker-compose.yml" ||
+  fail "the fetched compose file is not the one shipped in deploy/compose"
+grep -qF "curl" "$MOCK_LOG" || fail "install.sh did not download anything with curl"
+grep -qF "$SH_COMPOSE_BASE_URL/docker-compose.yml" "$MOCK_LOG" ||
+  fail "compose file not fetched from SH_COMPOSE_BASE_URL: $(grep curl "$MOCK_LOG")"
+[[ "$(env_value SH_RELAY_TOKEN "$SH_COMPOSE_DIR/.env")" == 's3cr3t-operator-value' ]] ||
+  fail ".env does not carry the operator's SH_RELAY_TOKEN"
+[[ "$(mode_of "$SH_COMPOSE_DIR/.env")" == 600 ]] ||
+  fail ".env holds the relay token and must be mode 600, got $(mode_of "$SH_COMPOSE_DIR/.env")"
+assert_not_in_argv 's3cr3t-operator-value'
+grep -qE "^docker compose up -d \[cwd=$SH_COMPOSE_DIR\]$" "$MOCK_LOG" ||
+  fail "expected 'docker compose up -d' run from $SH_COMPOSE_DIR: $(grep '^docker' "$MOCK_LOG")"
+pass "fresh install: fetches the compose file, writes a 0600 .env, runs up -d, token never in argv"
+
+# The supervisor's readConfig refuses to start with SH_TURNS_PER_WORKER blank, and the compose
+# file makes it required, so a trial install that leaves it unset never gets a supervisor.
+[[ "$(env_value SH_TURNS_PER_WORKER "$SH_COMPOSE_DIR/.env")" =~ ^[1-9][0-9]*$ ]] ||
+  fail ".env must set SH_TURNS_PER_WORKER to a positive integer for a trial run"
+pass "fresh install sets a positive SH_TURNS_PER_WORKER"
+
+# --- 2. no token supplied: one is generated, never on argv, distinct per install -----------------
+export SH_COMPOSE_DIR="$TMP/two"
+run_install || fail "install without a token exited non-zero"
+GEN_A="$(env_value SH_RELAY_TOKEN "$SH_COMPOSE_DIR/.env")"
+[[ "$GEN_A" =~ ^[0-9a-f]{64}$ ]] ||
+  fail "a generated SH_RELAY_TOKEN must be 32 random bytes as hex, got '${GEN_A}'"
+assert_not_in_argv "$GEN_A"
+export SH_COMPOSE_DIR="$TMP/three"
+run_install || fail "second install without a token exited non-zero"
+GEN_B="$(env_value SH_RELAY_TOKEN "$SH_COMPOSE_DIR/.env")"
+[[ "$GEN_A" != "$GEN_B" ]] || fail "two installs generated the same token: it is not random"
+pass "no token supplied: a fresh 256-bit token is generated per install and never enters argv"
+
+# --- 3. a re-run never clobbers an operator-edited .env ------------------------------------------
+export SH_COMPOSE_DIR="$TMP/two"
+sed -i.bak 's/^SH_TURNS_PER_WORKER=.*/SH_TURNS_PER_WORKER=11/' "$SH_COMPOSE_DIR/.env"
+SH_RELAY_TOKEN='a-different-value' run_install || fail "re-run exited non-zero"
+[[ "$(env_value SH_TURNS_PER_WORKER "$SH_COMPOSE_DIR/.env")" == 11 ]] ||
+  fail "re-run clobbered the operator's edited SH_TURNS_PER_WORKER"
+[[ "$(env_value SH_RELAY_TOKEN "$SH_COMPOSE_DIR/.env")" == "$GEN_A" ]] ||
+  fail "re-run replaced the existing SH_RELAY_TOKEN; running sandboxes would stop authenticating"
+grep -q '^docker compose up -d' "$MOCK_LOG" || fail "re-run did not bring the stack up"
+pass "re-run keeps an existing .env untouched and still runs up -d"
+
+# --- 4. an existing .env with no token fails closed, before any container starts ----------------
+export SH_COMPOSE_DIR="$TMP/four"
+mkdir -p "$SH_COMPOSE_DIR"
+printf 'SH_TURNS_PER_WORKER=4\n#SH_RELAY_TOKEN=\n' >"$SH_COMPOSE_DIR/.env"
+if run_install 2>"$TMP/err"; then fail "install succeeded with an .env that has no SH_RELAY_TOKEN"; fi
+grep -q 'SH_RELAY_TOKEN' "$TMP/err" || fail "the refusal must name SH_RELAY_TOKEN: $(cat "$TMP/err")"
+if grep -q ' up ' "$MOCK_LOG"; then fail "containers were started despite the missing token: $(grep ' up ' "$MOCK_LOG")"; fi
+pass "an existing .env without SH_RELAY_TOKEN fails closed, naming the variable, starting nothing"
+
+# --- 5. model credentials in the caller's environment reach .env, not argv -----------------------
+export SH_COMPOSE_DIR="$TMP/five"
+ANTHROPIC_API_KEY='sk-ant-fabricated-for-test' run_install || # notsecret
+  fail "install with a model key exited non-zero"
+[[ "$(env_value ANTHROPIC_API_KEY "$SH_COMPOSE_DIR/.env")" == 'sk-ant-fabricated-for-test' ]] || # notsecret
+  fail "ANTHROPIC_API_KEY from the caller's environment was not written to .env"
+assert_not_in_argv 'sk-ant-fabricated-for-test' # notsecret
+# Unset credentials must stay absent: an empty SH_MODEL= would reach the worker as '' and
+# run-turn.ts's `env.SH_MODEL ?? default` keeps the empty string instead of the default model.
+if grep -qE '^(SH_MODEL|OPENAI_API_KEY)=' "$SH_COMPOSE_DIR/.env"; then
+  fail "unset model variables must not be written to .env as empty assignments"
+fi
+pass "caller-supplied model credentials land in .env only; unset ones are left out"
+
+# --- 6. falls back to the standalone docker-compose binary ---------------------------------------
+export SH_COMPOSE_DIR="$TMP/six"
+MOCK_NO_COMPOSE_PLUGIN=1 run_install || fail "install with only docker-compose exited non-zero"
+grep -qE "^docker-compose up -d \[cwd=$SH_COMPOSE_DIR\]$" "$MOCK_LOG" ||
+  fail "expected the docker-compose fallback: $(grep -E '^docker' "$MOCK_LOG")"
+pass "without the compose plugin, falls back to docker-compose"
+
+# --- 7. no docker at all: a clear refusal, nothing written ---------------------------------------
+export SH_COMPOSE_DIR="$TMP/seven"
+mv "$TMP/bin/docker" "$TMP/bin/docker.off"
+mv "$TMP/bin/docker-compose" "$TMP/bin/docker-compose.off"
+if run_install 2>"$TMP/err"; then fail "install succeeded with no docker on PATH"; fi
+grep -qi 'docker' "$TMP/err" || fail "the refusal must name docker: $(cat "$TMP/err")"
+[[ ! -e "$SH_COMPOSE_DIR/.env" ]] || fail "a .env was written before the docker check failed"
+mv "$TMP/bin/docker.off" "$TMP/bin/docker"
+mv "$TMP/bin/docker-compose.off" "$TMP/bin/docker-compose"
+pass "no docker on PATH: refuses before writing anything"

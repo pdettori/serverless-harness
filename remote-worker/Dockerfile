@@ -6,7 +6,7 @@
 #
 # Then set that image in ../deploy/knative/worker-example.yaml with
 # RELAY_ADDR=sandbox-relay.default.svc:8443 (no port-forward needed in-cluster).
-FROM golang:1.25-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 # go.work first: it is what lets the two modules be bumped independently (see #212).
 # Without it the build here resolves each go.mod on its own and fails on a stale one.
