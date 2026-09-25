@@ -21,8 +21,10 @@ pass() { echo "ok - $*"; }
 # Logging shims for the ordinary externals. A secret that reaches ANY process's argv is readable
 # by every local user through /proc/<pid>/cmdline, so mocking only docker would miss a token handed
 # to `sed`, `tee` or `od` on its way into .env. Each shim logs its argv and execs the real binary.
-for cmd in awk basename cat chmod cp cut dirname grep head id mkdir mktemp mv od printf rm sed \
-  tail tee touch tr uname wc; do
+# They are also the ONLY way anything reaches a binary: PATH below is this bin dir alone, so a real
+# docker in /usr/bin (every GitHub runner has one) can never stand in for the mock.
+for cmd in awk basename cat chmod cmp cp cut dirname env grep head id ls mkdir mktemp mv od printf \
+  rm sed sh sort stat tail tee touch tr uname wc; do
   real="$(command -v "$cmd" 2>/dev/null)" || continue
   [[ "$real" == /* ]] || continue # a builtin with no binary on this host: nothing to shim
   printf '#!/bin/sh\nprintf "%%s %%s\\n" %s "$*" >>"$MOCK_LOG"\nexec %s "$@"\n' \
@@ -66,7 +68,7 @@ printf 'docker-compose %s [cwd=%s]\n' "$*" "$PWD" >>"$MOCK_LOG"
 MOCK
 chmod +x "$TMP/bin/curl" "$TMP/bin/docker" "$TMP/bin/docker-compose"
 
-export PATH="$TMP/bin:/usr/bin:/bin"
+export PATH="$TMP/bin"
 # The test's own commands must bypass the shims: a shimmed `grep -q curl "$MOCK_LOG"` logs its own
 # argv before it runs, so it matches itself and passes vacuously -- and grepping for the token would
 # put the token in a logged argv. Functions win over PATH, so these cover every call below.
@@ -182,6 +184,12 @@ pass "without the compose plugin, falls back to docker-compose"
 export SH_COMPOSE_DIR="$TMP/seven"
 mv "$TMP/bin/docker" "$TMP/bin/docker.off"
 mv "$TMP/bin/docker-compose" "$TMP/bin/docker-compose.off"
+# Without this guard, a docker elsewhere on PATH turns the check below into a real
+# `docker compose up` on the test host -- which is what happened on the CI runner.
+if command -v docker >/dev/null || command -v docker-compose >/dev/null; then
+  fail "a docker is still reachable on PATH ($(command -v docker docker-compose | tr '\n' ' '))" \
+    "-- this test would run the host's real docker"
+fi
 if run_install 2>"$TMP/err"; then fail "install succeeded with no docker on PATH"; fi
 grep -qi 'docker' "$TMP/err" || fail "the refusal must name docker: $(cat "$TMP/err")"
 [[ ! -e "$SH_COMPOSE_DIR/.env" ]] || fail "a .env was written before the docker check failed"
