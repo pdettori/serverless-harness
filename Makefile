@@ -21,8 +21,9 @@ test:
 # says which suites failed AND proves the others actually ran.
 # deploy/claude/tests covers the /promote slash-command asset, which nothing else type-checks.
 # deploy/vm/tests covers setup-vm.sh, the single-VM systemd deployment (podman/systemctl mocked).
+# deploy/compose/tests covers the compose trial: install.sh (docker/curl mocked) and the compose file.
 test-deploy:
-	@failed=''; for t in deploy/knative/tests/*.test.sh deploy/claude/tests/*.test.sh deploy/microvm/tests/*.test.sh deploy/vm/tests/*.test.sh; do \
+	@failed=''; for t in deploy/knative/tests/*.test.sh deploy/claude/tests/*.test.sh deploy/microvm/tests/*.test.sh deploy/vm/tests/*.test.sh deploy/compose/tests/*.test.sh; do \
 		echo "== $$t"; \
 		bash "$$t" || failed="$$failed $$t"; \
 	done; \

@@ -13,6 +13,8 @@ COPY packages/sandbox-relay/package.json ./packages/sandbox-relay/
 COPY packages/work-queue/package.json ./packages/work-queue/
 COPY packages/ibac-stub/package.json ./packages/ibac-stub/
 COPY packages/control-plane/package.json ./packages/control-plane/
+COPY packages/supervisor/package.json ./packages/supervisor/
+COPY packages/config-bundle/package.json ./packages/config-bundle/
 COPY harness/package.json ./harness/
 
 # Copy pi-fork (uses npm, not pnpm — has its own package-lock.json)
