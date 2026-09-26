@@ -55,6 +55,7 @@ const zeroUsage = (): UsageTotals => ({
 export class TranscriptStore {
   private readonly pending = new Map<string, { type: 'text' | 'thinking'; delta: string }>();
   private readonly titled = new Set<string>();
+  private readonly ownershipCache = new Map<string, boolean>();
 
   constructor(
     private readonly dir: string,
@@ -65,6 +66,33 @@ export class TranscriptStore {
   private file(id: string): string {
     if (!SAFE_ID.test(id)) throw new Error(`refusing unsafe session id: ${id}`);
     return join(this.dir, `${id}.jsonl`);
+  }
+
+  private ownsFile(id: string): boolean {
+    const cached = this.ownershipCache.get(id);
+    if (cached !== undefined) return cached;
+    const path = this.file(id);
+    if (!existsSync(path)) {
+      this.ownershipCache.set(id, true);
+      return true;
+    }
+    let owns = false;
+    for (const line of readFileSync(path, 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const rec = JSON.parse(line) as Rec;
+        if (rec.kind === 'header') {
+          owns =
+            rec.subject === this.owner.subject &&
+            rec.controlPlaneUrl === this.owner.controlPlaneUrl;
+          break;
+        }
+      } catch {
+        continue;
+      }
+    }
+    this.ownershipCache.set(id, owns);
+    return owns;
   }
 
   private write(id: string, rec: Rec): void {
@@ -78,10 +106,12 @@ export class TranscriptStore {
   }
 
   ensure(id: string, createdAt: number = this.now()): void {
+    if (!this.ownsFile(id)) return;
     if (!this.has(id)) this.write(id, { kind: 'header', v: 1, createdAt, ...this.owner });
   }
 
   flush(id: string): void {
+    if (!this.ownsFile(id)) return;
     const p = this.pending.get(id);
     if (!p) return;
     this.pending.delete(id);
@@ -89,6 +119,7 @@ export class TranscriptStore {
   }
 
   appendPrompt(id: string, text: string): void {
+    if (!this.ownsFile(id)) return;
     this.ensure(id);
     this.flush(id);
     if (!this.titled.has(id)) {
@@ -101,6 +132,7 @@ export class TranscriptStore {
   }
 
   appendFrame(id: string, frame: TurnFrame): void {
+    if (!this.ownsFile(id)) return;
     this.ensure(id);
     if (frame.type === 'text' || frame.type === 'thinking') {
       const p = this.pending.get(id);
@@ -117,6 +149,7 @@ export class TranscriptStore {
   }
 
   rename(id: string, title: string): void {
+    if (!this.ownsFile(id)) return;
     this.ensure(id);
     this.titled.add(id);
     this.write(id, { kind: 'title', at: this.now(), title, source: 'user' });
@@ -125,6 +158,7 @@ export class TranscriptStore {
   delete(id: string): void {
     this.pending.delete(id);
     this.titled.delete(id);
+    this.ownershipCache.delete(id);
     rmSync(this.file(id), { force: true });
   }
 

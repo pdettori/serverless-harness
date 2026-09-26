@@ -107,6 +107,35 @@ describe('TranscriptStore', () => {
     s.flush('s1');
     expect(readFileSync(join(dir, 's1.jsonl'), 'utf8')).toContain('partial');
   });
+
+  it('silently rejects writes to a foreign-owned file', () => {
+    const { dir } = store();
+    const storeA = new TranscriptStore(
+      dir,
+      { subject: 'github:1', controlPlaneUrl: 'http://cp' },
+      () => 1000,
+    );
+    const storeB = new TranscriptStore(
+      dir,
+      { subject: 'github:2', controlPlaneUrl: 'http://cp' },
+      () => 1000,
+    );
+
+    storeA.appendPrompt('s1', 'a secret');
+    storeB.appendPrompt('s1', 'b secret');
+    storeB.appendFrame('s1', { type: 'text', delta: 'b frame' });
+    storeB.rename('s1', 'B Session');
+
+    const tA = storeA.load('s1')!;
+    expect(tA.prompts).toEqual(['a secret']);
+    expect(tA.title).toBe('a secret');
+    expect(tA.titleSource).toBe('auto');
+
+    const content = readFileSync(join(dir, 's1.jsonl'), 'utf8');
+    expect(content).not.toContain('b secret');
+    expect(content).not.toContain('b frame');
+    expect(content).not.toContain('B Session');
+  });
 });
 
 describe('deriveTitle', () => {
