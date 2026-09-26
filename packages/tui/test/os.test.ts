@@ -15,11 +15,32 @@ describe('editorCommand', () => {
 
 describe('openCommand', () => {
   it('uses the platform opener', () => {
-    expect(openCommand('darwin', 'https://x')).toEqual({ cmd: 'open', args: ['https://x'] });
-    expect(openCommand('linux', 'https://x')).toEqual({ cmd: 'xdg-open', args: ['https://x'] });
+    expect(openCommand('darwin', 'https://x')).toEqual({ cmd: 'open', args: ['https://x/'] });
+    expect(openCommand('linux', 'https://x')).toEqual({ cmd: 'xdg-open', args: ['https://x/'] });
     expect(openCommand('win32', 'https://x')).toEqual({
       cmd: 'cmd',
-      args: ['/c', 'start', '', 'https://x'],
+      args: ['/c', 'start', '', 'https://x/'],
+    });
+  });
+});
+
+describe('openCommand with a server-supplied URL', () => {
+  it.each([
+    'file:///etc/passwd',
+    'javascript:alert(1)',
+    'ssh://host',
+    '/Applications/Calc.app',
+    '',
+  ])('opens nothing for %j', (url) => {
+    expect(openCommand('darwin', url)).toBeUndefined();
+    expect(openCommand('win32', url)).toBeUndefined();
+    expect(openCommand('linux', url)).toBeUndefined();
+  });
+
+  it('still opens an http URL', () => {
+    expect(openCommand('darwin', 'http://cp/login')).toEqual({
+      cmd: 'open',
+      args: ['http://cp/login'],
     });
   });
 });

@@ -15,10 +15,24 @@ export function editorCommand(env: NodeJS.ProcessEnv): string {
   return env.VISUAL || env.EDITOR || 'vi';
 }
 
+/** The URL to hand the platform opener, or undefined unless it is plain http(s). */
+export function openableUrl(url: string): string | undefined {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'http:' || u.protocol === 'https:' ? u.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// The URL comes from the server (the device flow's verificationUri): anything but http(s) — a
+// file: path, a custom scheme handler, a bare word `open` would treat as a file — is not opened.
 export function openCommand(
   platform: NodeJS.Platform,
-  url: string,
-): { cmd: string; args: string[] } {
+  raw: string,
+): { cmd: string; args: string[] } | undefined {
+  const url = openableUrl(raw);
+  if (!url) return undefined;
   if (platform === 'darwin') return { cmd: 'open', args: [url] };
   if (platform === 'win32') return { cmd: 'cmd', args: ['/c', 'start', '', url] };
   return { cmd: 'xdg-open', args: [url] };
@@ -75,7 +89,9 @@ export function realOs(
       await clipboard.write(text);
     },
     openUrl(url) {
-      const { cmd, args } = openCommand(platform, url);
+      const command = openCommand(platform, url);
+      if (!command) return;
+      const { cmd, args } = command;
       const child = spawn(cmd, args, { detached: true, stdio: 'ignore' });
       child.on('error', () => undefined);
       child.unref();
