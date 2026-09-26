@@ -18,8 +18,15 @@ interface Props {
   onLoggedIn: (auth: CachedAuth) => void;
   copy?: (text: string) => void | Promise<void>;
   openUrl?: (url: string) => void;
+  /** Both endpoints answered: the point at which the host may persist them. */
+  onConnected?: (e: Required<Endpoints>) => void;
   onDone: () => void;
   onCancel: () => void;
+  /**
+   * Called with true while the current screen takes no input (a spinner, or the embedded
+   * credentials step's loading/error screen), so the host can let Esc cancel from there.
+   */
+  onInputless?: (inputless: boolean) => void;
 }
 
 type Step =
@@ -47,13 +54,24 @@ export function OnboardingOverlay({
   onLoggedIn,
   copy,
   openUrl,
+  onConnected,
   onDone,
   onCancel,
+  onInputless,
 }: Props) {
   const { tokens: t } = useTheme();
   const [step, setStep] = useState<Step>({ kind: 'endpoints' });
   const [endpoints, setEndpoints] = useState(initial);
   const [cp, setCp] = useState<ControlPlaneApi>();
+  const [credentialInputless, setCredentialInputless] = useState(false);
+
+  const inputless =
+    step.kind === 'probing' ||
+    step.kind === 'checking' ||
+    (step.kind === 'credential' && credentialInputless);
+  useEffect(() => {
+    onInputless?.(inputless);
+  }, [inputless]);
 
   // Guards every state update that follows an `await` below: `probe`/`checkCredential` keep
   // running after this overlay is unmounted (the parent swapping it out, or the process closing
@@ -90,6 +108,7 @@ export function OnboardingOverlay({
       h.status === 'rejected' ? `harness: ${describeError(h.reason)}` : undefined,
     ].filter(Boolean);
     if (failures.length > 0) return setStep({ kind: 'endpoints', error: failures.join('\n') });
+    onConnected?.(e);
     if (!hasValidLogin()) return setStep({ kind: 'login', controlPlaneUrl: e.controlPlaneUrl });
     await checkCredential(clients.cp);
   };
@@ -160,6 +179,7 @@ export function OnboardingOverlay({
           hint="an inference credential is the key and gateway your sessions use to reach a model"
           onChanged={() => void checkCredential(cp)}
           onCancel={onDone}
+          onInputless={setCredentialInputless}
         />
       ) : null}
     </Box>

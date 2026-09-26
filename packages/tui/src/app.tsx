@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, classify } from './api/errors.js';
 import type { Usage } from './api/frames.js';
 import type { CreateSessionRequest } from './api/types.js';
-import { AppOverlay, sessionManager, type Overlay } from './app-overlay.js';
+import { AppOverlay, type Overlay } from './app-overlay.js';
 import type { InteractiveOptions } from './cli.js';
 import { BUILTIN_COMMANDS, type CommandHost, type OverlayName } from './commands/builtin.js';
 import { chordFor } from './commands/keys.js';
@@ -20,7 +20,15 @@ import { deriveTitle } from './core/transcripts.js';
 import { writeExport, type OsDeps } from './os.js';
 import { EMPTY_BLOCKS, addNotice, fromTranscript, type BlockState } from './render/blocks.js';
 import { transcriptToMarkdown } from './render/export.js';
-import { saveRuntimeConfig, setAuth, type Runtime } from './runtime.js';
+import {
+  connectionOf,
+  persistEndpoints,
+  restoreConnection,
+  saveRuntimeConfig,
+  sessionManager,
+  setAuth,
+  type Runtime,
+} from './runtime.js';
 import { ThemeProvider } from './theme/context.js';
 import { THEME_NAMES, resolveTheme } from './theme/tokens.js';
 import { Chat } from './views/Chat.js';
@@ -68,7 +76,7 @@ function retire(s: ActiveSession | undefined): void {
 }
 
 export function App({ rt, opts, env, os, write }: AppProps) {
-  const { exit } = useApp();
+  const { exit, suspendTerminal } = useApp();
   const { stdout } = useStdout();
   const [width, setWidth] = useState(stdout.columns || 80);
   const [themeName, setThemeName] = useState(rt.config.theme);
@@ -103,6 +111,8 @@ export function App({ rt, opts, env, os, write }: AppProps) {
   );
   const busy = useRef(false); // create/resume in flight; SelectList can fire Enter twice
   const overlayInputless = useRef(false);
+  /** The endpoints and clients last known to work; onboarding restores them when abandoned. */
+  const committed = useRef(connectionOf(rt));
 
   const theme = useMemo(
     () => resolveTheme(themeName, env, rt.config.reducedMotion || opts.noAnimation),
@@ -151,7 +161,9 @@ export function App({ rt, opts, env, os, write }: AppProps) {
   const detach = () => attach(DETACHED, undefined, []);
 
   const onTurnEnd = (e: Extract<SessionEvent, { kind: 'turn-end' }>) => {
-    if (rt.config.bell && rt.now() - lastInput.current > BELL_IDLE_MS) write('\u0007');
+    // A cancelled turn was the user's own doing; only a finished one is worth a bell.
+    if (e.outcome !== 'cancelled' && rt.config.bell && rt.now() - lastInput.current > BELL_IDLE_MS)
+      write('\u0007');
     if (e.outcome !== 'error' || !e.error) return;
     if (e.error instanceof HarnessUntrustedError) {
       notify('the harness does not trust this control plane — run /doctor', 'error');
@@ -192,6 +204,19 @@ export function App({ rt, opts, env, os, write }: AppProps) {
     };
   }, []);
 
+  // A new snapshot means <Static> must re-print from scratch. This runs after useSession's own
+  // reset effect, so the re-keyed <Static> sees the new blocks: re-keying in the same render as
+  // the swap would print the OLD blocks and then treat the (shorter) new list as already printed.
+  const mounted = useRef(false);
+  useEffect(() => {
+    if (mounted.current) redraw();
+    mounted.current = true;
+  }, [attached]);
+
+  // Every exit path (ctrl+c included, which unmounts without host.quit) stops the attached
+  // session, so an in-flight turn's stream cannot keep the process alive with no UI.
+  useEffect(() => () => retire(sessionRef.current), []);
+
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(undefined), TOAST_MS);
@@ -225,7 +250,6 @@ export function App({ rt, opts, env, os, write }: AppProps) {
       persist({ lastUsed: { ...rt.config.lastUsed, ...values } });
       const prompt = pendingRef.current;
       sendOnAttach.current = prompt;
-      redraw();
       attach(
         { session: s, initial: EMPTY_BLOCKS },
         prompt ? deriveTitle(prompt) : undefined,
@@ -250,7 +274,6 @@ export function App({ rt, opts, env, os, write }: AppProps) {
             "history for this session isn't available on this device — the model still has its full context",
             'info',
           );
-      redraw();
       attach({ session: s, initial, initialUsage: t?.usage }, t?.title ?? id.slice(0, 8), [
         ...(t?.prompts ?? []),
       ]);
@@ -323,7 +346,7 @@ export function App({ rt, opts, env, os, write }: AppProps) {
         notify(`copy failed: ${describeError(err)}`, 'error');
       }
     },
-    exportTranscript: () => {
+    exportTranscript: async () => {
       const s = sessionRef.current;
       if (!s) return;
       try {
@@ -333,7 +356,7 @@ export function App({ rt, opts, env, os, write }: AppProps) {
           transcriptToMarkdown(title ?? s.sessionId, view.state.blocks),
         );
         try {
-          os.openInEditor(file);
+          await suspendTerminal(() => os.openInEditor(file));
         } finally {
           redraw();
         }
@@ -342,10 +365,13 @@ export function App({ rt, opts, env, os, write }: AppProps) {
         notify(`export failed: ${describeError(err)}`, 'error');
       }
     },
-    composeInEditor: () => {
-      let text: string;
+    composeInEditor: async () => {
+      let text = '';
       try {
-        text = os.editText('');
+        // Ink hands the terminal (raw mode, stdin) to the editor and takes it back afterwards.
+        await suspendTerminal(() => {
+          text = os.editText('');
+        });
       } catch (err) {
         redraw();
         return notify(describeError(err), 'error');
@@ -367,6 +393,13 @@ export function App({ rt, opts, env, os, write }: AppProps) {
     },
   };
 
+  // Abandoned onboarding puts back whatever was last known to work, then exits if that is nothing.
+  const cancelOnboarding = () => {
+    if (rt.endpoints !== committed.current.endpoints) restoreConnection(rt, committed.current);
+    if (!rt.endpoints.controlPlaneUrl || !rt.endpoints.harnessUrl) return exit();
+    show(initialOverlay(rt, { ...opts, setup: false }));
+  };
+
   const setLeaderPending = (on: boolean) => {
     leaderRef.current = on;
     setLeader(on);
@@ -375,7 +408,10 @@ export function App({ rt, opts, env, os, write }: AppProps) {
   useInput((input, key) => {
     lastInput.current = rt.now(); // any keystroke is activity, for the turn-complete bell
     if (overlay) {
-      if (key.escape && overlayInputless.current) close();
+      if (key.escape && overlayInputless.current) {
+        if (overlay.name === 'onboarding') cancelOnboarding();
+        else close();
+      }
       return;
     }
     const inLeader = leaderRef.current;
@@ -416,10 +452,11 @@ export function App({ rt, opts, env, os, write }: AppProps) {
         show({ name: 'new-session' });
         notify('all set — type a message to start');
       }}
-      onOnboardingCancel={() => {
-        if (!rt.endpoints.controlPlaneUrl || !rt.endpoints.harnessUrl) return exit();
-        show(initialOverlay(rt, { ...opts, setup: false }));
+      onConnected={() => {
+        persistEndpoints(rt);
+        committed.current = connectionOf(rt);
       }}
+      onOnboardingCancel={cancelOnboarding}
       onLoggedIn={onLoggedIn}
       onCreate={create}
       onResume={(id) => void resume(id)}

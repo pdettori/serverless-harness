@@ -4,9 +4,8 @@ import type { CommandRegistry } from './commands/registry.js';
 import type { CachedAuth } from './config.js';
 import { apiTokenValid } from './core/auth.js';
 import { runDiagnostics } from './core/diagnostics.js';
-import { SessionManager } from './core/session-manager.js';
 import type { OsDeps } from './os.js';
-import { setAuth, setEndpoints, type Runtime } from './runtime.js';
+import { applyEndpoints, sessionManager, setAuth, type Runtime } from './runtime.js';
 import { CredentialsOverlay } from './views/overlays/Credentials.js';
 import { DoctorOverlay } from './views/overlays/Doctor.js';
 import { HelpOverlay } from './views/overlays/Help.js';
@@ -19,16 +18,6 @@ import { SessionsOverlay } from './views/overlays/Sessions.js';
 /** `then` reopens an overlay once this one reports a change (credentials → new session). */
 export type Overlay = { name: OverlayName; hint?: string; then?: OverlayName };
 
-export function sessionManager(rt: Runtime): SessionManager {
-  return new SessionManager({
-    cp: rt.cp!,
-    harness: rt.harness!,
-    transcripts: rt.transcripts,
-    now: rt.now,
-    sleep: rt.sleep,
-  });
-}
-
 interface Props {
   overlay: Overlay;
   rt: Runtime;
@@ -38,6 +27,7 @@ interface Props {
   currentSessionId?: string;
   open: (o: Overlay) => void;
   close: () => void;
+  onConnected: () => void;
   onOnboarded: () => void;
   onOnboardingCancel: () => void;
   onLoggedIn: (auth: CachedAuth) => void;
@@ -47,9 +37,9 @@ interface Props {
   onInputless: (inputless: boolean) => void;
 }
 
-// Every overlay owns Esc on its interactive screens. Sessions, New Session and Credentials also
-// have screens with no input at all (a spinner, an error); they report those via onInputless and
-// the App closes the overlay on Esc from there, so no error screen can strand the user.
+// Every overlay owns Esc on its interactive screens. Onboarding, Sessions, New Session and
+// Credentials also have screens with no input at all (a spinner, an error); they report those via
+// onInputless and the App cancels the overlay on Esc from there, so no screen strands the user.
 export function AppOverlay({
   overlay,
   rt,
@@ -59,6 +49,7 @@ export function AppOverlay({
   currentSessionId,
   open,
   close,
+  onConnected,
   onOnboarded,
   onOnboardingCancel,
   onLoggedIn,
@@ -74,8 +65,9 @@ export function AppOverlay({
         <OnboardingOverlay
           initial={rt.endpoints}
           connect={(e) => {
-            // Persists the URLs and reloads the login cached for this control plane.
-            setEndpoints(rt, e);
+            // In memory only (reloading the login cached for that control plane); the URLs are
+            // persisted by onConnected, once both endpoints have answered.
+            applyEndpoints(rt, e);
             return { cp: rt.cp!, harness: rt.harness! };
           }}
           hasValidLogin={() => apiTokenValid(rt.auth, rt.now())}
@@ -83,8 +75,10 @@ export function AppOverlay({
           onLoggedIn={(a) => setAuth(rt, a)}
           copy={os.copy}
           openUrl={os.openUrl}
+          onConnected={onConnected}
           onDone={onOnboarded}
           onCancel={onOnboardingCancel}
+          onInputless={onInputless}
         />
       );
     case 'login':

@@ -1,6 +1,8 @@
+import { EventEmitter } from 'node:events';
+import { render as inkRender } from 'ink';
 import { render } from 'ink-testing-library';
-import { describe, expect, it, vi } from 'vitest';
-import { ApiError } from '../src/api/errors.js';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { ApiError, TurnCancelledError } from '../src/api/errors.js';
 import { App, CLEAR_SCREEN, initialOverlay } from '../src/app.js';
 import { loadConfig, saveAuth } from '../src/config.js';
 import type { Runtime } from '../src/runtime.js';
@@ -10,6 +12,84 @@ import { KEY, inputReady, tick, waitFor } from './helpers/ink.js';
 import { fakeOs, testRuntime } from './helpers/runtime.js';
 
 const opts = { setup: false, noAnimation: true };
+
+/**
+ * ink-testing-library's stdout is not a TTY, so Ink is never interactive under it and
+ * suspendTerminal() hands nothing over. This renders App on TTY-like fakes with interactive: true,
+ * so raw mode really is released for the editor and can be observed through `rawMode`.
+ */
+function mountInteractive(rt: Runtime) {
+  const stdout = Object.assign(new EventEmitter(), {
+    isTTY: true,
+    columns: 100,
+    rows: 40,
+    frames: [] as string[],
+    write(s: string) {
+      stdout.frames.push(s);
+      return true;
+    },
+  });
+  const rawMode: boolean[] = [];
+  const stdin = Object.assign(new EventEmitter(), {
+    isTTY: true,
+    data: null as string | null,
+    setRawMode: (on: boolean) => void rawMode.push(on),
+    setEncoding: () => undefined,
+    ref: () => undefined,
+    unref: () => undefined,
+    resume: () => undefined,
+    pause: () => undefined,
+    read: () => {
+      const d = stdin.data;
+      stdin.data = null;
+      return d;
+    },
+    write(s: string) {
+      stdin.data = s;
+      stdin.emit('readable');
+    },
+  });
+  const os = fakeOs();
+  const write = vi.fn();
+  const instance = inkRender(<App rt={rt} opts={opts} env={{}} os={os} write={write} />, {
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    stderr: stdout as unknown as NodeJS.WriteStream,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    interactive: true,
+    exitOnCtrlC: false,
+    patchConsole: false,
+  });
+  onTestFinished(() => instance.unmount());
+  const all = () => stdout.frames.join('');
+  const until = (cond: () => boolean) => waitFor(cond, 1500, () => all().slice(-2000));
+  return { stdin, os, write, rawMode, all, until };
+}
+
+const sessionList = (...ids: string[]) =>
+  fakeControlPlane({
+    listCredentials: async () => [credential('anthropic')],
+    listSessions: async () => ({
+      sessions: ids.map((sessionId) => ({
+        sessionId,
+        owner: 'github:1',
+        tenant: 't',
+        createdAt: 0,
+        state: 'active' as const,
+        lastTurnAt: null,
+        turns: 1,
+      })),
+      nextCursor: null,
+    }),
+  });
+
+/** A fetch that answers the onboarding probe per path; anything unlisted is a 500. */
+function routedFetch(routes: Record<string, () => Response | Promise<Response>>): typeof fetch {
+  return (async (input: string | URL | Request) => {
+    const route = routes[new URL(String(input)).pathname];
+    return route ? route() : json({ error: 'internal_error' }, 500);
+  }) as typeof fetch;
+}
+const never = () => new Promise<Response>(() => undefined);
 
 function mount(rt: Runtime, over: Partial<typeof opts> = {}) {
   const write = vi.fn();
@@ -48,7 +128,7 @@ describe('App', () => {
     const rt = testRuntime({
       endpoints: {},
       config: { ...testRuntime().config, controlPlaneUrl: undefined, harnessUrl: undefined },
-      // setEndpoints rewires real clients on this fetch.
+      // Onboarding rewires real clients on this fetch.
       fetchImpl: (async (input: string | URL | Request) => {
         const path = new URL(String(input)).pathname;
         if (path === '/healthz' || path === '/health') return json({ ok: true });
@@ -354,5 +434,184 @@ describe('App', () => {
     await ready();
     await send(stdin, '/editor');
     await until(() => all().includes('› from the editor'));
+  });
+
+  it('unmounting (ctrl+c included) cancels the turn in flight', async () => {
+    const harness = fakeHarness([
+      { frames: [{ type: 'text', delta: 'thinking hard' }], hang: true },
+    ]);
+    const { stdin, all, until, ready, unmount } = mount(testRuntime({ harness }));
+    await ready();
+    await send(stdin, 'long task');
+    await until(() => all().includes('thinking hard'));
+    expect(harness.turns[0].signal?.aborted).toBe(false);
+    unmount();
+    expect(harness.turns[0].signal?.aborted).toBe(true);
+  });
+
+  it('switching sessions cancels the first one and drops its queue', async () => {
+    const harness = fakeHarness([
+      { frames: [{ type: 'text', delta: 'thinking hard' }], hang: true },
+      { frames: [{ type: 'text', delta: 'must never run' }, doneFrame('s-new')] },
+    ]);
+    const { stdin, all, frame, until, ready } = mount(
+      testRuntime({ cp: sessionList('remote-1'), harness }),
+    );
+    await ready();
+    await send(stdin, 'first');
+    await until(() => all().includes('thinking hard'));
+    await send(stdin, 'queued');
+    await until(() => frame().includes('queued: 1'));
+    stdin.write(KEY.ctrl('x'));
+    await tick();
+    stdin.write('l');
+    await until(() => inputReady(stdin) && frame().includes('remote-1'));
+    await tick();
+    stdin.write(KEY.enter);
+    await until(() => all().includes("isn't available on this device"));
+    await until(() => harness.turns[0].signal?.aborted === true);
+    await tick(100);
+    expect(harness.turns).toHaveLength(1);
+    expect(all()).not.toContain('must never run');
+  });
+
+  it('does not ring the bell for a cancelled turn', async () => {
+    let clock = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const harness = fakeHarness([], {
+      // eslint-disable-next-line require-yield
+      async *streamTurn() {
+        await gate;
+        throw new TurnCancelledError();
+      },
+    });
+    const { stdin, write, all, until, ready } = mount(testRuntime({ harness, now: () => clock }));
+    await ready();
+    await send(stdin, 'slow one');
+    clock += 11_000;
+    release();
+    await until(() => all().includes('cancelled'));
+    await tick();
+    expect(write.mock.calls.some(([s]) => s === '\u0007')).toBe(false);
+  });
+
+  it('Esc during a pending onboarding probe restores the working setup and closes', async () => {
+    const rt = testRuntime({ fetchImpl: routedFetch({ '/healthz': never, '/health': never }) });
+    const original = { cp: rt.cp, harness: rt.harness, endpoints: rt.endpoints };
+    const { stdin, frame, until } = mount(rt, { setup: true });
+    await until(() => inputReady(stdin) && frame().includes('Control plane URL'));
+    stdin.write('2'); // http://cp -> http://cp2
+    await tick();
+    stdin.write(KEY.enter);
+    await tick();
+    stdin.write(KEY.enter);
+    await until(() => frame().includes('checking both endpoints'));
+    expect(rt.endpoints.controlPlaneUrl).toBe('http://cp2'); // applied in memory for the probe
+    await tick();
+    stdin.write(KEY.escape);
+    await until(() => !frame().includes('Welcome to sh-tui') && frame().includes('type a message'));
+    expect(rt.endpoints).toBe(original.endpoints);
+    expect(rt.cp).toBe(original.cp);
+    expect(rt.harness).toBe(original.harness);
+    expect(loadConfig(rt.paths).config.controlPlaneUrl).toBeUndefined();
+  });
+
+  it('Esc during a first-run probe exits, since nothing is configured', async () => {
+    const rt = testRuntime({
+      endpoints: {},
+      config: { ...testRuntime().config, controlPlaneUrl: undefined, harnessUrl: undefined },
+      fetchImpl: routedFetch({ '/healthz': never, '/health': never }),
+    });
+    const { stdin, frame, until } = mount(rt);
+    await until(() => inputReady(stdin) && frame().includes('Control plane URL'));
+    stdin.write('http://cp2');
+    await tick();
+    stdin.write(KEY.enter);
+    await tick();
+    stdin.write('http://h2');
+    await tick();
+    stdin.write(KEY.enter);
+    await until(() => frame().includes('checking both endpoints'));
+    await tick();
+    stdin.write(KEY.escape);
+    // Exiting unmounts Ink, which stops listening to stdin.
+    await until(() => !inputReady(stdin));
+    expect(rt.endpoints).toEqual({});
+  });
+
+  it('a failed onboarding probe persists nothing', async () => {
+    const rt = testRuntime({
+      endpoints: {},
+      config: { ...testRuntime().config, controlPlaneUrl: undefined, harnessUrl: undefined },
+      fetchImpl: routedFetch({ '/healthz': () => json({ ok: true }) }), // /health -> 500
+    });
+    const { stdin, frame, until } = mount(rt);
+    await until(() => inputReady(stdin) && frame().includes('Control plane URL'));
+    stdin.write('http://cp2');
+    await tick();
+    stdin.write(KEY.enter);
+    await tick();
+    stdin.write('http://bad-harness');
+    await tick();
+    stdin.write(KEY.enter);
+    await until(() => frame().includes('harness:'));
+    expect(frame()).toContain('Welcome to sh-tui');
+    const saved = loadConfig(rt.paths).config;
+    expect(saved.controlPlaneUrl).toBeUndefined();
+    expect(saved.harnessUrl).toBeUndefined();
+    expect(rt.config.harnessUrl).toBeUndefined();
+  });
+
+  it('runs the editor with the terminal handed over, and takes it back after', async () => {
+    const { stdin, os, rawMode, all, until } = mountInteractive(testRuntime());
+    let rawDuringEdit: boolean | undefined;
+    os.editText.mockImplementation(() => {
+      rawDuringEdit = rawMode.at(-1);
+      return 'from the editor';
+    });
+    await until(() => rawMode.at(-1) === true && all().includes('type a message'));
+    await send(stdin, '/editor');
+    await until(() => all().includes('› from the editor'));
+    expect(os.editText).toHaveBeenCalledTimes(1);
+    expect(rawDuringEdit).toBe(false);
+    expect(rawMode.at(-1)).toBe(true);
+  });
+
+  it('exports the transcript and opens it with the terminal handed over', async () => {
+    const rt = testRuntime({
+      harness: fakeHarness([{ frames: [{ type: 'text', delta: 'reply' }, doneFrame('s-new')] }]),
+    });
+    const { stdin, os, rawMode, write, all, until } = mountInteractive(rt);
+    let rawDuringEdit: boolean | undefined;
+    os.openInEditor.mockImplementation(() => {
+      rawDuringEdit = rawMode.at(-1);
+    });
+    await until(() => rawMode.at(-1) === true && all().includes('type a message'));
+    await send(stdin, 'hi');
+    await until(() => all().includes('reply') && all().includes('idle'));
+    write.mockClear();
+    await send(stdin, '/export');
+    await until(() => all().includes('exported to'));
+    expect(os.openInEditor).toHaveBeenCalledTimes(1);
+    expect(os.openInEditor.mock.calls[0][0]).toMatch(/s-new\.md$/);
+    expect(rawDuringEdit).toBe(false);
+    expect(rawMode.at(-1)).toBe(true);
+    expect(write).toHaveBeenCalledWith(CLEAR_SCREEN);
+  });
+
+  it('shows a toast when the export editor cannot start', async () => {
+    const rt = testRuntime({
+      harness: fakeHarness([{ frames: [{ type: 'text', delta: 'reply' }, doneFrame('s-new')] }]),
+    });
+    const { stdin, os, all, frame, until, ready } = mount(rt);
+    os.openInEditor.mockImplementation(() => {
+      throw new Error('could not start editor "nope": command not found (exit 127)');
+    });
+    await ready();
+    await send(stdin, 'hi');
+    await until(() => all().includes('reply') && frame().includes('idle'));
+    await send(stdin, '/export');
+    await until(() => frame().includes('export failed: could not start editor'));
   });
 });

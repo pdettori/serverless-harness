@@ -16,6 +16,7 @@ import {
   type Paths,
   type TuiConfig,
 } from './config.js';
+import { SessionManager } from './core/session-manager.js';
 import { sleep } from './core/time.js';
 import { TranscriptStore } from './core/transcripts.js';
 
@@ -89,14 +90,49 @@ export function saveRuntimeConfig(rt: Runtime): void {
   rt.configExists = true;
 }
 
-export function setEndpoints(rt: Runtime, endpoints: Endpoints): void {
+/**
+ * Points the runtime at new endpoints in memory only: clients, the login cached for that
+ * control plane, and the transcript store follow; config.json and rt.config are untouched.
+ */
+export function applyEndpoints(rt: Runtime, endpoints: Endpoints): void {
   rt.endpoints = {
     controlPlaneUrl: normalizeUrl(endpoints.controlPlaneUrl),
     harnessUrl: normalizeUrl(endpoints.harnessUrl),
   };
   // A token is only ever sent to the control plane that issued it (spec §4.6).
   rt.auth = rt.endpoints.controlPlaneUrl ? loadAuth(rt.paths, rt.endpoints.controlPlaneUrl) : null;
+  wire(rt);
+}
+
+/** Records the runtime's current endpoints in config.json. */
+export function persistEndpoints(rt: Runtime): void {
   rt.config = { ...rt.config, ...rt.endpoints };
   saveRuntimeConfig(rt);
-  wire(rt);
+}
+
+export function setEndpoints(rt: Runtime, endpoints: Endpoints): void {
+  applyEndpoints(rt, endpoints);
+  persistEndpoints(rt);
+}
+
+/** What applyEndpoints replaces, so an abandoned change can be put back exactly. */
+export type Connection = Pick<Runtime, 'endpoints' | 'auth' | 'cp' | 'harness' | 'transcripts'>;
+
+export function connectionOf(rt: Runtime): Connection {
+  const { endpoints, auth, cp, harness, transcripts } = rt;
+  return { endpoints, auth, cp, harness, transcripts };
+}
+
+export function restoreConnection(rt: Runtime, c: Connection): void {
+  Object.assign(rt, c);
+}
+
+export function sessionManager(rt: Runtime): SessionManager {
+  return new SessionManager({
+    cp: rt.cp!,
+    harness: rt.harness!,
+    transcripts: rt.transcripts,
+    now: rt.now,
+    sleep: rt.sleep,
+  });
 }
