@@ -79,6 +79,15 @@ describe('TranscriptStore', () => {
     s.appendPrompt('s1', 'hello');
     appendFileSync(join(dir, 's1.jsonl'), '{"kind":"frame","at":1,"frame":{"type":"te');
     expect(s.load('s1')!.entries).toEqual([{ kind: 'prompt', text: 'hello' }]);
+    // The next process appends after the torn line without losing its first record to it.
+    const next = new TranscriptStore(dir, owner);
+    next.appendPrompt('s1', 'again');
+    next.appendFrame('s1', { type: 'done', sessionId: 's1', stopReason: 'end_turn' });
+    expect(next.load('s1')!.entries).toEqual([
+      { kind: 'prompt', text: 'hello' },
+      { kind: 'prompt', text: 'again' },
+      { kind: 'frame', frame: { type: 'done', sessionId: 's1', stopReason: 'end_turn' } },
+    ]);
   });
 
   it('writes 0600 files in a 0700 directory', () => {

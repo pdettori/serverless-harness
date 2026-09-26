@@ -1,4 +1,15 @@
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import {
+  appendFileSync,
+  chmodSync,
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  rmSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { isTerminal, type TurnFrame, type Usage } from '../api/frames.js';
 
@@ -52,10 +63,30 @@ const zeroUsage = (): UsageTotals => ({
   turns: 0,
 });
 
+/** True when the file exists, is non-empty and does not end with a newline. */
+function endsTorn(path: string): boolean {
+  let fd: number;
+  try {
+    fd = openSync(path, 'r');
+  } catch {
+    return false;
+  }
+  try {
+    const { size } = fstatSync(fd);
+    if (size === 0) return false;
+    const last = Buffer.alloc(1);
+    readSync(fd, last, 0, 1, size - 1);
+    return last[0] !== 0x0a;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export class TranscriptStore {
   private readonly pending = new Map<string, { type: 'text' | 'thinking'; delta: string }>();
   private readonly titled = new Set<string>();
   private readonly ownershipCache = new Map<string, boolean>();
+  private readonly tailChecked = new Set<string>();
 
   constructor(
     private readonly dir: string,
@@ -98,7 +129,12 @@ export class TranscriptStore {
   private write(id: string, rec: Rec): void {
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     chmodSync(this.dir, 0o700);
-    appendFileSync(this.file(id), JSON.stringify(rec) + '\n', { mode: 0o600 });
+    const path = this.file(id);
+    // A crash mid-append (in an earlier process) can leave a torn last line with no newline;
+    // appending straight after it would glue the next record onto it and lose that one too.
+    const sep = this.tailChecked.has(id) ? '' : endsTorn(path) ? '\n' : '';
+    this.tailChecked.add(id);
+    appendFileSync(path, sep + JSON.stringify(rec) + '\n', { mode: 0o600 });
   }
 
   has(id: string): boolean {
@@ -159,6 +195,7 @@ export class TranscriptStore {
     this.pending.delete(id);
     this.titled.delete(id);
     this.ownershipCache.delete(id);
+    this.tailChecked.delete(id);
     rmSync(this.file(id), { force: true });
   }
 
