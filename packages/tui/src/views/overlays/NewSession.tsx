@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ControlPlaneApi, CreateSessionRequest } from '../../api/types.js';
 import type { Preset } from '../../config.js';
 import { describeError } from '../../core/messages.js';
@@ -52,15 +52,28 @@ export function NewSessionOverlay({
   );
   const [note, setNote] = useState<string>();
 
+  // Guards every side effect that follows an `await` below: `resolve` can be re-entered by a
+  // user selection and its promise chain keeps running after this overlay is unmounted (e.g. the
+  // parent swaps it out while `resolveSessionOptions`'s credential listing is still pending). Set
+  // false only on unmount so a still-mounted re-render never trips it.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const resolve = async (given: Record<string, string>) => {
     setPhase({ kind: 'resolving' });
     try {
       const r = await resolveSessionOptions(cp, fields, given, lastUsed);
+      if (!mountedRef.current) return;
       if (r.status === 'blocked') return onBlocked(r.field.emptyHint);
       if (r.status === 'needs-input') return setPhase({ kind: 'pick', res: r, given });
       setPhase({ kind: 'creating' });
       await onCreate(r.request, r.values);
     } catch (err) {
+      if (!mountedRef.current) return;
       setPhase({ kind: 'error', message: describeError(err) });
     }
   };

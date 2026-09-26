@@ -1,8 +1,9 @@
 import { render } from 'ink-testing-library';
 import { describe, expect, it, vi } from 'vitest';
+import type { CredentialDescriptor } from '../src/api/types.js';
 import { NewSessionOverlay } from '../src/views/overlays/NewSession.js';
 import { credential, fakeControlPlane } from './helpers/fakes.js';
-import { KEY, pressUntil, tick, withTheme } from './helpers/ink.js';
+import { KEY, inputReady, tick, waitFor, withTheme } from './helpers/ink.js';
 
 const cpWith = (...names: string[]) =>
   fakeControlPlane({ listCredentials: async () => names.map((n) => credential(n)) });
@@ -29,50 +30,54 @@ function setup(cp = cpWith('a'), over: Partial<Parameters<typeof NewSessionOverl
 describe('NewSessionOverlay', () => {
   it('creates straight away with a single credential', async () => {
     const { onCreate, lastFrame } = setup();
-    await tick();
+    await waitFor(() => onCreate.mock.calls.length > 0, 1000, lastFrame);
     expect(onCreate).toHaveBeenCalledWith(
       { credentials: { inference: 'a' } },
       { inferenceCredential: 'a' },
     );
+    expect(onCreate).toHaveBeenCalledTimes(1);
     expect(lastFrame()).toContain('creating session');
   });
 
   it('routes to credentials when there is none', async () => {
-    const { onBlocked } = setup(cpWith());
-    await tick();
+    const { onBlocked, lastFrame } = setup(cpWith());
+    await waitFor(() => onBlocked.mock.calls.length > 0, 1000, lastFrame);
     expect(onBlocked).toHaveBeenCalledWith('add an inference credential to start');
+    expect(onBlocked).toHaveBeenCalledTimes(1);
   });
 
   it('asks when there are several, preselecting the last used', async () => {
     const { stdin, onCreate, lastFrame } = setup(cpWith('a', 'b'), {
       lastUsed: { inferenceCredential: 'b' },
     });
-    await tick();
+    await waitFor(
+      () => (lastFrame() ?? '').includes('Inference credential') && inputReady(stdin),
+      1000,
+      lastFrame,
+    );
     expect(lastFrame()).toContain('Inference credential');
-    // The just-resolved SelectList's useInput effect subscribes asynchronously after this paint,
-    // and under load that lag isn't reliably bounded by a small fixed number of ticks (see the
-    // helper's doc comment). Resending Enter — harmless once onCreate has already fired — until
-    // it visibly takes effect rides out that lag instead of guessing a settle time.
-    await pressUntil(stdin.write, KEY.enter, () => onCreate.mock.calls.length > 0);
+    stdin.write(KEY.enter);
+    await waitFor(() => onCreate.mock.calls.length > 0, 1000, lastFrame);
     expect(onCreate).toHaveBeenCalledWith(
       { credentials: { inference: 'b' } },
       { inferenceCredential: 'b' },
     );
+    expect(onCreate).toHaveBeenCalledTimes(1);
   });
 
   it('uses a preset, and notes preset fields the client no longer knows', async () => {
     const { stdin, onCreate, lastFrame } = setup(cpWith('a', 'b'), {
       presets: [{ name: 'work', values: { inferenceCredential: 'b', model: 'opus' } }],
     });
-    await tick();
+    await waitFor(() => (lastFrame() ?? '').includes('work') && inputReady(stdin), 1000, lastFrame);
     expect(lastFrame()).toContain('work');
-    // See the comment in the "asks when there are several" test above: retry rather than guess
-    // a settle time.
-    await pressUntil(stdin.write, KEY.enter, () => onCreate.mock.calls.length > 0);
+    stdin.write(KEY.enter);
+    await waitFor(() => onCreate.mock.calls.length > 0, 1000, lastFrame);
     expect(onCreate).toHaveBeenCalledWith(
       { credentials: { inference: 'b' } },
       { inferenceCredential: 'b' },
     );
+    expect(onCreate).toHaveBeenCalledTimes(1);
     expect(lastFrame()).toContain('ignoring preset fields this version does not know: model');
   });
 
@@ -81,7 +86,24 @@ describe('NewSessionOverlay', () => {
       throw new Error('credential_required');
     });
     const { lastFrame } = setup(cpWith('a'), { onCreate });
-    await tick();
+    await waitFor(() => (lastFrame() ?? '').includes('credential_required'), 1000, lastFrame);
     expect(lastFrame()).toContain('credential_required');
+  });
+
+  it('does not call onCreate if unmounted while credential listing is still pending', async () => {
+    let resolveList: ((creds: CredentialDescriptor[]) => void) | undefined;
+    const cp = fakeControlPlane({
+      listCredentials: () =>
+        new Promise<CredentialDescriptor[]>((resolve) => {
+          resolveList = resolve;
+        }),
+    });
+    const { unmount, onCreate } = setup(cp);
+    await tick();
+    expect(resolveList).toBeDefined();
+    unmount();
+    resolveList!([credential('a')]);
+    await tick();
+    expect(onCreate).not.toHaveBeenCalled();
   });
 });

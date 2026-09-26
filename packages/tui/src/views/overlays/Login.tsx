@@ -45,7 +45,15 @@ export function LoginOverlay({
       },
       ac.signal,
     )
-      .then((login) => onLoggedIn(toCachedAuth(login, controlPlaneUrl)))
+      .then((login) => {
+        // Login can resolve after this effect's own cleanup already fired (Esc cancelling,
+        // unmount, or a retry starting a new attempt) — deviceLogin only rejects with
+        // LoginCancelledError when the signal aborts BEFORE it settles, not when it aborts in
+        // the same tick it resolves. Without this check a stale attempt could still log the
+        // component in after the user has moved on.
+        if (ac.signal.aborted) return;
+        onLoggedIn(toCachedAuth(login, controlPlaneUrl));
+      })
       .catch((err) => {
         if (!(err instanceof LoginCancelledError)) setError(describeError(err));
       });

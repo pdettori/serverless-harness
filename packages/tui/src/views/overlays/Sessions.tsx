@@ -71,7 +71,7 @@ export function SessionsOverlay({
           .join(' · ');
         return { key: s.sessionId, label: title, detail, value: { id: s.sessionId, title } };
       }),
-    [sessions, reload],
+    [sessions, reload, now, transcripts, currentSessionId],
   );
 
   if (error) return <Text color={t.error}>{error}</Text>;

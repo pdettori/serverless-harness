@@ -7,7 +7,7 @@ import type { SessionSummary } from '../src/api/types.js';
 import { TranscriptStore } from '../src/core/transcripts.js';
 import { SessionsOverlay, sessionTitle } from '../src/views/overlays/Sessions.js';
 import { fakeControlPlane } from './helpers/fakes.js';
-import { KEY, pressUntil, tick, withTheme } from './helpers/ink.js';
+import { KEY, inputReady, tick, waitFor, withTheme } from './helpers/ink.js';
 
 const NOW = Date.UTC(2026, 8, 25, 12, 0);
 const summary = (id: string, over: Partial<SessionSummary> = {}): SessionSummary => ({
@@ -63,7 +63,10 @@ describe('sessionTitle', () => {
 describe('SessionsOverlay', () => {
   it('lists sessions with titles, relative times, turn counts and markers', async () => {
     const { lastFrame } = setup();
-    await tick();
+    // cp.listSessions() resolves asynchronously; wait on the actual content the list renders
+    // rather than a fixed tick, since under a loaded worker that resolution can take longer than
+    // any small fixed number of ticks (see the helper's doc comment for the investigation).
+    await waitFor(() => (lastFrame() ?? '').includes('Fix the payment bug'), 1000, lastFrame);
     const f = lastFrame()!;
     expect(f).toContain('Fix the payment bug');
     expect(f).toContain('3h ago · 4 turns · local history · current');
@@ -73,48 +76,79 @@ describe('SessionsOverlay', () => {
 
   it('resumes the highlighted session on Enter', async () => {
     const { stdin, onResume, lastFrame } = setup();
-    await tick();
-    // The list's useInput subscribes in a useEffect that flushes asynchronously after this
-    // first paint, and under load (confirmed running the full package suite) that can take
-    // much longer than a fixed handful of ticks. Resending a harmless, idempotent keystroke
-    // until it visibly takes effect rides out that lag instead of guessing a tick count.
-    await pressUntil(stdin.write, KEY.down, () =>
-      (lastFrame() ?? '').includes('› 2026-09-25 09:30 · bbbbbbbb'),
+    await waitFor(
+      () => (lastFrame() ?? '').includes('Fix the payment bug') && inputReady(stdin),
+      1000,
+      lastFrame,
     );
+    stdin.write(KEY.down);
+    await waitFor(
+      () => (lastFrame() ?? '').includes('› 2026-09-25 09:30 · bbbbbbbb'),
+      1000,
+      lastFrame,
+    );
+    // Same List instance as above (cursor move only, no unmount/remount), so its useInput
+    // listener is still the one already confirmed attached — no need to recheck inputReady.
     stdin.write(KEY.enter);
     await tick();
     expect(onResume).toHaveBeenCalledWith('bbbbbbbb-2');
+    expect(onResume).toHaveBeenCalledTimes(1);
   });
 
   it('deletes only after confirmation', async () => {
     const { stdin, remove, onDeleted, lastFrame } = setup();
-    await tick();
-    // See the comment in the "resumes" test above: retry rather than guess a settle time.
-    await pressUntil(stdin.write, 'd', () => (lastFrame() ?? '').includes('Delete "Fix'));
+    await waitFor(
+      () => (lastFrame() ?? '').includes('Fix the payment bug') && inputReady(stdin),
+      1000,
+      lastFrame,
+    );
+    stdin.write('d');
+    // 'd' swaps the list for a freshly-mounted Confirm. Its useInput attaches its own listener
+    // on its own effect-flush schedule, independent of when the prompt text paints, so wait for
+    // both before writing 'n'.
+    await waitFor(
+      () => (lastFrame() ?? '').includes('Delete "Fix') && inputReady(stdin),
+      1000,
+      lastFrame,
+    );
     expect(lastFrame()).toContain('Delete "Fix the payment bug"?');
-    // 'd' just swapped the list for a freshly-mounted Confirm, whose own useInput effect can
-    // lag the same way — resending 'n' is harmless (onNo is idempotent) until it takes effect.
-    await pressUntil(stdin.write, 'n', () => !(lastFrame() ?? '').includes('Delete "Fix'));
+    stdin.write('n');
+    await waitFor(() => !(lastFrame() ?? '').includes('Delete "Fix'), 1000, lastFrame);
     expect(remove).not.toHaveBeenCalled();
-    await pressUntil(stdin.write, 'd', () => (lastFrame() ?? '').includes('Delete "Fix'));
-    await pressUntil(stdin.write, 'y', () => remove.mock.calls.length > 0);
+    expect(lastFrame() ?? '').not.toContain('Delete "');
+    // 'n' swaps Confirm back out for a freshly-mounted List — wait for its listener too before
+    // writing the second 'd'.
+    await waitFor(() => inputReady(stdin), 1000, lastFrame);
+    stdin.write('d');
+    await waitFor(
+      () => (lastFrame() ?? '').includes('Delete "Fix') && inputReady(stdin),
+      1000,
+      lastFrame,
+    );
+    stdin.write('y');
+    // Wait for the full async chain (remove().then(() => onDeleted(...))) to settle, not just
+    // for `remove` to have been invoked.
+    await waitFor(() => onDeleted.mock.calls.length > 0, 1000, lastFrame);
     expect(remove).toHaveBeenCalledWith('aaaaaaaa-1');
+    expect(remove).toHaveBeenCalledTimes(1);
     expect(onDeleted).toHaveBeenCalledWith('aaaaaaaa-1');
+    expect(onDeleted).toHaveBeenCalledTimes(1);
   });
 
   it('renames through a one-field form', async () => {
     const { stdin, transcripts, lastFrame } = setup();
-    await tick();
-    // See the comment in the "resumes" test above: retry rather than guess a settle time.
-    await pressUntil(stdin.write, 'r', () => (lastFrame() ?? '').includes('Rename session'));
-    // 'r' just swapped the list for a freshly-mounted Form, whose own useInput effect can lag
-    // the same way. A backspace is safe to resend (it is a no-op once the field is empty), so
-    // retry it until the field visibly shortens, proving the Form is now subscribed — then the
-    // rest of the burst is safe to fire without further per-key settling.
-    await pressUntil(
-      stdin.write,
-      KEY.backspace,
-      () => !(lastFrame() ?? '').includes('Fix the payment bug'),
+    await waitFor(
+      () => (lastFrame() ?? '').includes('Fix the payment bug') && inputReady(stdin),
+      1000,
+      lastFrame,
+    );
+    stdin.write('r');
+    // 'r' swaps the list for a freshly-mounted Form; its useInput attaches on its own
+    // effect-flush schedule, so wait for the listener as well as the heading before the burst.
+    await waitFor(
+      () => (lastFrame() ?? '').includes('Rename session') && inputReady(stdin),
+      1000,
+      lastFrame,
     );
     for (let i = 0; i < 30; i++) stdin.write(KEY.backspace);
     stdin.write('Payments');
@@ -125,11 +159,15 @@ describe('SessionsOverlay', () => {
   });
 
   it('starts a new session on n', async () => {
-    const { stdin, onNew } = setup();
-    await tick();
-    // See the comment in the "resumes" test above: retry rather than guess a settle time.
-    await pressUntil(stdin.write, 'n', () => onNew.mock.calls.length > 0);
-    expect(onNew).toHaveBeenCalled();
+    const { stdin, onNew, lastFrame } = setup();
+    await waitFor(
+      () => (lastFrame() ?? '').includes('Fix the payment bug') && inputReady(stdin),
+      1000,
+      lastFrame,
+    );
+    stdin.write('n');
+    await waitFor(() => onNew.mock.calls.length > 0, 1000, lastFrame);
+    expect(onNew).toHaveBeenCalledTimes(1);
   });
 
   it('shows a load error', async () => {
@@ -151,7 +189,7 @@ describe('SessionsOverlay', () => {
         />,
       ),
     );
-    await tick();
+    await waitFor(() => (lastFrame() ?? '').includes('boom'), 1000, lastFrame);
     expect(lastFrame()).toContain('boom');
   });
 });

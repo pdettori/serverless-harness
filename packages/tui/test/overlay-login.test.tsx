@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/errors.js';
 import { LoginOverlay } from '../src/views/overlays/Login.js';
 import { fakeControlPlane } from './helpers/fakes.js';
-import { KEY, pressUntil, tick, withTheme } from './helpers/ink.js';
+import { KEY, inputReady, tick, waitFor, withTheme } from './helpers/ink.js';
 
 const waitForAbort = (_ms: number, signal?: AbortSignal) =>
   new Promise<void>((r) => signal?.addEventListener('abort', () => r(), { once: true }));
@@ -23,16 +23,23 @@ describe('LoginOverlay', () => {
         />,
       ),
     );
-    await tick();
+    // deviceLogin()'s startDeviceAuth resolves asynchronously; wait on the rendered code rather
+    // than a fixed tick — under a loaded worker that resolution can take longer than any small
+    // fixed number of ticks. Also wait for inputReady: useInput's setRawMode(true) runs in a
+    // later passive-effect tick than the commit that paints this content (see the helper's doc
+    // comment), so a keystroke written right after the content check alone can be dropped.
+    await waitFor(
+      () => (lastFrame() ?? '').includes('ABCD-1234') && inputReady(stdin),
+      1000,
+      lastFrame,
+    );
     expect(lastFrame()).toContain('ABCD-1234');
     expect(lastFrame()).toContain('https://github.com/login/device');
     expect(lastFrame()).toContain('code expires in 15m00s');
-    // LoginOverlay's useInput subscribes in a useEffect that flushes asynchronously after this
-    // paint; under load that lag isn't reliably bounded by a small fixed number of ticks (see
-    // the helper's doc comment). Resending 'c' — harmless once copy has already fired — until it
-    // visibly takes effect rides out that lag instead of guessing a settle time.
-    await pressUntil(stdin.write, 'c', () => copy.mock.calls.length > 0);
+    stdin.write('c');
+    await waitFor(() => copy.mock.calls.length > 0, 1000, lastFrame);
     expect(copy).toHaveBeenCalledWith('ABCD-1234');
+    expect(copy).toHaveBeenCalledTimes(1);
   });
 
   it('reports the login once approved', async () => {
@@ -50,7 +57,7 @@ describe('LoginOverlay', () => {
         />,
       ),
     );
-    await tick();
+    await waitFor(() => onLoggedIn.mock.calls.length > 0);
     expect(onLoggedIn).toHaveBeenCalledWith({
       apiToken: 'api',
       subject: 'github:1',
@@ -59,6 +66,7 @@ describe('LoginOverlay', () => {
       controlPlaneUrl: 'http://cp',
       displayName: undefined,
     });
+    expect(onLoggedIn).toHaveBeenCalledTimes(1);
   });
 
   it('shows an error and retries on r', async () => {
@@ -79,13 +87,16 @@ describe('LoginOverlay', () => {
         />,
       ),
     );
-    await tick();
+    await waitFor(
+      () =>
+        (lastFrame() ?? '').includes('cannot reach the control plane: ECONNREFUSED') &&
+        inputReady(stdin),
+      1000,
+      lastFrame,
+    );
     expect(lastFrame()).toContain('cannot reach the control plane: ECONNREFUSED');
-    // See the comment in the "shows the code and URL" test above: retry rather than guess a
-    // settle time. Resending 'r' is safe here — a keystroke dropped before the handler
-    // subscribes is simply never delivered (no buffering), so only the first one that actually
-    // lands increments `starts`.
-    await pressUntil(stdin.write, 'r', () => starts >= 2);
+    stdin.write('r');
+    await waitFor(() => starts >= 2, 1000, lastFrame);
     expect(starts).toBe(2);
   });
 
@@ -101,6 +112,10 @@ describe('LoginOverlay', () => {
         />,
       ),
     );
+    // Writing Esc immediately on mount raced the same passive-effect lag as every other
+    // keystroke here: useInput's listener isn't attached at the moment of mount, only some
+    // ticks later, and an emit before that is dropped for good rather than queued.
+    await waitFor(() => inputReady(stdin), 1000);
     stdin.write(KEY.escape);
     await tick(80);
     expect(onCancel).toHaveBeenCalled();
