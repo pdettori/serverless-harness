@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { render as inkRender } from 'ink';
 import { render } from 'ink-testing-library';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
@@ -157,6 +158,31 @@ describe('App', () => {
     await until(() => frame().includes('unavailable'));
     stdin.write(KEY.escape);
     await until(() => !frame().includes('New session') && frame().includes('type a message'));
+  });
+
+  it.each([
+    ['null fields', { keybinds: null, presets: null, lastUsed: null }],
+    ['wrongly typed fields', { keybinds: { quit: 5 }, presets: [{ name: 1 }], lastUsed: [] }],
+  ])('survives a hand-edited config.json with %s and still starts a session', async (_, bad) => {
+    const base = testRuntime();
+    mkdirSync(base.paths.configDir, { recursive: true });
+    writeFileSync(
+      base.paths.configFile,
+      JSON.stringify({ controlPlaneUrl: 'http://cp', harnessUrl: 'http://h', ...bad }),
+    );
+    const loaded = loadConfig(base.paths);
+    const rt = testRuntime({
+      paths: base.paths,
+      config: loaded.config,
+      configWarning: loaded.warning,
+      harness: fakeHarness([
+        { frames: [{ type: 'text', delta: 'still works' }, doneFrame('s-new')] },
+      ]),
+    });
+    const { stdin, all, frame, until } = mount(rt);
+    await until(() => inputReady(stdin) && frame().includes('ignoring invalid keybinds'));
+    await send(stdin, 'hi');
+    await until(() => all().includes('still works'));
   });
 
   it('opens login when the cached login is missing', async () => {

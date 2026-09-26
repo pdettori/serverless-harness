@@ -60,12 +60,52 @@ export const DEFAULT_CONFIG: TuiConfig = {
   lastUsed: {},
 };
 
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === 'object' && !Array.isArray(v);
+const isStringRecord = (v: unknown): v is Record<string, string> =>
+  isRecord(v) && Object.values(v).every((x) => typeof x === 'string');
+const isPreset = (v: unknown): v is Preset =>
+  isRecord(v) && typeof v.name === 'string' && isStringRecord(v.values);
+
+// A hand-edited file can hold anything: each field of the wrong type falls back to its default.
+const FIELD_CHECKS: Record<keyof TuiConfig, (v: unknown) => boolean> = {
+  controlPlaneUrl: (v) => typeof v === 'string',
+  harnessUrl: (v) => typeof v === 'string',
+  theme: (v) => v === 'system' || v === 'dark',
+  details: (v) => typeof v === 'boolean',
+  thinking: (v) => typeof v === 'boolean',
+  reducedMotion: (v) => typeof v === 'boolean',
+  bell: (v) => typeof v === 'boolean',
+  keybinds: isStringRecord,
+  presets: (v) => Array.isArray(v) && v.every(isPreset),
+  lastUsed: isStringRecord,
+};
+
+function validateConfig(raw: Record<string, unknown>): { config: TuiConfig; ignored: string[] } {
+  // Keys this version does not know are kept, as before, so saving does not drop them.
+  const config: Record<string, unknown> = { ...DEFAULT_CONFIG, ...raw };
+  const ignored: string[] = [];
+  for (const [key, check] of Object.entries(FIELD_CHECKS)) {
+    if (!(key in raw) || check(raw[key])) continue;
+    config[key] = DEFAULT_CONFIG[key as keyof TuiConfig];
+    ignored.push(key);
+  }
+  return { config: config as unknown as TuiConfig, ignored };
+}
+
 export function loadConfig(paths: Paths): { config: TuiConfig; exists: boolean; warning?: string } {
   if (!existsSync(paths.configFile)) return { config: { ...DEFAULT_CONFIG }, exists: false };
   try {
     const raw: unknown = JSON.parse(readFileSync(paths.configFile, 'utf8'));
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('not a JSON object');
-    return { config: { ...DEFAULT_CONFIG, ...(raw as Partial<TuiConfig>) }, exists: true };
+    const { config, ignored } = validateConfig(raw as Record<string, unknown>);
+    return ignored.length > 0
+      ? {
+          config,
+          exists: true,
+          warning: `ignoring invalid ${ignored.join(', ')} in ${paths.configFile}`,
+        }
+      : { config, exists: true };
   } catch (err) {
     return {
       config: { ...DEFAULT_CONFIG },

@@ -67,6 +67,55 @@ describe('loadConfig / saveConfig', () => {
   });
 });
 
+describe('loadConfig field validation', () => {
+  const load = (body: unknown) => {
+    const paths = resolvePaths({}, tmpHome());
+    mkdirSync(paths.configDir, { recursive: true });
+    writeFileSync(paths.configFile, JSON.stringify(body));
+    return loadConfig(paths);
+  };
+
+  it.each([
+    ['keybinds', null],
+    ['keybinds', { quit: 5 }],
+    ['lastUsed', null],
+    ['lastUsed', { inferenceCredential: 1 }],
+    ['presets', null],
+    ['presets', [{ name: 'p', values: null }]],
+    ['presets', [{ values: {} }]],
+    ['theme', 'neon'],
+    ['details', 'yes'],
+    ['bell', 1],
+    ['controlPlaneUrl', 42],
+  ])('replaces a bad %s (%j) with the default and names it in one warning', (key, value) => {
+    const loaded = load({ [key]: value });
+    expect(loaded.config[key as keyof typeof DEFAULT_CONFIG]).toEqual(
+      DEFAULT_CONFIG[key as keyof typeof DEFAULT_CONFIG],
+    );
+    expect(loaded.warning).toMatch(new RegExp(`^ignoring invalid ${key} in .*config\\.json$`));
+  });
+
+  it('keeps the valid fields around the invalid ones and lists every invalid one', () => {
+    const loaded = load({
+      theme: 'dark',
+      keybinds: null,
+      presets: [{ name: 'p', values: { inferenceCredential: 'a' } }],
+      lastUsed: null,
+      extra: 'kept',
+    });
+    expect(loaded.config.theme).toBe('dark');
+    expect(loaded.config.presets).toEqual([{ name: 'p', values: { inferenceCredential: 'a' } }]);
+    expect(loaded.config.keybinds).toEqual({});
+    expect(loaded.config.lastUsed).toEqual({});
+    expect((loaded.config as unknown as Record<string, unknown>).extra).toBe('kept');
+    expect(loaded.warning).toMatch(/^ignoring invalid keybinds, lastUsed in /);
+  });
+
+  it('gives no warning for a fully valid file', () => {
+    expect(load({ theme: 'dark', keybinds: { quit: 'ctrl+q' } }).warning).toBeUndefined();
+  });
+});
+
 describe('auth cache', () => {
   const auth: CachedAuth = {
     apiToken: 'tok', // notsecret
