@@ -15,8 +15,11 @@ import { OnboardingOverlay } from './views/overlays/Onboarding.js';
 import { PaletteOverlay } from './views/overlays/Palette.js';
 import { SessionsOverlay } from './views/overlays/Sessions.js';
 
-/** `then` reopens an overlay once this one reports a change (credentials → new session). */
-export type Overlay = { name: OverlayName; hint?: string; then?: OverlayName };
+/**
+ * `then` reopens an overlay once this one reports a change (credentials → new session); `back`
+ * is the overlay a Login interrupted, reopened once the login succeeds.
+ */
+export type Overlay = { name: OverlayName; hint?: string; then?: OverlayName; back?: Overlay };
 
 interface Props {
   overlay: Overlay;
@@ -30,7 +33,9 @@ interface Props {
   onConnected: () => void;
   onOnboarded: () => void;
   onOnboardingCancel: () => void;
-  onLoggedIn: (auth: CachedAuth) => void;
+  onLoggedIn: (auth: CachedAuth, back?: Overlay) => void;
+  /** Offered each control-plane error an overlay hits; true when it opened Login instead. */
+  onCpError: (err: unknown) => boolean;
   onCreate: (req: CreateSessionRequest, values: Record<string, string>) => Promise<void>;
   onResume: (id: string) => void;
   onDeleted: (id: string) => void;
@@ -53,6 +58,7 @@ export function AppOverlay({
   onOnboarded,
   onOnboardingCancel,
   onLoggedIn,
+  onCpError,
   onCreate,
   onResume,
   onDeleted,
@@ -88,7 +94,7 @@ export function AppOverlay({
           controlPlaneUrl={rt.endpoints.controlPlaneUrl!}
           copy={os.copy}
           openUrl={os.openUrl}
-          onLoggedIn={onLoggedIn}
+          onLoggedIn={(a) => onLoggedIn(a, overlay.back)}
           onCancel={close}
         />
       );
@@ -104,6 +110,7 @@ export function AppOverlay({
           onNew={() => open({ name: 'new-session' })}
           onDeleted={onDeleted}
           onCancel={close}
+          onError={onCpError}
           onInputless={onInputless}
         />
       );
@@ -116,6 +123,7 @@ export function AppOverlay({
           onCreate={onCreate}
           onBlocked={(hint) => open({ name: 'credentials', hint, then: 'new-session' })}
           onCancel={close}
+          onError={onCpError}
           onInputless={onInputless}
         />
       );
@@ -128,6 +136,7 @@ export function AppOverlay({
           startInAdd={!!overlay.hint}
           onChanged={then ? () => open({ name: then }) : undefined}
           onCancel={close}
+          onError={onCpError}
           onInputless={onInputless}
         />
       );
@@ -145,6 +154,7 @@ export function AppOverlay({
             })
           }
           onClose={close}
+          onError={onCpError}
         />
       );
     case 'palette':

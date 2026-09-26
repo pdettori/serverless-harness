@@ -30,6 +30,11 @@ interface Props {
   onDeleted: (id: string) => void;
   onCancel: () => void;
   /**
+   * Offered every control-plane error first; returning true means the host has handled it (an
+   * expired login opens the Login overlay), so this overlay shows nothing of its own.
+   */
+  onError?: (err: unknown) => boolean;
+  /**
    * Called with true while the current screen takes no input (a spinner or an error), so the
    * host can let Esc close the overlay from there; this overlay adds no key handler of its own.
    */
@@ -51,6 +56,7 @@ export function SessionsOverlay({
   onNew,
   onDeleted,
   onCancel,
+  onError,
   onInputless,
 }: Props) {
   const { tokens: t } = useTheme();
@@ -58,11 +64,14 @@ export function SessionsOverlay({
   const [error, setError] = useState<string>();
   const [mode, setMode] = useState<Mode>({ kind: 'list' });
   const [reload, setReload] = useState(0);
+  const fail = (err: unknown) => {
+    if (!onError?.(err)) setError(describeError(err));
+  };
 
   useEffect(() => {
     cp.listSessions({ limit: 200 })
       .then((page) => setSessions(page.sessions))
-      .catch((err) => setError(describeError(err)));
+      .catch(fail);
   }, [reload]);
 
   const items = useMemo(
@@ -101,7 +110,7 @@ export function SessionsOverlay({
               onDeleted(mode.id);
               setReload((n) => n + 1);
             })
-            .catch((err) => setError(describeError(err)));
+            .catch(fail);
         }}
         onNo={() => setMode({ kind: 'list' })}
       />

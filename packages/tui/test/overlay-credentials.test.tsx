@@ -33,6 +33,23 @@ describe('CredentialsOverlay', () => {
     expect(lastFrame()).toContain('https://x.example');
   });
 
+  it('hands an expired login to the host instead of showing an error screen', async () => {
+    const expired = new ApiError('control-plane', 401, 'token_expired');
+    const cp = fakeControlPlane({
+      listCredentials: async () => {
+        throw expired;
+      },
+    });
+    const onError = vi.fn(() => true);
+    const { lastFrame } = render(
+      withTheme(<CredentialsOverlay cp={cp} onCancel={vi.fn()} onError={onError} />),
+    );
+    await waitFor(() => onError.mock.calls.length > 0, 1000, lastFrame);
+    expect(onError).toHaveBeenCalledWith(expired);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(lastFrame()).not.toContain('login has expired');
+  });
+
   it('adds a credential and returns to the list', async () => {
     const put = vi.fn(async () => undefined);
     const onChanged = vi.fn();

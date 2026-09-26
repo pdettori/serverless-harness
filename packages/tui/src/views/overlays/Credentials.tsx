@@ -17,6 +17,11 @@ interface Props {
   onChanged?: () => void;
   onCancel: () => void;
   /**
+   * Offered every control-plane error first; returning true means the host has handled it (an
+   * expired login opens the Login overlay), so this overlay shows nothing of its own.
+   */
+  onError?: (err: unknown) => boolean;
+  /**
    * Called with true while the current screen takes no input (a spinner or an error), so the
    * host can let Esc close the overlay from there; this overlay adds no key handler of its own.
    */
@@ -34,6 +39,7 @@ export function CredentialsOverlay({
   startInAdd,
   onChanged,
   onCancel,
+  onError,
   onInputless,
 }: Props) {
   const { tokens: t } = useTheme();
@@ -42,11 +48,14 @@ export function CredentialsOverlay({
   const [mode, setMode] = useState<Mode>(startInAdd ? { kind: 'add' } : { kind: 'list' });
   const [reload, setReload] = useState(0);
   const fields = useMemo(credentialFields, []);
+  const handled = (err: unknown) => onError?.(err) === true;
 
   useEffect(() => {
     cp.listCredentials()
       .then(setCreds)
-      .catch((err) => setError(describeError(err)));
+      .catch((err) => {
+        if (!handled(err)) setError(describeError(err));
+      });
   }, [reload]);
 
   const inputless = mode.kind === 'list' && (!!error || !creds);
@@ -73,7 +82,9 @@ export function CredentialsOverlay({
                 setReload((n) => n + 1);
                 setMode({ kind: 'list' });
               })
-              .catch((err) => setMode({ kind: 'add', error: describeError(err) }));
+              .catch((err) => {
+                if (!handled(err)) setMode({ kind: 'add', error: describeError(err) });
+              });
           }}
         />
         {mode.saving ? <Spinner label="saving" /> : null}
@@ -92,7 +103,9 @@ export function CredentialsOverlay({
               onChanged?.();
               setReload((n) => n + 1);
             })
-            .catch((err) => setError(describeError(err)));
+            .catch((err) => {
+              if (!handled(err)) setError(describeError(err));
+            });
         }}
         onNo={() => setMode({ kind: 'list' })}
       />

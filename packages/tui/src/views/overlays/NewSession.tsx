@@ -23,6 +23,11 @@ interface Props {
   onBlocked: (hint: string) => void;
   onCancel: () => void;
   /**
+   * Offered every control-plane error first; returning true means the host has handled it (an
+   * expired login opens the Login overlay), so this overlay shows nothing of its own.
+   */
+  onError?: (err: unknown) => boolean;
+  /**
    * Called with true while the current screen takes no input (a spinner or an error), so the
    * host can let Esc close the overlay from there; this overlay adds no key handler of its own.
    */
@@ -50,6 +55,7 @@ export function NewSessionOverlay({
   onCreate,
   onBlocked,
   onCancel,
+  onError,
   onInputless,
 }: Props) {
   const { tokens: t } = useTheme();
@@ -79,7 +85,7 @@ export function NewSessionOverlay({
       setPhase({ kind: 'creating' });
       await onCreate(r.request, r.values);
     } catch (err) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || onError?.(err)) return;
       setPhase({ kind: 'error', message: describeError(err) });
     }
   };

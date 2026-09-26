@@ -161,6 +161,16 @@ export function App({ rt, opts, env, os, write }: AppProps) {
   };
   const detach = () => attach(DETACHED, undefined, []);
 
+  /**
+   * Spec §8.1 outside a turn: an expired or missing login met by an overlay (or a resume) opens
+   * Login, and a successful login reopens what the user was doing. Returns true when it did.
+   */
+  const loginIfExpired = (err: unknown, back: Overlay | undefined): boolean => {
+    if (!(err instanceof ApiError) || classify(err).kind !== 'login') return false;
+    show({ name: 'login', back: back?.name === 'login' ? back.back : back });
+    return true;
+  };
+
   const onTurnEnd = (e: Extract<SessionEvent, { kind: 'turn-end' }>) => {
     // A cancelled turn was the user's own doing; only a finished one is worth a bell.
     if (e.outcome !== 'cancelled' && rt.config.bell && rt.now() - lastInput.current > BELL_IDLE_MS)
@@ -280,15 +290,16 @@ export function App({ rt, opts, env, os, write }: AppProps) {
       ]);
       close();
     } catch (err) {
-      notify(describeError(err), 'error');
+      if (!loginIfExpired(err, { name: 'sessions' })) notify(describeError(err), 'error');
     } finally {
       busy.current = false;
     }
   };
 
-  const onLoggedIn = (a: CachedAuth) => {
+  const onLoggedIn = (a: CachedAuth, back?: Overlay) => {
     setAuth(rt, a);
-    close();
+    if (back) show(back);
+    else close();
     notify(`logged in as ${a.displayName ?? a.subject}`);
     const replay = replayAfterLogin.current;
     replayAfterLogin.current = undefined;
@@ -459,6 +470,7 @@ export function App({ rt, opts, env, os, write }: AppProps) {
       }}
       onOnboardingCancel={cancelOnboarding}
       onLoggedIn={onLoggedIn}
+      onCpError={(err) => loginIfExpired(err, overlay)}
       onCreate={create}
       onResume={(id) => void resume(id)}
       onDeleted={(id) => {

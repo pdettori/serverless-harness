@@ -434,6 +434,68 @@ describe('App', () => {
     expect(harness.turns.map((t) => t.prompt)).toEqual(['hi', 'hi']);
   });
 
+  it('an expired login met by the sessions overlay opens Login, then reopens and lists', async () => {
+    const expired = () => new ApiError('control-plane', 401, 'token_expired');
+    let rt!: Runtime;
+    const listed = sessionList('remote-1');
+    const cp = fakeControlPlane({
+      listSessions: async (o) => {
+        if (rt.auth?.apiToken !== 'a2') throw expired();
+        return listed.listSessions(o);
+      },
+      pollDeviceAuth: async () => ({
+        token: 'a2',
+        subject: 'github:1',
+        displayName: 'Ada',
+        expiresAt: 4_000_000_000,
+      }),
+    });
+    rt = testRuntime({ cp });
+    const { stdin, frame, until, ready } = mount(rt);
+    await ready();
+    stdin.write(KEY.ctrl('x'));
+    await tick();
+    stdin.write('l');
+    await until(() => frame().includes('Log in with GitHub'));
+    // The device flow approves on the first poll; the Sessions overlay comes back and lists.
+    await until(() => frame().includes('remote-1'));
+    expect(frame()).toContain('Sessions');
+    expect(rt.auth?.apiToken).toBe('a2');
+    expect(cp.calls.filter((c) => c === 'listSessions')).toHaveLength(2);
+  });
+
+  it('after Esc on the startup Login, the next control-plane action opens Login again', async () => {
+    let approve = false;
+    let rt!: Runtime;
+    const cp = fakeControlPlane({
+      listCredentials: async () => {
+        if (!rt.auth) throw new ApiError('control-plane', 401, 'token_required');
+        return [credential('anthropic')];
+      },
+      pollDeviceAuth: async () =>
+        approve
+          ? { token: 'a2', subject: 'github:1', displayName: 'Ada', expiresAt: 4_000_000_000 }
+          : 'pending',
+    });
+    rt = testRuntime({
+      auth: null,
+      cp,
+      harness: fakeHarness([{ frames: [{ type: 'text', delta: 'made it' }, doneFrame('s-new')] }]),
+    });
+    const { stdin, all, frame, until } = mount(rt);
+    await until(() => inputReady(stdin) && frame().includes('ABCD-1234'));
+    stdin.write(KEY.escape);
+    await until(() => !frame().includes('Log in with GitHub'));
+    await until(() => inputReady(stdin) && frame().includes('type a message'));
+    approve = true;
+    await send(stdin, 'hi'); // New Session lists credentials: token_required
+    await until(() => all().includes('made it'));
+    expect(rt.auth?.apiToken).toBe('a2');
+    expect(cp.calls.filter((c) => c === 'startDeviceAuth')).toHaveLength(2);
+    expect(cp.calls.filter((c) => c === 'createSession')).toHaveLength(1);
+    expect(all()).toContain('› hi');
+  });
+
   it('rings the bell when a turn ends after 10 s of input idleness', async () => {
     let clock = 0;
     let release!: () => void;

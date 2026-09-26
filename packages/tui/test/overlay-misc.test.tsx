@@ -54,6 +54,25 @@ describe('DoctorOverlay', () => {
   });
 });
 
+describe('DoctorOverlay onError', () => {
+  it('offers a failed run to the host, and shows it only when the host declines', async () => {
+    const err = new Error('boom');
+    for (const handled of [true, false]) {
+      const onError = vi.fn(() => handled);
+      const { lastFrame, unmount } = render(
+        withTheme(
+          <DoctorOverlay run={() => Promise.reject(err)} onClose={vi.fn()} onError={onError} />,
+        ),
+      );
+      await waitFor(() => onError.mock.calls.length > 0, 1000, lastFrame);
+      expect(onError).toHaveBeenCalledWith(err);
+      await waitFor(() => handled || (lastFrame() ?? '').includes('boom'), 1000, lastFrame);
+      if (handled) expect(lastFrame()).not.toContain('boom');
+      unmount();
+    }
+  });
+});
+
 describe('PaletteOverlay', () => {
   it('filters commands as you type and runs the chosen one after closing', async () => {
     const h = host();

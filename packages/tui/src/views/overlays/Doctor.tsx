@@ -8,9 +8,12 @@ import { Spinner } from '../Spinner.js';
 export function DoctorOverlay({
   run,
   onClose,
+  onError,
 }: {
   run: () => Promise<CheckResult[]>;
   onClose: () => void;
+  /** Offered a failed run first; returning true means the host handled it (see Sessions). */
+  onError?: (err: unknown) => boolean;
 }) {
   const { tokens: t } = useTheme();
   const [results, setResults] = useState<CheckResult[]>();
@@ -35,7 +38,7 @@ export function DoctorOverlay({
         if (mountedRef.current) setResults(r);
       })
       .catch((err) => {
-        if (mountedRef.current) setError(describeError(err));
+        if (mountedRef.current && !onError?.(err)) setError(describeError(err));
       });
   }, [attempt]);
 
