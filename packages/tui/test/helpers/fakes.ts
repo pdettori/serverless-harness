@@ -68,7 +68,14 @@ export function fakeControlPlane(
   return Object.assign(recorded, { calls });
 }
 
-export type HarnessStep = { frames?: TurnFrame[]; error?: Error; hang?: boolean };
+export type HarnessStep = {
+  frames?: TurnFrame[];
+  error?: Error;
+  hang?: boolean;
+  // Awaited before the first frame is yielded — lets a test insert a real gap (e.g. to bump a
+  // fake clock) between turn-start and the first 'frame' event.
+  wait?: () => Promise<void>;
+};
 
 export const doneFrame = (sessionId = 's1'): DoneFrame => ({
   type: 'done',
@@ -89,6 +96,7 @@ export function fakeHarness(
     async *streamTurn(args: StreamTurnArgs) {
       turns.push(args);
       const step = queue.shift() ?? { frames: [doneFrame(args.sessionId)] };
+      if (step.wait) await step.wait();
       for (const f of step.frames ?? []) yield f;
       if (step.hang) {
         await new Promise<void>((resolve) => {

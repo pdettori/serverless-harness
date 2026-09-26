@@ -48,7 +48,10 @@ export function useSession(session: ActiveSession | undefined, opts: Options): S
     if (!session) return;
     let pending: TurnFrame[] = [];
     let startedAt = 0;
-    let firstFrame = true;
+    // Starts false: a hook that subscribes mid-turn (turn-start already emitted before this
+    // effect ran) must not treat the next frame it happens to see as the turn's first frame and
+    // record a bogus TTFT of now() - 0. Only an actual 'turn-start' event flips this true.
+    let firstFrame = false;
     let sawTerminal = false;
 
     const flush = () => {
@@ -124,7 +127,10 @@ export function useSession(session: ActiveSession | undefined, opts: Options): S
   const submit = useCallback(
     (text: string) => {
       if (!session) return;
-      setState((s) => addUser(s, text, session.busy));
+      // Read busy before setState: React may run the updater after session.submit() below has
+      // already flipped it, which would mis-tag this prompt as queued when it was actually sent.
+      const queued = session.busy;
+      setState((s) => addUser(s, text, queued));
       session.submit(text);
     },
     [session],
