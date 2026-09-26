@@ -82,6 +82,19 @@ describe('InputBox', () => {
     expect(lastFrame()).toContain('newest');
   });
 
+  it('clamps the history index so extra downs on an empty input do not strand it', async () => {
+    const { stdin, lastFrame } = setup();
+    stdin.write(KEY.down);
+    await tick();
+    stdin.write(KEY.down);
+    await tick();
+    stdin.write(KEY.down);
+    await tick();
+    stdin.write(KEY.up);
+    await tick();
+    expect(lastFrame()).toContain('newest');
+  });
+
   it('opens help on ? in an empty input, but types ? otherwise', async () => {
     const { stdin, lastFrame, onHelp } = setup();
     stdin.write('?');

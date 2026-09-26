@@ -48,7 +48,9 @@ export function InputBox({ active, history, onSubmit, onHelp, prefill, placehold
       if (key.upArrow || key.downArrow) {
         if (value !== '' && historyIndex === -1) return;
         const newest = [...history].reverse();
-        const next = key.upArrow ? Math.min(historyIndex + 1, newest.length - 1) : historyIndex - 1;
+        const next = key.upArrow
+          ? Math.min(historyIndex + 1, newest.length - 1)
+          : Math.max(-1, historyIndex - 1);
         setHistoryIndex(next);
         setValue(next >= 0 ? (newest[next] ?? '') : '');
         return;
