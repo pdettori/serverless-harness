@@ -22,6 +22,11 @@ interface Props {
   onCreate: (req: CreateSessionRequest, values: Record<string, string>) => Promise<void>;
   onBlocked: (hint: string) => void;
   onCancel: () => void;
+  /**
+   * Called with true while the current screen takes no input (a spinner or an error), so the
+   * host can let Esc close the overlay from there; this overlay adds no key handler of its own.
+   */
+  onInputless?: (inputless: boolean) => void;
 }
 
 type Phase =
@@ -45,6 +50,7 @@ export function NewSessionOverlay({
   onCreate,
   onBlocked,
   onCancel,
+  onInputless,
 }: Props) {
   const { tokens: t } = useTheme();
   const [phase, setPhase] = useState<Phase>(
@@ -81,6 +87,12 @@ export function NewSessionOverlay({
   useEffect(() => {
     if (presets.length === 0) void resolve({});
   }, []);
+
+  // 'creating' is not offered: the session could still be created after the overlay closed.
+  const inputless = phase.kind === 'resolving' || phase.kind === 'error';
+  useEffect(() => {
+    onInputless?.(inputless);
+  }, [inputless]);
 
   return (
     <Box flexDirection="column">

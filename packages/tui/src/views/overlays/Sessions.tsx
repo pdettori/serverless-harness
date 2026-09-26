@@ -27,6 +27,11 @@ interface Props {
   onNew: () => void;
   onDeleted: (id: string) => void;
   onCancel: () => void;
+  /**
+   * Called with true while the current screen takes no input (a spinner or an error), so the
+   * host can let Esc close the overlay from there; this overlay adds no key handler of its own.
+   */
+  onInputless?: (inputless: boolean) => void;
 }
 
 type Mode =
@@ -44,6 +49,7 @@ export function SessionsOverlay({
   onNew,
   onDeleted,
   onCancel,
+  onInputless,
 }: Props) {
   const { tokens: t } = useTheme();
   const [sessions, setSessions] = useState<SessionSummary[]>();
@@ -73,6 +79,11 @@ export function SessionsOverlay({
       }),
     [sessions, reload, now, transcripts, currentSessionId],
   );
+
+  const inputless = !!error || !sessions;
+  useEffect(() => {
+    onInputless?.(inputless);
+  }, [inputless]);
 
   if (error) return <Text color={t.error}>{error}</Text>;
   if (!sessions) return <Spinner label="loading sessions" />;

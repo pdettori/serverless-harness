@@ -15,6 +15,11 @@ interface Props {
   startInAdd?: boolean;
   onChanged?: () => void;
   onCancel: () => void;
+  /**
+   * Called with true while the current screen takes no input (a spinner or an error), so the
+   * host can let Esc close the overlay from there; this overlay adds no key handler of its own.
+   */
+  onInputless?: (inputless: boolean) => void;
 }
 
 type Mode =
@@ -22,7 +27,14 @@ type Mode =
   | { kind: 'add'; error?: string; saving?: boolean }
   | { kind: 'confirm'; name: string };
 
-export function CredentialsOverlay({ cp, hint, startInAdd, onChanged, onCancel }: Props) {
+export function CredentialsOverlay({
+  cp,
+  hint,
+  startInAdd,
+  onChanged,
+  onCancel,
+  onInputless,
+}: Props) {
   const { tokens: t } = useTheme();
   const [creds, setCreds] = useState<CredentialDescriptor[]>();
   const [error, setError] = useState<string>();
@@ -35,6 +47,11 @@ export function CredentialsOverlay({ cp, hint, startInAdd, onChanged, onCancel }
       .then(setCreds)
       .catch((err) => setError(describeError(err)));
   }, [reload]);
+
+  const inputless = mode.kind === 'list' && (!!error || !creds);
+  useEffect(() => {
+    onInputless?.(inputless);
+  }, [inputless]);
 
   if (mode.kind === 'add') {
     return (
