@@ -1,4 +1,11 @@
-import type { ControlPlaneApi, CredentialDescriptor } from '../../src/api/types.js';
+import { TurnCancelledError } from '../../src/api/errors.js';
+import type { DoneFrame, TurnFrame } from '../../src/api/frames.js';
+import type {
+  ControlPlaneApi,
+  CredentialDescriptor,
+  HarnessApi,
+  StreamTurnArgs,
+} from '../../src/api/types.js';
 
 export function credential(
   name: string,
@@ -59,4 +66,39 @@ export function fakeControlPlane(
     ]),
   ) as unknown as ControlPlaneApi;
   return Object.assign(recorded, { calls });
+}
+
+export type HarnessStep = { frames?: TurnFrame[]; error?: Error; hang?: boolean };
+
+export const doneFrame = (sessionId = 's1'): DoneFrame => ({
+  type: 'done',
+  sessionId,
+  stopReason: 'end_turn',
+});
+
+export function fakeHarness(
+  steps: HarnessStep[],
+  over: Partial<HarnessApi> = {},
+): HarnessApi & { turns: StreamTurnArgs[] } {
+  const turns: StreamTurnArgs[] = [];
+  const queue = [...steps];
+  return {
+    turns,
+    health: async () => undefined,
+    probeTrust: async () => 'trusted',
+    async *streamTurn(args: StreamTurnArgs) {
+      turns.push(args);
+      const step = queue.shift() ?? { frames: [doneFrame(args.sessionId)] };
+      for (const f of step.frames ?? []) yield f;
+      if (step.hang) {
+        await new Promise<void>((resolve) => {
+          if (args.signal?.aborted) return resolve();
+          args.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+        throw new TurnCancelledError();
+      }
+      if (step.error) throw step.error;
+    },
+    ...over,
+  };
 }

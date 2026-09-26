@@ -1,0 +1,250 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { ApiError } from '../src/api/errors.js';
+import {
+  HarnessUntrustedError,
+  SessionManager,
+  type SessionDeps,
+  type SessionEvent,
+} from '../src/core/session-manager.js';
+import { TranscriptStore } from '../src/core/transcripts.js';
+import { doneFrame, fakeControlPlane, fakeHarness, type HarnessStep } from './helpers/fakes.js';
+
+const NOW = 1_000_000_000; // ms
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+function setup(steps: HarnessStep[], over: Partial<SessionDeps> = {}) {
+  const cp = fakeControlPlane();
+  const harness = fakeHarness(steps);
+  const slept: number[] = [];
+  const deps: SessionDeps = {
+    cp,
+    harness,
+    now: () => NOW,
+    sleep: async (ms) => void slept.push(ms),
+    ...over,
+  };
+  return { cp, harness, slept, deps, manager: new SessionManager(deps) };
+}
+
+async function started(steps: HarnessStep[], over: Partial<SessionDeps> = {}) {
+  const s = setup(steps, over);
+  const session = await s.manager.resume('s1');
+  const events: SessionEvent[] = [];
+  session.on((e) => events.push(e));
+  return { ...s, session, events, ends: () => events.filter((e) => e.kind === 'turn-end') };
+}
+
+const harnessError = (status: number, code: string, retryAfterS?: number) =>
+  new ApiError('harness', status, code, undefined, retryAfterS);
+
+describe('ActiveSession', () => {
+  it('runs a turn and forwards its frames', async () => {
+    const { session, events } = await started([
+      { frames: [{ type: 'text', delta: 'hi' }, doneFrame()] },
+    ]);
+    session.submit('hello');
+    await session.idle();
+    expect(events.map((e) => e.kind)).toEqual([
+      'queue',
+      'queue',
+      'turn-start',
+      'frame',
+      'frame',
+      'turn-end',
+    ]);
+    expect(events.at(-1)).toEqual({ kind: 'turn-end', outcome: 'done' });
+  });
+
+  it('runs one turn at a time, in submission order', async () => {
+    const { session, harness, events } = await started([
+      { frames: [doneFrame()] },
+      { frames: [doneFrame()] },
+    ]);
+    session.submit('a');
+    session.submit('b');
+    await session.idle();
+    expect(harness.turns.map((t) => t.prompt)).toEqual(['a', 'b']);
+    expect(
+      events.filter((e) => e.kind === 'turn-start').map((e) => (e as { prompt: string }).prompt),
+    ).toEqual(['a', 'b']);
+  });
+
+  it('queues a prompt submitted while a turn is streaming; cancel moves on to it', async () => {
+    const { session, ends } = await started([
+      { frames: [{ type: 'text', delta: 'x' }], hang: true },
+    ]);
+    session.submit('a');
+    await tick();
+    session.submit('b');
+    expect(session.busy).toBe(true);
+    expect(session.queued).toBe(1);
+    session.cancel();
+    await session.idle();
+    expect(ends().map((e) => (e as { outcome: string }).outcome)).toEqual(['cancelled', 'done']);
+  });
+
+  it('clearQueue drops waiting prompts', async () => {
+    const { session, harness } = await started([{ hang: true }]);
+    session.submit('a');
+    await tick();
+    session.submit('b');
+    session.clearQueue();
+    session.cancel();
+    await session.idle();
+    expect(harness.turns.map((t) => t.prompt)).toEqual(['a']);
+  });
+
+  it('remints a session token that is inside the 30 s margin', async () => {
+    let mints = 0;
+    const s = setup([]);
+    s.cp.mintSessionToken = async () =>
+      mints++ === 0
+        ? { token: 'near', expiresAt: NOW / 1000 + 10 }
+        : { token: 'renewed', expiresAt: NOW / 1000 + 300 };
+    const session = await s.manager.resume('s1');
+    session.submit('p');
+    await session.idle();
+    expect(mints).toBe(2); // resume, then the pre-turn remint
+    expect(s.harness.turns[0].token).toBe('renewed');
+  });
+
+  it('remints once on a harness token rejection and succeeds', async () => {
+    const { session, cp, ends } = await started([
+      { error: harnessError(401, 'token_invalid') },
+      { frames: [doneFrame()] },
+    ]);
+    session.submit('p');
+    await session.idle();
+    expect(cp.calls.filter((c) => c === 'mintSessionToken')).toHaveLength(2); // resume + one remint
+    expect(ends()).toEqual([{ kind: 'turn-end', outcome: 'done' }]);
+  });
+
+  it('token_expired from the harness remints once and succeeds', async () => {
+    const { session, ends } = await started([
+      { error: harnessError(401, 'token_expired') },
+      { frames: [doneFrame()] },
+    ]);
+    session.submit('p');
+    await session.idle();
+    expect(ends()).toEqual([{ kind: 'turn-end', outcome: 'done' }]);
+  });
+
+  it('diagnoses an untrusted harness when a fresh token is rejected again', async () => {
+    const { session, ends } = await started([
+      { error: harnessError(401, 'token_invalid') },
+      { error: harnessError(401, 'token_invalid') },
+    ]);
+    session.submit('p');
+    await session.idle();
+    const end = ends()[0] as { outcome: string; error?: Error };
+    expect(end.outcome).toBe('error');
+    expect(end.error).toBeInstanceOf(HarnessUntrustedError);
+  });
+
+  it('waits out Retry-After on a 503 and retries', async () => {
+    const { session, slept, events } = await started([
+      { error: harnessError(503, 'saturated', 4) },
+      { frames: [doneFrame()] },
+    ]);
+    session.submit('p');
+    await session.idle();
+    expect(slept).toEqual([4000]);
+    expect(events).toContainEqual({ kind: 'retrying', seconds: 4 });
+    expect(events.at(-1)).toEqual({ kind: 'turn-end', outcome: 'done' });
+  });
+
+  it('cancel during a Retry-After wait ends the turn as cancelled', async () => {
+    const waitForAbort = (_ms: number, signal?: AbortSignal) =>
+      new Promise<void>((r) => signal?.addEventListener('abort', () => r(), { once: true }));
+    const { session, ends } = await started([{ error: harnessError(503, 'saturated', 60) }], {
+      sleep: waitForAbort,
+    });
+    session.submit('p');
+    await tick();
+    await tick();
+    session.cancel();
+    await session.idle();
+    expect(ends()).toEqual([{ kind: 'turn-end', outcome: 'cancelled' }]);
+  });
+
+  it('a truncated stream ends the turn as an error and the queue continues', async () => {
+    const truncated = new ApiError(
+      'harness',
+      0,
+      'stream_truncated',
+      'the harness closed the stream before the turn finished',
+    );
+    const { session, cp, ends } = await started([
+      { frames: [{ type: 'text', delta: 'part' }], error: truncated },
+      { frames: [doneFrame()] },
+    ]);
+    session.submit('a');
+    session.submit('b');
+    await session.idle();
+    expect(ends().map((e) => (e as { outcome: string }).outcome)).toEqual(['error', 'done']);
+    expect((ends()[0] as { error?: Error }).error).toBe(truncated);
+    expect(cp.calls.filter((c) => c === 'mintSessionToken')).toHaveLength(1); // no remint after frames flowed
+    expect(session.busy).toBe(false);
+  });
+
+  it('reports an error frame as an error outcome with its message', async () => {
+    const { session, ends } = await started([
+      {
+        frames: [
+          { type: 'error', sessionId: 's1', stopReason: 'error', errorMessage: 'model refused' },
+        ],
+      },
+    ]);
+    session.submit('p');
+    await session.idle();
+    expect((ends()[0] as { error?: Error }).error?.message).toBe('model refused');
+  });
+
+  it('records the prompt and frames in the transcript store', async () => {
+    const transcripts = new TranscriptStore(mkdtempSync(join(tmpdir(), 'sh-tui-sm-')), {
+      subject: 'github:1',
+      controlPlaneUrl: 'http://cp',
+    });
+    const { session } = await started([{ frames: [{ type: 'text', delta: 'ok' }, doneFrame()] }], {
+      transcripts,
+    });
+    session.submit('hello');
+    await session.idle();
+    expect(transcripts.load('s1')!.entries.map((e) => e.kind)).toEqual([
+      'prompt',
+      'frame',
+      'frame',
+    ]);
+  });
+});
+
+describe('SessionManager', () => {
+  it('create uses the token from the create response and ensures a transcript', async () => {
+    const transcripts = new TranscriptStore(mkdtempSync(join(tmpdir(), 'sh-tui-sm-')), {
+      subject: 'github:1',
+      controlPlaneUrl: 'http://cp',
+    });
+    const { manager, cp, harness } = setup([], { transcripts });
+    const session = await manager.create({ credentials: { inference: 'a' } });
+    expect(session.sessionId).toBe('s-new');
+    expect(transcripts.has('s-new')).toBe(true);
+    session.submit('p');
+    await session.idle();
+    expect(harness.turns[0].token).toBe('st');
+    expect(cp.calls).not.toContain('mintSessionToken');
+  });
+
+  it('remove deletes the session and its transcript', async () => {
+    const transcripts = new TranscriptStore(mkdtempSync(join(tmpdir(), 'sh-tui-sm-')), {
+      subject: 'github:1',
+      controlPlaneUrl: 'http://cp',
+    });
+    transcripts.appendPrompt('s1', 'x');
+    const { manager } = setup([], { transcripts });
+    expect(await manager.remove('s1')).toBe('deleted');
+    expect(transcripts.has('s1')).toBe(false);
+  });
+});
