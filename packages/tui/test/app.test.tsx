@@ -5,7 +5,7 @@ import { render } from 'ink-testing-library';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { ApiError, TurnCancelledError } from '../src/api/errors.js';
 import { App, CLEAR_SCREEN, initialOverlay } from '../src/app.js';
-import { loadConfig, saveAuth } from '../src/config.js';
+import { loadAuth, loadConfig, saveAuth } from '../src/config.js';
 import type { Runtime } from '../src/runtime.js';
 import { json } from './helpers/fake-fetch.js';
 import { credential, doneFrame, fakeControlPlane, fakeHarness } from './helpers/fakes.js';
@@ -183,6 +183,42 @@ describe('App', () => {
     await until(() => inputReady(stdin) && frame().includes('ignoring invalid keybinds'));
     await send(stdin, 'hi');
     await until(() => all().includes('still works'));
+  });
+
+  it('onboarding with a trailing-slash control-plane URL caches the login under the saved URL', async () => {
+    const rt = testRuntime({
+      endpoints: {},
+      auth: null,
+      config: { ...testRuntime().config, controlPlaneUrl: undefined, harnessUrl: undefined },
+      fetchImpl: routedFetch({
+        '/healthz': () => json({ ok: true }),
+        '/health': () => json({ ok: true }),
+        '/v1/auth/device': () =>
+          json({
+            deviceCode: 'd',
+            userCode: 'ABCD-1234',
+            verificationUri: 'https://github.com/login/device',
+            interval: 0,
+            expiresIn: 900,
+          }),
+        '/v1/auth/device/token': () =>
+          json({ token: 'fresh', subject: 'github:1', expiresAt: 4_000_000_000 }), // notsecret
+        '/v1/credentials': () => json({ credentials: [credential('anthropic')] }),
+      }),
+    });
+    const { stdin, frame, until } = mount(rt);
+    await until(() => inputReady(stdin) && frame().includes('Control plane URL'));
+    stdin.write('http://cp2/');
+    await tick();
+    stdin.write(KEY.enter);
+    await tick();
+    stdin.write('http://h2');
+    await tick();
+    stdin.write(KEY.enter);
+    await until(() => frame().includes('New session'));
+    expect(loadConfig(rt.paths).config.controlPlaneUrl).toBe('http://cp2');
+    // What the next launch does: look the login up under the URL config.json now holds.
+    expect(loadAuth(rt.paths, 'http://cp2')?.apiToken).toBe('fresh');
   });
 
   it('opens login when the cached login is missing', async () => {

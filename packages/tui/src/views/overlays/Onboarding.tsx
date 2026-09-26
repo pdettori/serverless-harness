@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink';
 import { useEffect, useRef, useState } from 'react';
 import type { ControlPlaneApi, HarnessApi } from '../../api/types.js';
-import type { CachedAuth, Endpoints } from '../../config.js';
+import { normalizeUrl, type CachedAuth, type Endpoints } from '../../config.js';
 import type { LoginDeps } from '../../core/auth.js';
 import { describeError } from '../../core/messages.js';
 import { useTheme } from '../../theme/context.js';
@@ -150,9 +150,11 @@ export function OnboardingOverlay({
           error={step.error}
           onCancel={onCancel}
           onSubmit={(v) =>
+            // Normalized here, not only when persisted: the login step caches its token under
+            // this URL, and the next launch looks it up under the one config.json holds.
             void probe({
-              controlPlaneUrl: v.controlPlaneUrl.trim(),
-              harnessUrl: v.harnessUrl.trim(),
+              controlPlaneUrl: normalizeUrl(v.controlPlaneUrl)!,
+              harnessUrl: normalizeUrl(v.harnessUrl)!,
             })
           }
         />
