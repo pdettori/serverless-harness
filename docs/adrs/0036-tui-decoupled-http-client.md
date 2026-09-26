@@ -39,8 +39,11 @@ VM/supervisor path once RA1 lands — sits behind either of its two configured U
 harness). It is built on **Ink/React**, the first TUI framework introduced into this monorepo, and its
 interaction model is deliberately modeled on OpenCode's conventions: one persistent chat view with
 session, credential, and login functions as dismissable overlays, each reachable by slash-command,
-leader-key (`ctrl+x` + mnemonic), and a fuzzy command palette (`ctrl+p`), plus a centralized
-theme-token layer rather than colors scattered through components.
+leader-key (`ctrl+x` + mnemonic), and a fuzzy command palette (`ctrl+p`), all generated from one
+data-driven command table; per-tool rich rendering (including an `edit` diff built from arguments
+already on the wire); and a centralized theme-token layer whose default maps onto the terminal's own
+palette. Its session, auth, and transcript logic lives in a UI-free core shared with a headless
+`sh-tui run` and a `sh-tui doctor`.
 
 ### Alternatives considered
 
@@ -72,11 +75,20 @@ theme-token layer rather than colors scattered through components.
   ("the `/turn` path does not lease from the pool at all"), not an oversight introduced here.
 - Negative / accepted cost: pointing this client at a P6/VM-deployed harness requires that
   deployment's operator to add MU1's auth env vars first — verified absent from
-  `deploy/vm/env/supervisor.env.example` today. The client cannot detect or work around a deployment
-  that hasn't turned auth on.
-- Follow-up owed: a `SessionProfile` seam is built into the client specifically so that when
-  model-selection or sandbox-selection gain an HTTP surface, this client grows to use them additively
-  rather than needing a redesign.
+  `deploy/vm/env/supervisor.env.example` today. The client cannot fix that, but it detects it: a
+  harness that rejects a freshly minted session token is diagnosed as "does not trust this control
+  plane" (and by `sh-tui doctor`) rather than looping the user through re-login.
+- Negative / accepted cost: no route returns a session's messages, so resume-with-history is served
+  from a **local, per-subject transcript store**. Resuming a session started on another machine shows
+  no history (the model's context is intact server-side; only the display is missing).
+- Negative / accepted cost: the server does not serialize concurrent turns of one session, so the
+  client enforces one in-flight turn per session and queues the rest. Another client on the same
+  session is not protected.
+- Follow-up owed: session creation is described as a schema of option fields, so when
+  model-selection or sandbox-selection gain an HTTP surface, supporting each is one new field entry
+  rather than a redesign.
+- Follow-up owed: `GET /v1/sessions/{id}/messages` is the highest-value backend addition for this
+  client — it makes history cross-device and turns the local store into a cache.
 - Follow-up owed: no track/milestone prefix is claimed for this work (spec §11); assigning one, if
   wanted, is left to whoever accepts the spec.
 
