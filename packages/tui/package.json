@@ -3,6 +3,9 @@
   "type": "module",
   "version": "0.0.0",
   "description": "Terminal client for the harness control plane (docs/specs/2026-09-25-sh-tui-control-plane-client-design.md).",
+  "bin": {
+    "sh-tui": "./bin/sh-tui.mjs"
+  },
   "scripts": {
     "start": "node --import tsx src/main.ts",
     "test": "vitest run",
