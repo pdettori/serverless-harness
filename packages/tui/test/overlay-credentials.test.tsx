@@ -166,6 +166,25 @@ describe('CredentialsOverlay', () => {
     expect(del).toHaveBeenCalledTimes(1);
   });
 
+  it('shows the delete confirmation with escape sequences stripped from the name', async () => {
+    const hostileName = 'evil\u001b]52;c;ZXZpbA==\u0007\u001b[8m';
+    const cp = fakeControlPlane({
+      listCredentials: async () => [credential(hostileName)],
+    });
+    const { stdin, lastFrame } = render(
+      withTheme(<CredentialsOverlay cp={cp} onCancel={vi.fn()} />),
+    );
+    await waitFor(() => (lastFrame() ?? '').includes('evil') && inputReady(stdin), 1000, lastFrame);
+    stdin.write('d');
+    await waitFor(
+      () => (lastFrame() ?? '').includes('Delete credential') && inputReady(stdin),
+      1000,
+      lastFrame,
+    );
+    expect(lastFrame()).not.toMatch(/\u001b|\u0007/);
+    expect(lastFrame()).toContain(`Delete credential "evil"?`);
+  });
+
   it('shows the contextual hint it was opened with', async () => {
     const { lastFrame } = render(
       withTheme(

@@ -42,6 +42,41 @@ describe('LoginOverlay', () => {
     expect(copy).toHaveBeenCalledTimes(1);
   });
 
+  it('shows the code and URL with escape sequences stripped, and copies the sanitized code', async () => {
+    const copy = vi.fn();
+    const hostileCode = 'ABCD\u001b[8m-1234';
+    const hostileUri = 'https://github.com\u001b]52;c;ZXZpbA==\u0007/login/device';
+    const cp = fakeControlPlane({
+      startDeviceAuth: async () => ({
+        deviceCode: 'd',
+        userCode: hostileCode,
+        verificationUri: hostileUri,
+        interval: 5,
+        expiresIn: 900,
+      }),
+    });
+    const deps = { cp, now: () => 0, sleep: waitForAbort };
+    const { lastFrame, stdin } = render(
+      withTheme(
+        <LoginOverlay
+          deps={deps}
+          controlPlaneUrl="http://cp"
+          onLoggedIn={vi.fn()}
+          onCancel={vi.fn()}
+          copy={copy}
+        />,
+      ),
+    );
+    await waitFor(() => (lastFrame() ?? '').includes('ABCD') && inputReady(stdin), 1000, lastFrame);
+    expect(lastFrame()).not.toMatch(/\u001b|\u0007/);
+    expect(lastFrame()).toContain('ABCD-1234');
+    expect(lastFrame()).toContain('https://github.com/login/device');
+    stdin.write('c');
+    await waitFor(() => copy.mock.calls.length > 0, 1000, lastFrame);
+    expect(copy).toHaveBeenCalledWith('ABCD-1234');
+    expect(copy).toHaveBeenCalledTimes(1);
+  });
+
   it('reports the login once approved', async () => {
     const onLoggedIn = vi.fn();
     const cp = fakeControlPlane({

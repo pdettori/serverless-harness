@@ -28,7 +28,10 @@ export async function cmdLogin(rt: Runtime, io: Io, signal?: AbortSignal): Promi
   try {
     const login = await deviceLogin(
       { cp: rt.cp, sleep: rt.sleep, now: rt.now },
-      (s) => io.err(`Open ${s.verificationUri} and enter the code ${s.userCode}`),
+      (s) =>
+        io.err(
+          `Open ${sanitizeRemote(s.verificationUri)} and enter the code ${sanitizeRemote(s.userCode)}`,
+        ),
       signal,
     );
     setAuth(rt, toCachedAuth(login, rt.endpoints.controlPlaneUrl!));

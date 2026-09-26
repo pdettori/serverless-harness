@@ -95,7 +95,8 @@ export function CredentialsOverlay({
   if (mode.kind === 'confirm') {
     return (
       <Confirm
-        message={`Delete credential "${mode.name}"?`}
+        // The confirmation text is shown terminal-safe; deleteCredential below keeps the raw name.
+        message={`Delete credential "${sanitizeRemote(mode.name)}"?`}
         onYes={() => {
           setMode({ kind: 'list' });
           cp.deleteCredential(mode.name)

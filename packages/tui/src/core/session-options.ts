@@ -1,5 +1,6 @@
 import type { ControlPlaneApi, CreateSessionRequest } from '../api/types.js';
 import type { Preset } from '../config.js';
+import { sanitizeRemote } from './sanitize.js';
 
 // Spec §7.3. Supporting a new session-time parameter (a model, a sandbox selector) is one more
 // entry in SESSION_OPTION_FIELDS; the New Session overlay, presets and `run --option` all read it.
@@ -24,7 +25,15 @@ export const inferenceCredentialField: SessionOptionField = {
   async source(api) {
     return (await api.listCredentials())
       .filter((c) => c.consumer === 'inference')
-      .map((c) => ({ value: c.name, label: c.endpoint ? `${c.name}  ${c.endpoint}` : c.name }));
+      .map((c) => {
+        // The picker's label is shown terminal-safe; `value` stays the raw name, which is the id
+        // sent back to the server.
+        const name = sanitizeRemote(c.name);
+        return {
+          value: c.name,
+          label: c.endpoint ? `${name}  ${sanitizeRemote(c.endpoint)}` : name,
+        };
+      });
   },
   toRequest: (value, req) => ({ ...req, credentials: { ...req.credentials, inference: value } }),
 };

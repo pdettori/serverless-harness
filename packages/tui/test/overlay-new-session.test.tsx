@@ -90,6 +90,22 @@ describe('NewSessionOverlay', () => {
     expect(lastFrame()).toContain('credential_required');
   });
 
+  it('shows credential labels with escape sequences stripped', async () => {
+    const hostileName = 'evil\u001b]52;c;ZXZpbA==\u0007';
+    const hostileEndpoint = 'https://x\u001b[8m.example';
+    const cp = fakeControlPlane({
+      listCredentials: async () => [
+        credential(hostileName, { endpoint: hostileEndpoint }),
+        credential('b'),
+      ],
+    });
+    const { stdin, lastFrame } = setup(cp);
+    await waitFor(() => (lastFrame() ?? '').includes('evil') && inputReady(stdin), 1000, lastFrame);
+    expect(lastFrame()).not.toMatch(/\u001b|\u0007/);
+    expect(lastFrame()).toContain('evil');
+    expect(lastFrame()).toContain('https://x.example');
+  });
+
   it('does not call onCreate if unmounted while credential listing is still pending', async () => {
     let resolveList: ((creds: CredentialDescriptor[]) => void) | undefined;
     const cp = fakeControlPlane({

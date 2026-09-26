@@ -4,6 +4,7 @@ import type { DeviceStart } from '../../api/types.js';
 import type { CachedAuth } from '../../config.js';
 import { LoginCancelledError, deviceLogin, toCachedAuth, type LoginDeps } from '../../core/auth.js';
 import { describeError } from '../../core/messages.js';
+import { sanitizeRemote } from '../../core/sanitize.js';
 import { useTheme } from '../../theme/context.js';
 import { formatDuration } from '../format.js';
 import { Spinner } from '../Spinner.js';
@@ -70,8 +71,10 @@ export function LoginOverlay({
     if (error && input === 'r') return setAttempt((a) => a + 1);
     if (!start) return;
     if (input === 'c' && copy)
-      void Promise.resolve(copy(start.userCode)).then(() => setNote('code copied'));
+      void Promise.resolve(copy(sanitizeRemote(start.userCode))).then(() => setNote('code copied'));
     if (input === 'o' && openUrl) {
+      // openUrl already restricts to http/https, so it gets the raw value; the sanitized form is
+      // for display only.
       openUrl(start.verificationUri);
       setNote('opened in your browser');
     }
@@ -105,14 +108,14 @@ export function LoginOverlay({
           <Text>
             Open{' '}
             <Text color={t.info} underline>
-              {start.verificationUri}
+              {sanitizeRemote(start.verificationUri)}
             </Text>{' '}
             and enter:
           </Text>
           <Box marginY={1}>
             <Text bold color={t.primary}>
               {'  '}
-              {start.userCode}
+              {sanitizeRemote(start.userCode)}
             </Text>
           </Box>
           <Spinner

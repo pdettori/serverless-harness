@@ -217,6 +217,34 @@ describe('cmdLogin', () => {
     expect(await cmdLogin(runtime({ cp: undefined, endpoints: {} }), io())).toBe(2);
   });
 
+  it('strips escape sequences from the code and URL printed to stderr', async () => {
+    const o = io();
+    const hostileCode = 'ABCD\u001b[8m-1234';
+    const hostileUri = 'https://github.com\u001b]52;c;ZXZpbA==\u0007/login/device';
+    const rt = runtime({
+      auth: null,
+      cp: fakeControlPlane({
+        startDeviceAuth: async () => ({
+          deviceCode: 'd',
+          userCode: hostileCode,
+          verificationUri: hostileUri,
+          interval: 5,
+          expiresIn: 900,
+        }),
+        pollDeviceAuth: async () => ({
+          token: 'new-api',
+          subject: 'github:9',
+          roles: [],
+          expiresAt: 4_000_000_000,
+        }),
+      }),
+    });
+    expect(await cmdLogin(rt, o)).toBe(0);
+    expect(o.stderr[0]).not.toMatch(/[\u0007\u001b]/);
+    expect(o.stderr[0]).toContain('https://github.com/login/device');
+    expect(o.stderr[0]).toContain('ABCD-1234');
+  });
+
   it('exits 130 quietly when cancelled during the device-flow poll', async () => {
     const ac = new AbortController();
     const o = io();
