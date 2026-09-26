@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -30,6 +30,43 @@ describe('editText', () => {
     const os = realOs({ EDITOR: 'sh -c \'printf "%s\\n" "$(cat "$0") edited" > "$0"\'' });
     expect(os.editText('draft')).toBe('draft edited');
   });
+
+  it('throws instead of silently returning the initial text when the editor cannot be found', () => {
+    const os = realOs({ EDITOR: 'definitely-not-an-editor-xyz' });
+    expect(() => os.editText('draft')).toThrow(/could not start editor/i);
+  });
+
+  it('still removes its temp dir when the editor fails to start', () => {
+    const os = realOs({ EDITOR: 'definitely-not-an-editor-xyz' });
+    const before = new Set(readdirSync(tmpdir()).filter((n) => n.startsWith('sh-tui-edit-')));
+    expect(() => os.editText('draft')).toThrow();
+    const leaked = readdirSync(tmpdir()).filter(
+      (n) => n.startsWith('sh-tui-edit-') && !before.has(n),
+    );
+    expect(leaked).toEqual([]);
+  });
+
+  it('throws when the editor process is killed by a signal', () => {
+    // `#` comments out the file argument our own runEditor appends, so this just signals the
+    // shell process spawnSync is watching directly.
+    const os = realOs({ EDITOR: 'kill -TERM $$ #' });
+    expect(() => os.editText('draft')).toThrow(/signal/i);
+  });
+});
+
+describe('openInEditor', () => {
+  it('passes a file path with a space and a literal $HOME as a single, unexpanded argument', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sh-tui-os-'));
+    const file = join(dir, 'a file $HOME name.md');
+    writeFileSync(file, 'original');
+    const recordFile = join(dir, 'argv.txt');
+    // A fake "editor" that records the exact argument it was invoked with.
+    const os = realOs({
+      EDITOR: `sh -c 'printf "%s" "$0" > ${JSON.stringify(recordFile)}'`,
+    });
+    os.openInEditor(file);
+    expect(readFileSync(recordFile, 'utf8')).toBe(file);
+  });
 });
 
 describe('writeExport', () => {
@@ -39,5 +76,11 @@ describe('writeExport', () => {
     expect(file).toBe(join(paths.exportsDir, 's1.md'));
     expect(readFileSync(file, 'utf8')).toBe('# hi\n');
     expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it('refuses a session id that could escape the exports directory', () => {
+    const paths = resolvePaths({}, mkdtempSync(join(tmpdir(), 'sh-tui-os-')));
+    expect(() => writeExport(paths, '../evil', '# hi\n')).toThrow(/unsafe/i);
+    expect(() => writeExport(paths, 'a/b', '# hi\n')).toThrow(/unsafe/i);
   });
 });
