@@ -19,18 +19,19 @@ nothing is written to disk until the control plane and the harness both answer.
 
 ## Keys
 
-| Action                               | Slash                        | Keys                   |
-| ------------------------------------ | ---------------------------- | ---------------------- |
-| Command palette                      | —                            | `ctrl+p`               |
-| Sessions (resume, rename, delete)    | `/sessions`, `/resume`       | `ctrl+x l`             |
-| New session                          | `/new`                       | `ctrl+x n`             |
-| Rename session                       | `/rename <title>`            | `ctrl+x r`             |
-| Credentials                          | `/credentials`               | `ctrl+x k`             |
-| Toggle tool details / thinking       | `/details`, `/thinking`      | `ctrl+x d`, `ctrl+x t` |
-| Copy last reply / export to Markdown | `/copy`, `/export`           | `ctrl+x y`, `ctrl+x x` |
-| Compose in `$EDITOR`                 | `/editor`                    | `ctrl+x e`             |
-| Theme, diagnostics, help             | `/theme`, `/doctor`, `/help` | `?` on an empty input  |
-| Quit                                 | `/quit`                      | `ctrl+x q`, `ctrl+c`   |
+| Action                               | Slash                   | Keys                   |
+| ------------------------------------ | ----------------------- | ---------------------- |
+| Command palette                      | —                       | `ctrl+p`               |
+| Sessions (resume, rename, delete)    | `/sessions`, `/resume`  | `ctrl+x l`             |
+| New session                          | `/new`                  | `ctrl+x n`             |
+| Rename session                       | `/rename <title>`       | `ctrl+x r`             |
+| Credentials                          | `/credentials`          | `ctrl+x k`             |
+| Toggle tool details / thinking       | `/details`, `/thinking` | `ctrl+x d`, `ctrl+x t` |
+| Copy last reply / export to Markdown | `/copy`, `/export`      | `ctrl+x y`, `ctrl+x x` |
+| Compose in `$EDITOR`                 | `/editor`               | `ctrl+x e`             |
+| Theme, diagnostics                   | `/theme`, `/doctor`     | —                      |
+| Help                                 | `/help`                 | `?` on an empty input  |
+| Quit                                 | `/quit`                 | `ctrl+x q`, `ctrl+c`   |
 
 `Enter` sends, `alt+enter` adds a newline, `↑`/`↓` walk your prompt history. `Esc` closes any
 overlay (including a loading or error screen) and, on the chat view, cancels the running turn; a
@@ -62,9 +63,11 @@ Falls back to `~/.config/sh-tui/` and `~/.local/state/sh-tui/` when the `XDG_*` 
 ## Troubleshooting
 
 Run `sh-tui doctor`. If it reports that the harness does not trust this control plane, the harness
-is missing MU1 auth settings: `SH_SESSION_TOKEN_PUBLIC_KEYS`, and on the VM/P6 path also
-`SH_CONTROL_PLANE_URL`, `SH_EXCHANGE_TOKEN` and `SH_REQUIRE_AUTH` (see
-`deploy/vm/env/supervisor.env.example`).
+must be given `SH_SESSION_TOKEN_PUBLIC_KEYS`, `SH_CONTROL_PLANE_URL`, `SH_EXCHANGE_TOKEN` and
+`SH_REQUIRE_AUTH`: on the VM/P6 path, add them to `/etc/serverless-harness/supervisor.env` (the
+`EnvironmentFile` of `deploy/vm/systemd/sh-supervisor.service` — the shipped
+`supervisor.env.example` doesn't include them yet); on the Knative path they're set in
+`deploy/knative/service.yaml`.
 
 Resuming a session started on another machine shows no history: the control plane has no route
 that returns a session's messages yet, so history is kept locally.
