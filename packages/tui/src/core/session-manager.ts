@@ -11,7 +11,7 @@ import type { TranscriptStore } from './transcripts.js';
 export class HarnessUntrustedError extends Error {
   constructor() {
     super(
-      'the harness rejected a freshly minted session token — it is likely missing MU1 auth configuration. Run /doctor for details.',
+      'the harness rejected a freshly minted session token — it is likely missing MU1 auth configuration. Run doctor for details: `/doctor` in the app, or `sh-tui doctor`.',
     );
     this.name = 'HarnessUntrustedError';
   }

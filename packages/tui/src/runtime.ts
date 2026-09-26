@@ -110,11 +110,6 @@ export function persistEndpoints(rt: Runtime): void {
   saveRuntimeConfig(rt);
 }
 
-export function setEndpoints(rt: Runtime, endpoints: Endpoints): void {
-  applyEndpoints(rt, endpoints);
-  persistEndpoints(rt);
-}
-
 /** What applyEndpoints replaces, so an abandoned change can be put back exactly. */
 export type Connection = Pick<Runtime, 'endpoints' | 'auth' | 'cp' | 'harness' | 'transcripts'>;
 

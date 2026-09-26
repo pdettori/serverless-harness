@@ -129,6 +129,8 @@ describe('cmdRun', () => {
     const rt = runtime({ harness: fakeHarness([{ error: bad }, { error: bad }]) });
     expect(await cmdRun(rt, o, { prompt: 'hi', options: {}, json: false })).toBe(1);
     expect(o.stderr).toContain(new HarnessUntrustedError().message);
+    // Headless, the fix is a command the user can run from this shell, not a slash command.
+    expect(o.stderr.join('\n')).toContain('`sh-tui doctor`');
   });
 
   it('exits 130 when cancelled', async () => {
