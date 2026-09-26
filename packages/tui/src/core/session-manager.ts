@@ -37,7 +37,7 @@ export interface SessionDeps {
   now: () => number;
   sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   remintMarginS?: number;
-  /** The pause after a cancelled turn before the queue drains on (default DOUBLE_ESC_MS). */
+  /** The pause after a cancelled turn before the queue drains on (default DOUBLE_ESC_MS; 0: none). */
   cancelPauseMs?: number;
 }
 
@@ -108,7 +108,7 @@ export class ActiveSession {
         const prompt = this.queue.shift()!;
         this.emit({ kind: 'queue', size: this.queue.length });
         const cancelled = await this.runTurn(prompt);
-        if (cancelled && this.queue.length > 0) await this.pause();
+        if (cancelled && this.queue.length > 0 && this.deps.cancelPauseMs !== 0) await this.pause();
       }
     } finally {
       this.running = false;

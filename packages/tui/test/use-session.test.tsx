@@ -5,7 +5,7 @@ import { SessionManager, type ActiveSession } from '../src/core/session-manager.
 import { EMPTY_BLOCKS } from '../src/render/blocks.js';
 import { COALESCE_MS, useSession, type SessionView } from '../src/views/useSession.js';
 import { doneFrame, fakeControlPlane, fakeHarness, type HarnessStep } from './helpers/fakes.js';
-import { tick } from './helpers/ink.js';
+import { tick, waitFor } from './helpers/ink.js';
 
 let clock = 0;
 const now = () => clock;
@@ -17,6 +17,7 @@ async function mount(steps: HarnessStep[]) {
     harness: fakeHarness(steps),
     now,
     sleep: async () => undefined,
+    cancelPauseMs: 0, // the double-Esc window is the session's concern, tested there
   });
   const session = await manager.resume('s1');
   const view: { current?: SessionView } = {};
@@ -28,6 +29,10 @@ async function mount(steps: HarnessStep[]) {
   await tick();
   return view as { current: SessionView };
 }
+
+// What the view shows, turn-ends tagged with their outcome.
+const kindsOf = (v: { current: SessionView }) =>
+  v.current.state.blocks.map((b) => (b.kind === 'turn-end' ? `end:${b.outcome}` : b.kind));
 
 describe('useSession', () => {
   it('turns a streamed turn into blocks, coalescing deltas, records usage, and computes TTFT', async () => {
@@ -49,7 +54,7 @@ describe('useSession', () => {
     expect(view.current.turn.phase).toBe('waiting');
     clock += 1500;
     resolveWait();
-    await tick(120);
+    await waitFor(() => view.current.turn.phase === 'idle');
     const blocks = view.current.state.blocks;
     expect(blocks.map((b) => b.kind)).toEqual(['user', 'assistant', 'turn-end']);
     expect((blocks[1] as { text: string }).text).toBe('0123456789'.repeat(5));
@@ -115,8 +120,7 @@ describe('useSession', () => {
   it('marks a prompt submitted mid-turn as queued, then sends it after a cancel', async () => {
     const view = await mount([{ frames: [{ type: 'text', delta: 'working' }], hang: true }]);
     view.current.submit('a');
-    await tick(60);
-    expect(view.current.turn.phase).toBe('streaming');
+    await waitFor(() => view.current.turn.phase === 'streaming');
     view.current.submit('b');
     await tick();
     expect(view.current.state.blocks.at(-1)).toMatchObject({
@@ -126,11 +130,8 @@ describe('useSession', () => {
     });
     expect(view.current.turn.queued).toBe(1);
     view.current.cancel();
-    await tick(120);
-    const kinds = view.current.state.blocks.map((b) =>
-      b.kind === 'turn-end' ? `end:${b.outcome}` : b.kind,
-    );
-    expect(kinds).toEqual(['user', 'assistant', 'end:cancelled', 'user', 'end:done']);
+    await waitFor(() => kindsOf(view).includes('end:done'));
+    expect(kindsOf(view)).toEqual(['user', 'assistant', 'end:cancelled', 'user', 'end:done']);
     expect(view.current.state.blocks[3]).toMatchObject({ queued: false });
   });
 
@@ -142,7 +143,7 @@ describe('useSession', () => {
     await tick();
     view.current.clearQueue();
     view.current.cancel();
-    await tick(120);
+    await waitFor(() => kindsOf(view).includes('end:cancelled'));
     expect(
       view.current.state.blocks
         .filter((b) => b.kind === 'user')
@@ -156,7 +157,7 @@ describe('useSession', () => {
       { error: new ApiError('harness', 0, 'network_error', 'ECONNRESET') },
     ]);
     view.current.submit('a');
-    await tick(120);
+    await waitFor(() => kindsOf(view).includes('end:error'));
     expect(view.current.state.blocks.at(-1)).toMatchObject({
       kind: 'turn-end',
       outcome: 'error',

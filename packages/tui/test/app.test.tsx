@@ -527,8 +527,19 @@ describe('App', () => {
       { frames: [{ type: 'text', delta: 'thinking hard' }], hang: true },
       { frames: [{ type: 'text', delta: 'must never run' }, doneFrame('s-new')] },
     ]);
+    // A positive signal instead of a fixed wait: the first turn's stream has fully unwound.
+    let firstStreamDone = false;
+    const streamTurn = harness.streamTurn.bind(harness);
+    harness.streamTurn = async function* (args) {
+      try {
+        yield* streamTurn(args);
+      } finally {
+        firstStreamDone = true;
+      }
+    };
     const { stdin, all, frame, until, ready } = mount(
-      testRuntime({ cp: sessionList('remote-1'), harness }),
+      // No double-Esc pause, so a wrong next POST would follow the cancel on microtasks alone.
+      testRuntime({ cp: sessionList('remote-1'), harness, cancelPauseMs: 0 }),
     );
     await ready();
     await send(stdin, 'first');
@@ -542,8 +553,10 @@ describe('App', () => {
     await tick();
     stdin.write(KEY.enter);
     await until(() => all().includes("isn't available on this device"));
-    await until(() => harness.turns[0].signal?.aborted === true);
-    await tick(100);
+    await until(() => harness.turns[0].signal?.aborted === true && firstStreamDone);
+    // From there to a (wrong) next POST is microtasks only: the cancelled turn-end, the drain loop
+    // re-checking its queue, and streamTurn. One macrotask flushes them all, so it is not a race.
+    await tick(0);
     expect(harness.turns).toHaveLength(1);
     expect(all()).not.toContain('must never run');
   });

@@ -33,6 +33,8 @@ export interface Runtime {
   now: () => number;
   sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   fetchImpl: typeof fetch;
+  /** Overrides SessionDeps.cancelPauseMs (the double-Esc window); tests only. */
+  cancelPauseMs?: number;
 }
 
 // The transcript store is per subject and per control plane (spec §6.6), so it follows the login.
@@ -129,5 +131,6 @@ export function sessionManager(rt: Runtime): SessionManager {
     transcripts: rt.transcripts,
     now: rt.now,
     sleep: rt.sleep,
+    cancelPauseMs: rt.cancelPauseMs,
   });
 }
