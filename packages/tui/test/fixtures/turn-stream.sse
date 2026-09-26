@@ -20,4 +20,3 @@ data: {"type":"text","delta":"Done."}
 
 event: done
 data: {"type":"done","sessionId":"s1","stopReason":"end_turn","usage":{"input":120,"output":40,"cacheRead":0,"cacheWrite":0,"total":160}}
-
