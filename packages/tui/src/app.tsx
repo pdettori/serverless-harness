@@ -303,7 +303,8 @@ export function App({ rt, opts, env, os, write }: AppProps) {
     notify(`logged in as ${a.displayName ?? a.subject}`);
     const replay = replayAfterLogin.current;
     replayAfterLogin.current = undefined;
-    if (replay && replay.session === sessionRef.current) viewRef.current?.submit(replay.prompt);
+    // The prompt is already on screen and in the transcript; only the turn runs again.
+    if (replay && replay.session === sessionRef.current) viewRef.current?.resend(replay.prompt);
   };
 
   const submitText = (text: string) => {

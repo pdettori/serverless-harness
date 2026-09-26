@@ -43,7 +43,7 @@ export interface SessionDeps {
 
 export class ActiveSession {
   private readonly listeners = new Set<(e: SessionEvent) => void>();
-  private queue: string[] = [];
+  private queue: Array<{ prompt: string; resend: boolean }> = [];
   private controller?: AbortController;
   private running = false;
   private idleWaiters: Array<() => void> = [];
@@ -69,8 +69,10 @@ export class ActiveSession {
   }
 
   // The server does not serialize concurrent turns of one session (spec §2.6); this queue does.
-  submit(prompt: string): void {
-    this.queue.push(prompt);
+  // A resend (the replay after a re-login) runs a prompt the transcript already holds, so it is
+  // not recorded again.
+  submit(prompt: string, opts: { resend?: boolean } = {}): void {
+    this.queue.push({ prompt, resend: opts.resend === true });
     this.emit({ kind: 'queue', size: this.queue.length });
     void this.drain().catch(() => undefined);
   }
@@ -105,9 +107,9 @@ export class ActiveSession {
     this.running = true;
     try {
       while (this.queue.length > 0) {
-        const prompt = this.queue.shift()!;
+        const { prompt, resend } = this.queue.shift()!;
         this.emit({ kind: 'queue', size: this.queue.length });
-        const cancelled = await this.runTurn(prompt);
+        const cancelled = await this.runTurn(prompt, resend);
         if (cancelled && this.queue.length > 0 && this.deps.cancelPauseMs !== 0) await this.pause();
       }
     } finally {
@@ -146,10 +148,11 @@ export class ActiveSession {
   }
 
   /** Resolves true when the turn ended cancelled. */
-  private async runTurn(prompt: string): Promise<boolean> {
+  private async runTurn(prompt: string, resend = false): Promise<boolean> {
     const controller = new AbortController();
     this.controller = controller;
-    this.transcriptSafe(() => this.deps.transcripts?.appendPrompt(this.sessionId, prompt));
+    if (!resend)
+      this.transcriptSafe(() => this.deps.transcripts?.appendPrompt(this.sessionId, prompt));
     this.emit({ kind: 'turn-start', prompt });
     let reminted = false;
     let streamed = false;

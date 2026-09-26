@@ -135,6 +135,19 @@ describe('useSession', () => {
     expect(view.current.state.blocks[3]).toMatchObject({ queued: false });
   });
 
+  it('resend runs a prompt again without adding a second user block', async () => {
+    const { ApiError } = await import('../src/api/errors.js');
+    const view = await mount([
+      { error: new ApiError('control-plane', 401, 'token_expired') },
+      { frames: [{ type: 'text', delta: 'ok' }, doneFrame()] },
+    ]);
+    view.current.submit('a');
+    await waitFor(() => kindsOf(view).includes('end:error'));
+    view.current.resend('a');
+    await waitFor(() => kindsOf(view).includes('end:done'));
+    expect(kindsOf(view)).toEqual(['user', 'end:error', 'assistant', 'end:done']);
+  });
+
   it('clearQueue drops queued prompts from the transcript', async () => {
     const view = await mount([{ hang: true }]);
     view.current.submit('a');

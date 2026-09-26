@@ -14,6 +14,8 @@ export interface SessionView {
   turn: TurnState;
   usage: Usage;
   submit(text: string): void;
+  /** Runs `text` again without a second user block: the replay after a re-login (spec §8.1). */
+  resend(text: string): void;
   cancel(): void;
   clearQueue(): void;
   lastReply(): string | undefined;
@@ -136,6 +138,8 @@ export function useSession(session: ActiveSession | undefined, opts: Options): S
     [session],
   );
 
+  const resend = useCallback((text: string) => session?.submit(text, { resend: true }), [session]);
+
   const cancel = useCallback(() => session?.cancel(), [session]);
 
   const clearQueue = useCallback(() => {
@@ -152,5 +156,5 @@ export function useSession(session: ActiveSession | undefined, opts: Options): S
     return undefined;
   }, []);
 
-  return { state, turn, usage, submit, cancel, clearQueue, lastReply };
+  return { state, turn, usage, submit, resend, cancel, clearQueue, lastReply };
 }

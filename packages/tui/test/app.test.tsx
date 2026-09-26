@@ -432,6 +432,9 @@ describe('App', () => {
     await until(() => all().includes('replayed'));
     expect(rt.auth?.apiToken).toBe('a2');
     expect(harness.turns.map((t) => t.prompt)).toEqual(['hi', 'hi']);
+    // The replay re-runs the turn, not the prompt (the view side is in use-session.test.tsx).
+    await until(() => frame().includes('idle'));
+    expect(rt.transcripts?.load('s-new')?.prompts).toEqual(['hi']);
   });
 
   it('an expired login met by the sessions overlay opens Login, then reopens and lists', async () => {
