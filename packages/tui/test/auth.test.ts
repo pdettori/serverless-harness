@@ -103,7 +103,7 @@ describe('cached auth helpers', () => {
   });
 
   it('treats an expired or missing token as invalid', () => {
-    expect(apiTokenValid(auth, 3_399_000)).toBe(true);
+    expect(apiTokenValid(auth, 3_599_000)).toBe(true);
     expect(apiTokenValid(auth, 3_600_000)).toBe(false);
     expect(apiTokenValid(null, 0)).toBe(false);
   });
