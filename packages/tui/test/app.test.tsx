@@ -297,7 +297,7 @@ describe('App', () => {
     await until(() => all().includes('cancelled'));
   });
 
-  it('a second Esc within a second also clears the queue', async () => {
+  it('a second Esc within a second clears the queue before the next prompt is sent', async () => {
     const rt = testRuntime({
       harness: fakeHarness([
         { frames: [{ type: 'text', delta: 'first' }], hang: true },
@@ -312,12 +312,12 @@ describe('App', () => {
     await send(stdin, 'three');
     await until(() => frame().includes('queued: 2'));
     stdin.write(KEY.escape);
-    await until(() => all().includes('second'));
+    await until(() => all().includes('cancelled'));
     stdin.write(KEY.escape);
-    await until(() => frame().includes('queue cleared'));
-    await until(() => frame().includes('idle'));
-    // 'three' was dropped: only two turns ever reached the harness.
-    expect((rt.harness as unknown as { turns: unknown[] }).turns).toHaveLength(2);
+    await until(() => frame().includes('queue cleared') && frame().includes('idle'));
+    // Neither queued prompt was sent: the first Esc's cancel paused the queue for the second.
+    expect((rt.harness as unknown as { turns: unknown[] }).turns).toHaveLength(1);
+    expect(all()).not.toContain('second');
   });
 
   it('resuming a session with no local history says so', async () => {

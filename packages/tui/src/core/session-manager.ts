@@ -17,6 +17,12 @@ export class HarnessUntrustedError extends Error {
   }
 }
 
+/**
+ * How long a second Esc has to clear the queue: after a cancelled turn, the next queued prompt
+ * waits this long before it is sent, so a double Esc never dispatches it first.
+ */
+export const DOUBLE_ESC_MS = 1000;
+
 export type SessionEvent =
   | { kind: 'turn-start'; prompt: string }
   | { kind: 'frame'; frame: TurnFrame }
@@ -31,6 +37,8 @@ export interface SessionDeps {
   now: () => number;
   sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   remintMarginS?: number;
+  /** The pause after a cancelled turn before the queue drains on (default DOUBLE_ESC_MS). */
+  cancelPauseMs?: number;
 }
 
 export class ActiveSession {
@@ -39,6 +47,7 @@ export class ActiveSession {
   private controller?: AbortController;
   private running = false;
   private idleWaiters: Array<() => void> = [];
+  private endPause?: () => void;
 
   constructor(
     private readonly deps: SessionDeps,
@@ -73,6 +82,7 @@ export class ActiveSession {
   clearQueue(): void {
     this.queue = [];
     this.emit({ kind: 'queue', size: 0 });
+    this.endPause?.(); // nothing is left to wait for
   }
 
   idle(): Promise<void> {
@@ -97,7 +107,8 @@ export class ActiveSession {
       while (this.queue.length > 0) {
         const prompt = this.queue.shift()!;
         this.emit({ kind: 'queue', size: this.queue.length });
-        await this.runTurn(prompt);
+        const cancelled = await this.runTurn(prompt);
+        if (cancelled && this.queue.length > 0) await this.pause();
       }
     } finally {
       this.running = false;
@@ -105,6 +116,18 @@ export class ActiveSession {
       this.idleWaiters = [];
       for (const w of waiters) w();
     }
+  }
+
+  private pause(): Promise<void> {
+    return new Promise((resolve) => {
+      const end = () => {
+        clearTimeout(timer);
+        this.endPause = undefined;
+        resolve();
+      };
+      const timer = setTimeout(end, this.deps.cancelPauseMs ?? DOUBLE_ESC_MS);
+      this.endPause = end;
+    });
   }
 
   private async ensureToken(): Promise<void> {
@@ -122,7 +145,8 @@ export class ActiveSession {
     }
   }
 
-  private async runTurn(prompt: string): Promise<void> {
+  /** Resolves true when the turn ended cancelled. */
+  private async runTurn(prompt: string): Promise<boolean> {
     const controller = new AbortController();
     this.controller = controller;
     this.transcriptSafe(() => this.deps.transcripts?.appendPrompt(this.sessionId, prompt));
@@ -153,7 +177,7 @@ export class ActiveSession {
                       error: new Error(frame.errorMessage ?? frame.stopReason),
                     },
               );
-              return;
+              return false;
             }
           }
           // Stream ended without a terminal frame; emit error
@@ -162,7 +186,7 @@ export class ActiveSession {
             outcome: 'error',
             error: new Error('the harness ended the turn without a result'),
           });
-          return;
+          return false;
         } catch (err) {
           if (controller.signal.aborted || err instanceof TurnCancelledError)
             throw new TurnCancelledError();
@@ -189,13 +213,12 @@ export class ActiveSession {
       }
     } catch (err) {
       this.transcriptSafe(() => this.deps.transcripts?.flush(this.sessionId));
-      if (controller.signal.aborted) {
+      if (controller.signal.aborted || err instanceof TurnCancelledError) {
         this.emit({ kind: 'turn-end', outcome: 'cancelled' });
-      } else if (err instanceof TurnCancelledError) {
-        this.emit({ kind: 'turn-end', outcome: 'cancelled' });
-      } else {
-        this.emit({ kind: 'turn-end', outcome: 'error', error: err as Error });
+        return true;
       }
+      this.emit({ kind: 'turn-end', outcome: 'error', error: err as Error });
+      return false;
     } finally {
       if (this.controller === controller) this.controller = undefined;
     }

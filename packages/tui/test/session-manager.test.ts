@@ -74,9 +74,10 @@ describe('ActiveSession', () => {
   });
 
   it('queues a prompt submitted while a turn is streaming; cancel moves on to it', async () => {
-    const { session, ends } = await started([
-      { frames: [{ type: 'text', delta: 'x' }], hang: true },
-    ]);
+    const { session, ends } = await started(
+      [{ frames: [{ type: 'text', delta: 'x' }], hang: true }],
+      { cancelPauseMs: 5 },
+    );
     session.submit('a');
     await tick();
     session.submit('b');
@@ -96,6 +97,45 @@ describe('ActiveSession', () => {
     session.cancel();
     await session.idle();
     expect(harness.turns.map((t) => t.prompt)).toEqual(['a']);
+  });
+
+  it('after a cancel, waits before sending the next queued prompt, so a clearQueue drops it', async () => {
+    const { session, harness, ends } = await started([{ hang: true }], { cancelPauseMs: 10_000 });
+    session.submit('a');
+    await tick();
+    session.submit('b');
+    session.cancel();
+    await tick();
+    await tick();
+    expect(ends().map((e) => (e as { outcome: string }).outcome)).toEqual(['cancelled']);
+    expect(harness.turns.map((t) => t.prompt)).toEqual(['a']); // 'b' is waiting, not sent
+    expect(session.queued).toBe(1);
+    session.clearQueue(); // the second Esc, within the window
+    await session.idle(); // ends the pause at once: no 10 s wait
+    expect(harness.turns.map((t) => t.prompt)).toEqual(['a']);
+  });
+
+  it('after a cancel, sends the next queued prompt once the pause has passed', async () => {
+    const { session, harness, ends } = await started([{ hang: true }], { cancelPauseMs: 30 });
+    session.submit('a');
+    await tick();
+    session.submit('b');
+    const cancelledAt = Date.now();
+    session.cancel();
+    await session.idle();
+    expect(Date.now() - cancelledAt).toBeGreaterThanOrEqual(25);
+    expect(harness.turns.map((t) => t.prompt)).toEqual(['a', 'b']);
+    expect(ends().map((e) => (e as { outcome: string }).outcome)).toEqual(['cancelled', 'done']);
+  });
+
+  it('does not pause after a turn that finished normally', async () => {
+    const { session, harness } = await started([{ frames: [doneFrame()] }], {
+      cancelPauseMs: 10_000,
+    });
+    session.submit('a');
+    session.submit('b');
+    await session.idle();
+    expect(harness.turns.map((t) => t.prompt)).toEqual(['a', 'b']);
   });
 
   it('remints a session token that is inside the 30 s margin', async () => {

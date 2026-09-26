@@ -35,7 +35,8 @@ nothing is written to disk until the control plane and the harness both answer.
 
 `Enter` sends, `alt+enter` adds a newline, `↑`/`↓` walk your prompt history. `Esc` closes any
 overlay (including a loading or error screen) and, on the chat view, cancels the running turn; a
-second `Esc` within a second also clears queued messages. `$EDITOR` (or `$VISUAL`) runs with the
+second `Esc` within a second also clears queued messages (after a cancel, the next queued message
+waits that second before it is sent). `$EDITOR` (or `$VISUAL`) runs with the
 terminal suspended — if it cannot start, a toast says so and your draft is unchanged. Override
 keys in `config.json` under `keybinds`, e.g. `{ "session.new": "ctrl+x s" }`.
 

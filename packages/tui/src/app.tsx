@@ -12,6 +12,7 @@ import type { CachedAuth, TuiConfig } from './config.js';
 import { apiTokenValid, loginExpiryMinutes } from './core/auth.js';
 import { describeError } from './core/messages.js';
 import {
+  DOUBLE_ESC_MS,
   HarnessUntrustedError,
   type ActiveSession,
   type SessionEvent,
@@ -38,7 +39,6 @@ import { useSession, type SessionView } from './views/useSession.js';
 
 export const CLEAR_SCREEN = '\u001b[2J\u001b[3J\u001b[H';
 const BELL_IDLE_MS = 10_000;
-const DOUBLE_ESC_MS = 1000;
 const TOAST_MS = 5000;
 
 type Toast = { text: string; tone: 'info' | 'warning' | 'error' };
