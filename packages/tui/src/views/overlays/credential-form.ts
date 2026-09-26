@@ -34,8 +34,7 @@ export function credentialFields(): FormField[] {
     {
       key: 'hosts',
       label: 'Destination hosts',
-      optional: true,
-      hint: 'comma-separated host allow-list; may be empty',
+      hint: 'comma-separated host allow-list, e.g. api.anthropic.com',
     },
     {
       key: 'endpoint',
@@ -60,16 +59,11 @@ export function credentialFields(): FormField[] {
   ];
 }
 
-export function validateCredential(values: Record<string, string>): string | undefined {
-  if (!CREDENTIAL_NAME.test(values.name ?? ''))
-    return 'name: lower-case letters, digits and dashes, 1-40 characters';
-  if (!CONSUMERS.includes(values.consumer as CredentialConsumer))
-    return `consumer must be one of ${CONSUMERS.join(', ')}`;
-  const fields = KNOWN_KINDS[values.kind];
-  if (values.consumer === 'inference' && fields && fields.length !== 1) {
-    return `an inference credential needs a single-secret kind; '${values.kind}' has ${fields.length} (${fields.join(', ')})`;
-  }
-  return undefined;
+function parseHosts(text: string): string[] {
+  return text
+    .split(',')
+    .map((h) => h.trim())
+    .filter(Boolean);
 }
 
 function parsePairs(text: string): Record<string, string> {
@@ -81,6 +75,29 @@ function parsePairs(text: string): Record<string, string> {
   return out;
 }
 
+export function validateCredential(values: Record<string, string>): string | undefined {
+  if (!CREDENTIAL_NAME.test(values.name ?? ''))
+    return 'name: lower-case letters, digits and dashes, 1-40 characters';
+  if (!CONSUMERS.includes(values.consumer as CredentialConsumer))
+    return `consumer must be one of ${CONSUMERS.join(', ')}`;
+  if (parseHosts(values.hosts ?? '').length === 0)
+    return 'destination hosts: at least one host is required';
+  const fields = KNOWN_KINDS[values.kind];
+  if (values.consumer === 'inference') {
+    if (fields) {
+      if (fields.length !== 1) {
+        return `an inference credential needs a single-secret kind; '${values.kind}' has ${fields.length} (${fields.join(', ')})`;
+      }
+    } else {
+      const pairs = Object.keys(parsePairs(values.secretPairs ?? ''));
+      if (pairs.length !== 1) {
+        return `an inference credential needs a single-secret kind; '${values.kind}' has ${pairs.length} (${pairs.join(', ')})`;
+      }
+    }
+  }
+  return undefined;
+}
+
 export function toPutRequest(values: Record<string, string>): {
   name: string;
   req: PutCredentialRequest;
@@ -89,10 +106,7 @@ export function toPutRequest(values: Record<string, string>): {
   const secret = known
     ? Object.fromEntries(known.map((k) => [k, values[k] ?? '']))
     : parsePairs(values.secretPairs ?? '');
-  const hosts = (values.hosts ?? '')
-    .split(',')
-    .map((h) => h.trim())
-    .filter(Boolean);
+  const hosts = parseHosts(values.hosts ?? '');
   const consumer = values.consumer as CredentialConsumer;
   const req: PutCredentialRequest = { kind: values.kind, consumer, destination: { hosts }, secret };
   if (consumer === 'inference' && values.endpoint?.trim()) req.endpoint = values.endpoint.trim();

@@ -43,13 +43,15 @@ describe('CredentialsOverlay', () => {
       1000,
       lastFrame,
     );
-    // name, kind (default), consumer (default), hosts (skip), endpoint (skip), token
+    // name, kind (default), consumer (default), hosts (required — must type one), endpoint
+    // (skip), token
     await type(
       stdin,
       'mine',
       KEY.enter,
       KEY.enter,
       KEY.enter,
+      'api.anthropic.com',
       KEY.enter,
       KEY.enter,
       'sk-1',
@@ -59,7 +61,7 @@ describe('CredentialsOverlay', () => {
     expect(put).toHaveBeenCalledWith('mine', {
       kind: 'bearer',
       consumer: 'inference',
-      destination: { hosts: [] },
+      destination: { hosts: ['api.anthropic.com'] },
       secret: { token: 'sk-1' },
     }); // notsecret
     expect(put).toHaveBeenCalledTimes(1);
@@ -94,6 +96,7 @@ describe('CredentialsOverlay', () => {
       KEY.enter,
       KEY.enter,
       KEY.enter,
+      'api.anthropic.com',
       KEY.enter,
       KEY.enter,
       'x',
@@ -105,6 +108,9 @@ describe('CredentialsOverlay', () => {
       lastFrame,
     );
     expect(lastFrame()).toContain("kind 'bearer' requires secret fields: token");
+    // The Form instance survives the failed submit (same component identity, not remounted), so
+    // the name typed before submitting is still visible — the user isn't asked to retype it.
+    expect(lastFrame()).toContain('mine');
   });
 
   it('deletes after confirmation', async () => {
