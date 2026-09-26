@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { USAGE, main } from '../src/cli.js';
 import type { Io } from '../src/headless.js';
 import type { Runtime } from '../src/runtime.js';
@@ -38,6 +38,22 @@ describe('main', () => {
       2,
     );
     expect(o.errs.join('\n')).toContain('--option expects key=value');
+  });
+
+  it('accepts run --new, and rejects it together with --session', async () => {
+    const run = vi.fn(async (..._args: unknown[]) => 0);
+    const headless = await import('../src/headless.js');
+    const spy = vi.spyOn(headless, 'cmdRun').mockImplementation(run);
+    onTestFinished(() => spy.mockRestore());
+    expect(await main(['run', 'hi', '--new'], {}, io(), { buildRuntime: fakeBuild })).toBe(0);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0][2]).toMatchObject({ prompt: 'hi', session: undefined });
+    const o = io();
+    expect(
+      await main(['run', 'hi', '--new', '--session', 's1'], {}, o, { buildRuntime: fakeBuild }),
+    ).toBe(2);
+    expect(o.errs.join('\n')).toContain('--new and --session cannot be used together');
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
   it('passes flags to the runtime builder', async () => {

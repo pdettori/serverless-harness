@@ -7,7 +7,7 @@ export const USAGE = `usage:
   sh-tui [--setup] [--no-animation]            interactive terminal UI
   sh-tui login                                  log in with the GitHub device flow
   sh-tui doctor [--json]                        check the setup; one fix per failure
-  sh-tui run "prompt" [--session ID] [--option key=value ...] [--json]
+  sh-tui run "prompt" [--session ID | --new] [--option key=value ...] [--json]
 flags for every command: --control-plane-url URL  --harness-url URL`;
 
 export interface InteractiveOptions {
@@ -37,6 +37,7 @@ export async function main(
         'control-plane-url': { type: 'string' },
         'harness-url': { type: 'string' },
         session: { type: 'string' },
+        new: { type: 'boolean' },
         option: { type: 'string', multiple: true },
         json: { type: 'boolean' },
         setup: { type: 'boolean' },
@@ -70,6 +71,11 @@ export async function main(
       const prompt = rest.join(' ').trim();
       if (!prompt) {
         io.err(USAGE);
+        return 2;
+      }
+      // A new session is the default without --session; --new only says so explicitly.
+      if (values.new && values.session !== undefined) {
+        io.err(`--new and --session cannot be used together\n${USAGE}`);
         return 2;
       }
       let options: Record<string, string>;

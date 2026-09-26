@@ -44,8 +44,10 @@ keys in `config.json` under `keybinds`, e.g. `{ "session.new": "ctrl+x s" }`.
 ```bash
 sh-tui login                               # device-flow login, prints the code
 sh-tui doctor [--json]                     # six checks, one fix per failure; exit 1 on failure
-sh-tui run "prompt" [--session ID] [--option inferenceCredential=NAME] [--json]
+sh-tui run "prompt" [--session ID | --new] [--option inferenceCredential=NAME] [--json]
 ```
+
+`sh-tui run` continues the session `--session` names, or starts a new one (`--new`, the default).
 
 `sh-tui run` exit codes: `0` the turn completed, `1` it failed, `2` a usage or setup problem (bad
 flags, not logged in, no destination for the turn), `130` cancelled (Ctrl-C).
