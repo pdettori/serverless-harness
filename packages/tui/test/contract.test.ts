@@ -88,29 +88,64 @@ describe('control-plane contract (docs/api/openapi.yaml)', () => {
     const reply = () => json({ credentials: [], sessions: [], nextCursor: null });
     const { fetch, calls } = scriptedFetch(...Array.from({ length: 20 }, () => reply));
     const c = new ControlPlaneClient('http://cp', () => 't', fetch);
-    await c.healthz();
-    await c.readyz();
-    await c.startDeviceAuth();
-    await c.pollDeviceAuth('d');
-    await c.me();
-    await c.listSessions();
-    await c.createSession({});
-    await c.getSession('ID');
-    await c.deleteSession('ID');
-    await c.mintSessionToken('ID');
-    await c.listCredentials();
-    await c.putCredential('NAME', {
+    const invokedMethods = new Set<string>();
+    const handler: ProxyHandler<ControlPlaneClient> = {
+      get(target, prop) {
+        if (typeof prop === 'string') {
+          const desc = Object.getOwnPropertyDescriptor(ControlPlaneClient.prototype, prop);
+          if (
+            desc &&
+            typeof desc.value === 'function' &&
+            !desc.value.toString().includes('private')
+          ) {
+            invokedMethods.add(prop);
+          }
+        }
+        return (target as any)[prop];
+      },
+    };
+    const cProxy = new Proxy(c, handler);
+    await cProxy.healthz();
+    await cProxy.readyz();
+    await cProxy.startDeviceAuth();
+    await cProxy.pollDeviceAuth('d');
+    await cProxy.me();
+    await cProxy.listSessions();
+    await cProxy.createSession({});
+    await cProxy.getSession('ID');
+    await cProxy.deleteSession('ID');
+    await cProxy.mintSessionToken('ID');
+    await cProxy.listCredentials();
+    await cProxy.putCredential('NAME', {
       kind: 'bearer',
       consumer: 'inference',
       destination: { hosts: [] },
       secret: {},
     });
-    await c.deleteCredential('NAME');
+    await cProxy.deleteCredential('NAME');
     const seen = calls.map((k) => {
       const path = new URL(k.url).pathname.replace('/ID', '/{id}').replace('/NAME', '/{name}');
       return `${k.method.toLowerCase()} ${path}`;
     });
     expect(new Set(seen)).toEqual(new Set(USED.map((u) => `${u.method} ${u.path}`)));
+
+    // Assert that every public method on ControlPlaneClient is tested.
+    // Adding a new public method must make this test fail until it is called and added to USED.
+    const publicMethods = new Set(
+      Object.getOwnPropertyNames(ControlPlaneClient.prototype)
+        .filter((m) => m !== 'constructor')
+        .filter((m) => {
+          const desc = Object.getOwnPropertyDescriptor(ControlPlaneClient.prototype, m);
+          return desc && typeof desc.value === 'function';
+        })
+        .filter(
+          (m) =>
+            !ControlPlaneClient.prototype[m as keyof ControlPlaneClient]
+              .toString()
+              .includes('private'),
+        ),
+    );
+    expect(invokedMethods).toEqual(publicMethods);
   });
 });
 
