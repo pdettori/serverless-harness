@@ -1,4 +1,5 @@
 import { render } from 'ink-testing-library';
+import { stripVTControlCharacters } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import type { Block } from '../src/render/blocks.js';
 import { BlockView } from '../src/views/BlockView.js';
@@ -110,6 +111,60 @@ describe('BlockView', () => {
     expect(out).toContain('edit a.ts · +1 −1');
     expect(out).toContain('- let x');
     expect(out).toContain('+ const x');
+  });
+
+  it('truncates long diff lines to the render width', () => {
+    const out = view(
+      {
+        kind: 'tool',
+        id: 0,
+        toolId: 't',
+        name: 'edit',
+        args: { path: 'a.ts', edits: [{ oldText: 'let x', newText: 'x'.repeat(300) }] },
+        result: { isError: false, preview: 'ok' },
+      },
+      true,
+    );
+    for (const line of stripVTControlCharacters(out).split('\n')) {
+      expect(line.length).toBeLessThanOrEqual(80);
+    }
+  });
+
+  it('shows the error preview alongside the attempted diff for a failed edit', () => {
+    const out = view(
+      {
+        kind: 'tool',
+        id: 0,
+        toolId: 't',
+        name: 'edit',
+        args: { path: 'a.ts', edits: [{ oldText: 'let x', newText: 'const x' }] },
+        result: { isError: true, preview: 'oldText not found in a.ts' },
+      },
+      true,
+    );
+    expect(out).toContain('oldText not found in a.ts');
+    expect(out).toContain('- let x');
+    expect(out).toContain('+ const x');
+    expect(out.indexOf('oldText not found')).toBeLessThan(out.indexOf('- let x'));
+  });
+
+  it('shows pretty-printed args for an unknown tool only when expanded, followed by the preview', () => {
+    const b: Block = {
+      kind: 'tool',
+      id: 0,
+      toolId: 't',
+      name: 'mcp_call',
+      args: { query: 'x', limit: 5 },
+      result: { isError: false, preview: 'done' },
+    };
+    const collapsed = view(b, false);
+    expect(collapsed).not.toContain('"query": "x"');
+    expect(collapsed).not.toContain('done');
+
+    const expanded = view(b, true);
+    expect(expanded).toContain('"query": "x"');
+    expect(expanded).toContain('done');
+    expect(expanded.indexOf('"query": "x"')).toBeLessThan(expanded.indexOf('done'));
   });
 
   it('renders turn ends: usage, errors and cancellation', () => {

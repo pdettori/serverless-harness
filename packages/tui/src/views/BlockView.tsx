@@ -3,7 +3,7 @@ import type { JSX } from 'react';
 import type { Block } from '../render/blocks.js';
 import { buildEditDiff } from '../render/diff.js';
 import { renderMarkdown } from '../render/markdown.js';
-import { toolSummary, truncate } from '../render/tools.js';
+import { TOOL_RENDERERS, toolSummary, truncate } from '../render/tools.js';
 import { useTheme } from '../theme/context.js';
 import { formatUsage } from './format.js';
 import { Spinner } from './Spinner.js';
@@ -71,6 +71,33 @@ export function BlockView({ block, details, thinking, width }: Props) {
   }
 }
 
+// Shared by the tool preview and the generic-args JSON dump: render up to `shown.length` lines
+// (the caller has already applied the cap), each truncated to the render width, plus a trailing
+// "N more lines" note in the theme's muted colour when the caller found more than it kept.
+function CappedLines({
+  shown,
+  hiddenCount,
+  maxWidth,
+  lineColor,
+}: {
+  shown: string[];
+  hiddenCount: number;
+  maxWidth: number;
+  lineColor?: string;
+}) {
+  const { tokens: t } = useTheme();
+  return (
+    <Box flexDirection="column" marginLeft={2}>
+      {shown.map((l, i) => (
+        <Text key={i} color={lineColor}>
+          {truncate(l, maxWidth)}
+        </Text>
+      ))}
+      {hiddenCount > 0 ? <Text color={t.muted}>… {hiddenCount} more lines</Text> : null}
+    </Box>
+  );
+}
+
 function ToolBlock({
   block,
   details,
@@ -82,6 +109,7 @@ function ToolBlock({
 }) {
   const { tokens: t } = useTheme();
   const summary = truncate(toolSummary(block.name, block.args), Math.max(20, width - 2));
+  const maxLineWidth = Math.max(20, width - 4);
   const r = block.result;
   const head = r ? (
     <Text>
@@ -92,24 +120,27 @@ function ToolBlock({
     <Spinner label={summary} />
   );
 
-  let body: JSX.Element | null = null;
+  // Spec §5.5: an edit renders as a diff when expanded, regardless of outcome.
+  let diffBody: JSX.Element | null = null;
   if (details && block.name === 'edit') {
     const diff = buildEditDiff(block.args);
     if (diff) {
-      body = (
+      diffBody = (
         <Box flexDirection="column" marginLeft={2}>
           {diff.lines.map((l, i) =>
             l.kind === 'hunk' ? (
               <Text key={i} color={t.info}>
-                {l.text}
+                {truncate(l.text, maxLineWidth)}
               </Text>
             ) : (
               <Text
                 key={i}
                 color={l.kind === 'add' ? t.diffAdd : l.kind === 'remove' ? t.diffRemove : t.muted}
               >
-                {l.kind === 'add' ? '+ ' : l.kind === 'remove' ? '- ' : '  '}
-                {l.text}
+                {truncate(
+                  (l.kind === 'add' ? '+ ' : l.kind === 'remove' ? '- ' : '  ') + l.text,
+                  maxLineWidth,
+                )}
               </Text>
             ),
           )}
@@ -117,25 +148,53 @@ function ToolBlock({
       );
     }
   }
-  if (!body && r && (details || r.isError)) {
+
+  // Spec §5.5 "anything else" row: a tool with no dedicated renderer shows its args as
+  // pretty-printed JSON when expanded, ahead of the preview.
+  let argsBody: JSX.Element | null = null;
+  if (details && !TOOL_RENDERERS[block.name]) {
+    let json: string | undefined;
+    try {
+      json = JSON.stringify(block.args, null, 2);
+    } catch {
+      json = undefined;
+    }
+    if (json !== undefined) {
+      const lines = json.split('\n');
+      const shown = lines.slice(0, PREVIEW_LINES);
+      argsBody = (
+        <CappedLines
+          shown={shown}
+          hiddenCount={lines.length - shown.length}
+          maxWidth={maxLineWidth}
+          lineColor={t.muted}
+        />
+      );
+    }
+  }
+
+  // An error always shows its preview, even alongside a diff; a settled edit that isn't an error
+  // shows the diff instead of the raw preview text.
+  let previewBody: JSX.Element | null = null;
+  if (r && (details || r.isError) && (!diffBody || r.isError)) {
     const lines = r.preview.split('\n');
     const shown = details ? lines.slice(0, PREVIEW_LINES) : lines.slice(0, 1);
-    const hidden = details ? lines.length - shown.length : 0;
-    body = (
-      <Box flexDirection="column" marginLeft={2}>
-        {shown.map((l, i) => (
-          <Text key={i} color={r.isError ? t.error : t.muted}>
-            {truncate(l, Math.max(20, width - 4))}
-          </Text>
-        ))}
-        {hidden > 0 ? <Text color={t.muted}>… {hidden} more lines</Text> : null}
-      </Box>
+    previewBody = (
+      <CappedLines
+        shown={shown}
+        hiddenCount={details ? lines.length - shown.length : 0}
+        maxWidth={maxLineWidth}
+        lineColor={r.isError ? t.error : t.muted}
+      />
     );
   }
+
   return (
     <Box flexDirection="column">
       {head}
-      {body}
+      {argsBody}
+      {previewBody}
+      {diffBody}
     </Box>
   );
 }
