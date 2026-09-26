@@ -63,7 +63,7 @@ export class ActiveSession {
   submit(prompt: string): void {
     this.queue.push(prompt);
     this.emit({ kind: 'queue', size: this.queue.length });
-    void this.drain();
+    void this.drain().catch(() => undefined);
   }
 
   cancel(): void {
@@ -81,7 +81,13 @@ export class ActiveSession {
   }
 
   private emit(e: SessionEvent): void {
-    for (const l of this.listeners) l(e);
+    for (const l of this.listeners) {
+      try {
+        l(e);
+      } catch {
+        // Ignore listener errors; they should not break the session
+      }
+    }
   }
 
   private async drain(): Promise<void> {
@@ -108,10 +114,18 @@ export class ActiveSession {
     }
   }
 
+  private transcriptSafe(fn: () => void): void {
+    try {
+      fn();
+    } catch {
+      // Ignore errors from transcript store; it's a display cache only
+    }
+  }
+
   private async runTurn(prompt: string): Promise<void> {
     const controller = new AbortController();
     this.controller = controller;
-    this.deps.transcripts?.appendPrompt(this.sessionId, prompt);
+    this.transcriptSafe(() => this.deps.transcripts?.appendPrompt(this.sessionId, prompt));
     this.emit({ kind: 'turn-start', prompt });
     let reminted = false;
     let streamed = false;
@@ -127,7 +141,7 @@ export class ActiveSession {
           });
           for await (const frame of frames) {
             streamed = true;
-            this.deps.transcripts?.appendFrame(this.sessionId, frame);
+            this.transcriptSafe(() => this.deps.transcripts?.appendFrame(this.sessionId, frame));
             this.emit({ kind: 'frame', frame });
             if (isTerminal(frame)) {
               this.emit(
@@ -142,6 +156,12 @@ export class ActiveSession {
               return;
             }
           }
+          // Stream ended without a terminal frame; emit error
+          this.emit({
+            kind: 'turn-end',
+            outcome: 'error',
+            error: new Error('the harness ended the turn without a result'),
+          });
           return;
         } catch (err) {
           if (controller.signal.aborted || err instanceof TurnCancelledError)
@@ -168,9 +188,14 @@ export class ActiveSession {
         }
       }
     } catch (err) {
-      this.deps.transcripts?.flush(this.sessionId);
-      if (err instanceof TurnCancelledError) this.emit({ kind: 'turn-end', outcome: 'cancelled' });
-      else this.emit({ kind: 'turn-end', outcome: 'error', error: err as Error });
+      this.transcriptSafe(() => this.deps.transcripts?.flush(this.sessionId));
+      if (controller.signal.aborted) {
+        this.emit({ kind: 'turn-end', outcome: 'cancelled' });
+      } else if (err instanceof TurnCancelledError) {
+        this.emit({ kind: 'turn-end', outcome: 'cancelled' });
+      } else {
+        this.emit({ kind: 'turn-end', outcome: 'error', error: err as Error });
+      }
     } finally {
       if (this.controller === controller) this.controller = undefined;
     }

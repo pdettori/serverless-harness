@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ApiError } from '../src/api/errors.js';
+import type { TurnFrame } from '../src/api/frames.js';
 import {
   HarnessUntrustedError,
   SessionManager,
@@ -246,5 +247,97 @@ describe('SessionManager', () => {
     const { manager } = setup([], { transcripts });
     expect(await manager.remove('s1')).toBe('deleted');
     expect(transcripts.has('s1')).toBe(false);
+  });
+
+  it('a control-plane mint failure during remint ends the turn as error', async () => {
+    const cpError = new ApiError('control-plane', 401, 'token_expired');
+    const { session, cp, ends } = await started([{ error: harnessError(401, 'token_invalid') }]);
+    cp.mintSessionToken = async () => {
+      throw cpError;
+    };
+    session.submit('p');
+    await session.idle();
+    expect(ends()[0]).toEqual({ kind: 'turn-end', outcome: 'error', error: cpError });
+  });
+
+  it('session_mismatch twice throws the ApiError, not HarnessUntrustedError', async () => {
+    const mismatchError = harnessError(400, 'session_mismatch');
+    const { session, ends } = await started([{ error: mismatchError }, { error: mismatchError }]);
+    session.submit('p');
+    await session.idle();
+    const end = ends()[0] as { outcome: string; error?: Error };
+    expect(end.outcome).toBe('error');
+    expect(end.error).toBe(mismatchError);
+  });
+
+  it('a 503 with Retry-After that arrives after a frame has flowed is not retried', async () => {
+    const { session, slept, ends } = await started([
+      { frames: [{ type: 'text', delta: 'x' }], error: harnessError(503, 'saturated', 2) },
+    ]);
+    session.submit('p');
+    await session.idle();
+    expect(slept).toEqual([]); // No sleep because streamed=true blocks retry
+    expect(ends()[0]?.outcome).toBe('error');
+    expect(ends()[0]?.error).toBeDefined();
+  });
+
+  it('with a real TranscriptStore, a truncated stream leaves the pending text delta', async () => {
+    const truncated = new ApiError(
+      'harness',
+      0,
+      'stream_truncated',
+      'the harness closed the stream',
+    );
+    const transcripts = new TranscriptStore(mkdtempSync(join(tmpdir(), 'sh-tui-sm-')), {
+      subject: 'github:1',
+      controlPlaneUrl: 'http://cp',
+    });
+    const { session } = await started(
+      [{ frames: [{ type: 'text', delta: 'part' }], error: truncated }],
+      { transcripts },
+    );
+    session.submit('a');
+    await session.idle();
+    const t = transcripts.load('s1')!;
+    // Entries include prompt and the buffered text frame (flushed on error)
+    expect(t.entries.map((e) => e.kind)).toEqual(['prompt', 'frame']);
+    // Frame entry should be the text delta
+    const textFrameEntry = t.entries[1] as { kind: 'frame'; frame: TurnFrame };
+    expect(textFrameEntry.frame.type).toBe('text');
+    expect((textFrameEntry.frame as { type: string; delta: string }).delta).toBe('part');
+  });
+
+  it('a listener that throws on every event does not break the session', async () => {
+    const { session, ends } = await started([{ frames: [doneFrame()] }, { frames: [doneFrame()] }]);
+    const throwingListener = () => {
+      throw new Error('listener crash');
+    };
+    const goodEvents: SessionEvent[] = [];
+    const goodListener = (e: SessionEvent) => {
+      goodEvents.push(e);
+    };
+    session.on(throwingListener);
+    session.on(goodListener);
+    session.submit('a');
+    session.submit('b');
+    await session.idle();
+    // Both turns should complete with exactly one turn-end each, despite throwing listener
+    const turnEnds = goodEvents.filter((e) => e.kind === 'turn-end');
+    expect(turnEnds).toHaveLength(2);
+    expect(turnEnds.map((e) => (e as { outcome: string }).outcome)).toEqual(['done', 'done']);
+  });
+
+  it('a TranscriptStore whose appendPrompt throws does not crash the turn', async () => {
+    const badTranscripts = {
+      appendPrompt: () => {
+        throw new Error('disk full');
+      },
+    } as unknown as TranscriptStore;
+    const { session, ends } = await started([{ frames: [doneFrame()] }], {
+      transcripts: badTranscripts,
+    });
+    session.submit('p');
+    await session.idle();
+    expect(ends()).toEqual([{ kind: 'turn-end', outcome: 'done' }]);
   });
 });
