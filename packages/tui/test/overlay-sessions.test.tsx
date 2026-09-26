@@ -58,6 +58,16 @@ describe('sessionTitle', () => {
   it('falls back to creation time and a short id', () => {
     expect(sessionTitle(summary('bbbbbbbb-2'))).toBe('2026-09-25 09:30 · bbbbbbbb');
   });
+
+  it('strips escape sequences from a title derived from a prompt, and from the id', () => {
+    const transcripts = new TranscriptStore(mkdtempSync(join(tmpdir(), 'sh-tui-ov-')), {
+      subject: 'github:1',
+      controlPlaneUrl: 'http://cp',
+    });
+    transcripts.appendPrompt('s1', 'fix \u001b]2;pwned\u0007the \u001b[8mbug');
+    expect(sessionTitle(summary('s1'), transcripts)).toBe('fix the bug');
+    expect(sessionTitle(summary('\u001b[8mabcdefgh'))).toBe('2026-09-25 09:30 · abcdefgh');
+  });
 });
 
 describe('SessionsOverlay', () => {

@@ -2,6 +2,7 @@ import { Box, Text } from 'ink';
 import { useEffect, useMemo, useState } from 'react';
 import type { ControlPlaneApi, SessionSummary } from '../../api/types.js';
 import { describeError } from '../../core/messages.js';
+import { sanitizeRemote } from '../../core/sanitize.js';
 import type { TranscriptStore } from '../../core/transcripts.js';
 import { useTheme } from '../../theme/context.js';
 import { Confirm } from '../Confirm.js';
@@ -10,11 +11,12 @@ import { formatRelative } from '../format.js';
 import { SelectList } from '../SelectList.js';
 import { Spinner } from '../Spinner.js';
 
+/** Terminal-safe: a local title is derived from a prompt, and the id is the server's. */
 export function sessionTitle(s: SessionSummary, transcripts?: TranscriptStore): string {
   const local = transcripts?.load(s.sessionId)?.title;
-  if (local) return local;
+  if (local) return sanitizeRemote(local);
   const when = new Date(s.createdAt).toISOString().slice(0, 16).replace('T', ' ');
-  return `${when} · ${s.sessionId.slice(0, 8)}`;
+  return `${when} · ${sanitizeRemote(s.sessionId).slice(0, 8)}`;
 }
 
 interface Props {

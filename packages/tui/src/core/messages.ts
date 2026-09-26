@@ -1,7 +1,15 @@
 import { ApiError, classify } from '../api/errors.js';
+import { sanitizeRemote } from './sanitize.js';
 
-/** The one sentence a user sees for an error, headless or in the TUI (spec §8.1). */
+/**
+ * The one sentence a user sees for an error, headless or in the TUI (spec §8.1). Error messages
+ * carry server text, so the result is always terminal-safe.
+ */
 export function describeError(err: unknown): string {
+  return sanitizeRemote(describe(err));
+}
+
+function describe(err: unknown): string {
   if (err instanceof ApiError) {
     const action = classify(err);
     switch (action.kind) {

@@ -21,6 +21,18 @@ describe('CredentialsOverlay', () => {
     expect(lastFrame()).toContain('bearer · inference · https://anthropic.example/v1');
   });
 
+  it('shows server credential metadata with its escape sequences stripped', async () => {
+    const cp = fakeControlPlane({
+      listCredentials: async () => [
+        credential('evil\u001b]52;c;c2VjcmV0\u0007', { endpoint: 'https://x\u001b[8m.example' }),
+      ],
+    });
+    const { lastFrame } = render(withTheme(<CredentialsOverlay cp={cp} onCancel={vi.fn()} />));
+    await waitFor(() => (lastFrame() ?? '').includes('evil'), 1000, lastFrame);
+    expect(lastFrame()).not.toMatch(/\u001b\]|\u001b\[8m|\u0007|c2VjcmV0/);
+    expect(lastFrame()).toContain('https://x.example');
+  });
+
   it('adds a credential and returns to the list', async () => {
     const put = vi.fn(async () => undefined);
     const onChanged = vi.fn();

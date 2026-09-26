@@ -221,6 +221,17 @@ describe('App', () => {
     expect(loadAuth(rt.paths, 'http://cp2')?.apiToken).toBe('fresh');
   });
 
+  it('shows the server-supplied display name in the status line terminal-safe', async () => {
+    const base = testRuntime();
+    const rt = testRuntime({
+      auth: { ...base.auth!, displayName: 'Ada\u001b]52;c;c2VjcmV0\u0007\u001b[8mX' },
+    });
+    const { frame, all, ready } = mount(rt);
+    await ready();
+    expect(frame()).toContain('Ada');
+    expect(all()).not.toMatch(/\u001b\]|\u001b\[8m|\u0007|c2VjcmV0/);
+  });
+
   it('opens login when the cached login is missing', async () => {
     const { frame, until } = mount(testRuntime({ auth: null }));
     await until(() => frame().includes('Log in with GitHub'));

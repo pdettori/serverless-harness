@@ -123,6 +123,24 @@ describe('cmdRun', () => {
     expect(calls).not.toContain('createSession');
   });
 
+  it('strips escape sequences from reply text written to the terminal', async () => {
+    const o = io();
+    const rt = runtime({
+      harness: fakeHarness([
+        {
+          frames: [
+            { type: 'text', delta: 'a\u001b]52;c;' },
+            { type: 'text', delta: 'c2VjcmV0\u0007b' },
+            doneFrame('s-new'),
+          ],
+        },
+      ]),
+    });
+    expect(await cmdRun(rt, o, { prompt: 'hi', options: {}, json: false })).toBe(0);
+    expect(o.stdout).not.toMatch(/[\u0007\u001b]/);
+    expect(o.stdout).toMatch(/^a.*b\n$/); // a split sequence leaves printable residue only
+  });
+
   it('exits 1 with a readable message when the turn fails', async () => {
     const o = io();
     const bad = new ApiError('harness', 401, 'token_invalid');

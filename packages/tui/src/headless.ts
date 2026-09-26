@@ -1,6 +1,7 @@
 import { LoginCancelledError, apiTokenValid, deviceLogin, toCachedAuth } from './core/auth.js';
 import { formatDiagnostics, runDiagnostics } from './core/diagnostics.js';
 import { describeError } from './core/messages.js';
+import { sanitizeRemote } from './core/sanitize.js';
 import { SessionManager, type ActiveSession } from './core/session-manager.js';
 import { SESSION_OPTION_FIELDS, resolveSessionOptions } from './core/session-options.js';
 import { setAuth, type Runtime } from './runtime.js';
@@ -118,7 +119,8 @@ export async function cmdRun(rt: Runtime, io: Io, opts: RunOptions): Promise<num
   session.on((e) => {
     if (e.kind === 'frame') {
       if (opts.json) io.out(JSON.stringify(e.frame) + '\n');
-      else if (e.frame.type === 'text') io.out(e.frame.delta);
+      // Plain text goes straight to a terminal; JSON output escapes control characters itself.
+      else if (e.frame.type === 'text') io.out(sanitizeRemote(e.frame.delta));
     } else if (e.kind === 'retrying') {
       io.err(`the harness has no capacity — retrying in ${e.seconds}s`);
     } else if (e.kind === 'turn-end') {

@@ -2,6 +2,7 @@ import { Box, Text } from 'ink';
 import { useEffect, useMemo, useState } from 'react';
 import type { ControlPlaneApi, CredentialDescriptor } from '../../api/types.js';
 import { describeError } from '../../core/messages.js';
+import { sanitizeRemote } from '../../core/sanitize.js';
 import { useTheme } from '../../theme/context.js';
 import { Confirm } from '../Confirm.js';
 import { Form } from '../Form.js';
@@ -110,8 +111,9 @@ export function CredentialsOverlay({
         emptyText="no credentials yet — press a to add one"
         items={creds.map((c) => ({
           key: c.name,
-          label: c.name,
-          detail: [c.kind, c.consumer, c.endpoint].filter(Boolean).join(' · '),
+          // Credential metadata is the server's: names, kinds and endpoints are shown terminal-safe.
+          label: sanitizeRemote(c.name),
+          detail: sanitizeRemote([c.kind, c.consumer, c.endpoint].filter(Boolean).join(' · ')),
           value: c.name,
         }))}
         onSelect={() => undefined}

@@ -1,5 +1,6 @@
 import { Box, Text } from 'ink';
 import type { JSX } from 'react';
+import { sanitizeRemote as safe } from '../core/sanitize.js';
 import type { Block } from '../render/blocks.js';
 import { buildEditDiff } from '../render/diff.js';
 import { renderMarkdown } from '../render/markdown.js';
@@ -17,6 +18,8 @@ interface Props {
   width: number;
 }
 
+// Every string shown here came from the server (frames) or a transcript of them, so each passes
+// through safe() before it reaches the terminal; the theme's colours are applied on top.
 export function BlockView({ block, details, thinking, width }: Props) {
   const theme = useTheme();
   const t = theme.tokens;
@@ -27,7 +30,7 @@ export function BlockView({ block, details, thinking, width }: Props) {
           <Text color={t.primary} bold>
             ›{' '}
           </Text>
-          <Text color={t.text}>{block.text}</Text>
+          <Text color={t.text}>{safe(block.text)}</Text>
           {block.queued ? <Text color={t.muted}> (queued)</Text> : null}
         </Box>
       );
@@ -36,12 +39,12 @@ export function BlockView({ block, details, thinking, width }: Props) {
         <Box flexDirection="column">
           {thinking && block.thinking ? (
             <Text color={t.muted} italic>
-              {block.thinking}
+              {safe(block.thinking)}
             </Text>
           ) : null}
           {block.text ? (
             <Text color={t.text}>
-              {block.final ? renderMarkdown(block.text, theme, width) : block.text}
+              {block.final ? renderMarkdown(block.text, theme, width) : safe(block.text)}
             </Text>
           ) : null}
         </Box>
@@ -50,14 +53,17 @@ export function BlockView({ block, details, thinking, width }: Props) {
       return <ToolBlock block={block} details={details} width={width} />;
     case 'turn-end':
       if (block.outcome === 'error')
-        return <Text color={t.error}>✗ {block.message ?? 'the turn failed'}</Text>;
+        return <Text color={t.error}>✗ {safe(block.message ?? 'the turn failed')}</Text>;
       if (block.outcome === 'cancelled') return <Text color={t.muted}>■ cancelled</Text>;
       return block.usage ? <Text color={t.muted}>· {formatUsage(block.usage)}</Text> : null;
     case 'event':
       return (
         <Text color={t.muted}>
-          • {block.label}{' '}
-          {truncate(JSON.stringify(block.data) ?? '', Math.max(20, width - block.label.length - 4))}
+          • {safe(block.label)}{' '}
+          {truncate(
+            safe(JSON.stringify(block.data) ?? ''),
+            Math.max(20, width - block.label.length - 4),
+          )}
         </Text>
       );
     case 'notice':
@@ -65,7 +71,7 @@ export function BlockView({ block, details, thinking, width }: Props) {
         <Text
           color={block.tone === 'error' ? t.error : block.tone === 'warning' ? t.warning : t.info}
         >
-          {block.text}
+          {safe(block.text)}
         </Text>
       );
   }
@@ -90,7 +96,7 @@ function CappedLines({
     <Box flexDirection="column" marginLeft={2}>
       {shown.map((l, i) => (
         <Text key={i} color={lineColor}>
-          {truncate(l, maxWidth)}
+          {truncate(safe(l), maxWidth)}
         </Text>
       ))}
       {hiddenCount > 0 ? <Text color={t.muted}>… {hiddenCount} more lines</Text> : null}
@@ -108,7 +114,7 @@ function ToolBlock({
   width: number;
 }) {
   const { tokens: t } = useTheme();
-  const summary = truncate(toolSummary(block.name, block.args), Math.max(20, width - 2));
+  const summary = truncate(safe(toolSummary(block.name, block.args)), Math.max(20, width - 2));
   const maxLineWidth = Math.max(20, width - 4);
   const r = block.result;
   const head = r ? (
@@ -130,7 +136,7 @@ function ToolBlock({
           {diff.lines.map((l, i) =>
             l.kind === 'hunk' ? (
               <Text key={i} color={t.info}>
-                {truncate(l.text, maxLineWidth)}
+                {truncate(safe(l.text), maxLineWidth)}
               </Text>
             ) : (
               <Text
@@ -138,7 +144,7 @@ function ToolBlock({
                 color={l.kind === 'add' ? t.diffAdd : l.kind === 'remove' ? t.diffRemove : t.muted}
               >
                 {truncate(
-                  (l.kind === 'add' ? '+ ' : l.kind === 'remove' ? '- ' : '  ') + l.text,
+                  (l.kind === 'add' ? '+ ' : l.kind === 'remove' ? '- ' : '  ') + safe(l.text),
                   maxLineWidth,
                 )}
               </Text>

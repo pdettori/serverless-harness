@@ -2,6 +2,7 @@ import chalk from 'chalk';
 import { Marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
 import { stripVTControlCharacters } from 'node:util';
+import { sanitizeRemote } from '../core/sanitize.js';
 import { toChalk, type Theme } from '../theme/tokens.js';
 
 // Spec §5.6: a finished reply is rendered once as Markdown; the streaming one stays plain text.
@@ -53,6 +54,10 @@ function instance(theme: Theme, width: number): Marked {
 }
 
 export function renderMarkdown(text: string, theme: Theme, width: number): string {
-  const out = (instance(theme, Math.max(20, width)).parse(text) as string).replace(/\n+$/, '');
+  // The input is the model's reply: its own escape sequences are stripped before the theme's.
+  const out = (instance(theme, Math.max(20, width)).parse(sanitizeRemote(text)) as string).replace(
+    /\n+$/,
+    '',
+  );
   return theme.noColor ? stripVTControlCharacters(out) : out;
 }

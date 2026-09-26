@@ -10,6 +10,55 @@ const view = (block: Block, details = false, thinking = true) =>
     withTheme(<BlockView block={block} details={details} thinking={thinking} width={80} />),
   ).lastFrame() ?? '';
 
+// Server text that tries to drive the terminal: an OSC 52 clipboard write, an OSC 2 window title,
+// an OSC 8 link, and SGR 8 (hidden text).
+const OSC52 = '\u001b]52;c;c2VjcmV0\u0007';
+const HOSTILE = `${OSC52}\u001b]2;pwned\u001b\\\u001b]8;;https://evil.example\u0007click\u001b]8;;\u0007 \u001b[8mhidden\u001b[0m`;
+// JSON-rendered data (event data, generic tool args) arrives escaped by JSON.stringify, so its
+// sequences are printable `\u001b` text: inert, but the payload text is still visible.
+const assertInert = (frame: string, { json = false } = {}) => {
+  expect(frame).not.toContain('\u001b]'); // no OSC at all
+  expect(frame).not.toContain('\u001b[8m');
+  expect(frame).not.toContain('\u0007');
+  if (json) return;
+  expect(frame).not.toContain('c2VjcmV0'); // the clipboard payload went with its sequence
+  expect(frame).not.toContain('evil.example');
+};
+
+describe('BlockView with hostile server text', () => {
+  const tool: Block = {
+    kind: 'tool',
+    id: 0,
+    toolId: 't',
+    name: 'bash',
+    args: { command: `ls ${OSC52}` },
+    result: { isError: true, preview: HOSTILE },
+  };
+
+  it('strips escape sequences from a tool preview and its args', () => {
+    const frame = view(tool, true);
+    assertInert(frame);
+    expect(frame).toContain('click hidden'); // the visible text survives
+    expect(frame).toContain('$ ls');
+    assertInert(view({ ...tool, name: 'custom', args: { x: HOSTILE } }, true), { json: true });
+  });
+
+  it('strips escape sequences from streaming and finished reply text and thinking', () => {
+    for (const final of [false, true]) {
+      const frame = view({ kind: 'assistant', id: 0, text: HOSTILE, thinking: HOSTILE, final });
+      assertInert(frame);
+      expect(frame).toContain('hidden');
+    }
+  });
+
+  it('strips escape sequences from event data and error messages', () => {
+    assertInert(view({ kind: 'event', id: 0, label: HOSTILE, data: { note: HOSTILE } }), {
+      json: true,
+    });
+    assertInert(view({ kind: 'turn-end', id: 0, outcome: 'error', message: HOSTILE }));
+  });
+});
+
 describe('BlockView', () => {
   it('shows a user prompt, marking a queued one', () => {
     expect(view({ kind: 'user', id: 0, text: 'fix it' })).toContain('› fix it');

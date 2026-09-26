@@ -11,6 +11,7 @@ import { CommandRegistry } from './commands/registry.js';
 import type { CachedAuth, TuiConfig } from './config.js';
 import { apiTokenValid, loginExpiryMinutes } from './core/auth.js';
 import { describeError } from './core/messages.js';
+import { sanitizeRemote } from './core/sanitize.js';
 import {
   DOUBLE_ESC_MS,
   HarnessUntrustedError,
@@ -472,16 +473,22 @@ export function App({ rt, opts, env, os, write }: AppProps) {
   const t = theme.tokens;
   const expiresIn = loginExpiryMinutes(rt.auth, now);
   const session = attached.session;
-  const fields: StatusField[] = [
-    ...(rt.auth ? [{ key: 'subject' as const, text: rt.auth.displayName ?? rt.auth.subject }] : []),
-    { key: 'title', text: title ?? (session ? session.sessionId.slice(0, 8) : 'no session') },
-    { key: 'turn', text: describeTurn(view.turn, now) + (leader ? ' · ctrl+x …' : '') },
-    ...(view.usage.total > 0 ? [{ key: 'usage' as const, text: formatUsage(view.usage) }] : []),
-    ...(expiresIn ? [{ key: 'warning' as const, text: `login expires in ${expiresIn}m` }] : []),
-  ];
+  // The subject's name, the title (from a prompt or transcript) and a toast (often an error's
+  // server text, or the login's display name) are all shown terminal-safe.
+  const fields = (
+    [
+      ...(rt.auth
+        ? [{ key: 'subject' as const, text: rt.auth.displayName ?? rt.auth.subject }]
+        : []),
+      { key: 'title', text: title ?? (session ? session.sessionId.slice(0, 8) : 'no session') },
+      { key: 'turn', text: describeTurn(view.turn, now) + (leader ? ' · ctrl+x …' : '') },
+      ...(view.usage.total > 0 ? [{ key: 'usage' as const, text: formatUsage(view.usage) }] : []),
+      ...(expiresIn ? [{ key: 'warning' as const, text: `login expires in ${expiresIn}m` }] : []),
+    ] satisfies StatusField[]
+  ).map((f): StatusField => ({ ...f, text: sanitizeRemote(f.text) }));
   const toastNode = toast ? (
     <Text color={toast.tone === 'error' ? t.error : toast.tone === 'warning' ? t.warning : t.info}>
-      {toast.text}
+      {sanitizeRemote(toast.text)}
     </Text>
   ) : null;
 
