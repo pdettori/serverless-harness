@@ -1,4 +1,4 @@
-import { apiTokenValid, deviceLogin, toCachedAuth } from './core/auth.js';
+import { LoginCancelledError, apiTokenValid, deviceLogin, toCachedAuth } from './core/auth.js';
 import { formatDiagnostics, runDiagnostics } from './core/diagnostics.js';
 import { describeError } from './core/messages.js';
 import { SessionManager, type ActiveSession } from './core/session-manager.js';
@@ -34,6 +34,7 @@ export async function cmdLogin(rt: Runtime, io: Io, signal?: AbortSignal): Promi
     io.err(`logged in as ${login.displayName ?? login.subject}`);
     return 0;
   } catch (err) {
+    if (err instanceof LoginCancelledError) return 130;
     io.err(`login failed: ${describeError(err)}`);
     return 1;
   }
@@ -104,6 +105,12 @@ export async function cmdRun(rt: Runtime, io: Io, opts: RunOptions): Promise<num
 
   io.err(`session ${session.sessionId}`);
   if (opts.json) io.out(JSON.stringify({ type: 'session', sessionId: session.sessionId }) + '\n');
+
+  // A listener added to an already-aborted signal never fires, so a cancel that lands during
+  // setup (resolveSessionOptions / create / resume, all above) would otherwise be missed and the
+  // turn would run anyway. Check explicitly before submitting; the session itself stays intact
+  // so the user can resume it.
+  if (opts.signal?.aborted) return 130;
 
   type Outcome = 'done' | 'error' | 'cancelled';
   let outcome: Outcome = 'done';

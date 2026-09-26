@@ -138,6 +138,25 @@ describe('cmdRun', () => {
     setTimeout(() => ac.abort(), 10);
     expect(await p).toBe(130);
   });
+
+  it('exits 130 without running a turn when cancelled during session setup', async () => {
+    const ac = new AbortController();
+    const harness = fakeHarness([{ frames: [doneFrame('s-new')] }]);
+    const rt = runtime({
+      cp: fakeControlPlane({
+        listCredentials: async () => [credential('anthropic')],
+        createSession: async () => {
+          ac.abort();
+          return { sessionId: 's-new', token: 'st', expiresAt: 4_000_000_000 };
+        },
+      }),
+      harness,
+    });
+    expect(
+      await cmdRun(rt, io(), { prompt: 'hi', options: {}, json: false, signal: ac.signal }),
+    ).toBe(130);
+    expect(harness.turns).toEqual([]);
+  });
 });
 
 describe('cmdDoctor', () => {
@@ -176,5 +195,18 @@ describe('cmdLogin', () => {
 
   it('exits 2 without a control-plane URL', async () => {
     expect(await cmdLogin(runtime({ cp: undefined, endpoints: {} }), io())).toBe(2);
+  });
+
+  it('exits 130 quietly when cancelled during the device-flow poll', async () => {
+    const ac = new AbortController();
+    const o = io();
+    const rt = runtime({
+      auth: null,
+      sleep: async () => {
+        ac.abort();
+      },
+    });
+    expect(await cmdLogin(rt, o, ac.signal)).toBe(130);
+    expect(o.stderr.join('\n')).not.toContain('login failed');
   });
 });
