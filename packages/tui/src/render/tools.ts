@@ -46,5 +46,9 @@ export function toolSummary(name: string, args: unknown): string {
   const record = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
   const renderer = TOOL_RENDERERS[name];
   if (renderer) return renderer.summary(record);
-  return truncate(`${name}(${JSON.stringify(args ?? {})})`, 80);
+  try {
+    return truncate(`${name}(${JSON.stringify(args ?? {})})`, 80);
+  } catch {
+    return truncate(`${name}(…)`, 80);
+  }
 }

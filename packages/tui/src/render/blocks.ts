@@ -152,6 +152,21 @@ export function addNotice(
   text: string,
   tone: 'info' | 'warning' | 'error' = 'info',
 ): BlockState {
+  const tail = tailStart(s.blocks);
+  const openAssistantIdx = tail - 1;
+  const openAssistant = s.blocks[openAssistantIdx];
+
+  if (openAssistant?.kind === 'assistant' && !openAssistant.final) {
+    // Insert notice above the open assistant, keeping it open
+    const notice: Block = { kind: 'notice', id: s.nextId, text, tone };
+    const newBlocks = [
+      ...s.blocks.slice(0, openAssistantIdx),
+      notice,
+      ...s.blocks.slice(openAssistantIdx),
+    ];
+    return { blocks: newBlocks, nextId: s.nextId + 1 };
+  }
+
   return push(finalizeOpen(s), { kind: 'notice', text, tone });
 }
 
@@ -166,7 +181,14 @@ export function endTurn(
 export function fromTranscript(t: Transcript): BlockState {
   let s = EMPTY_BLOCKS;
   for (const e of t.entries) s = e.kind === 'prompt' ? addUser(s, e.text) : reduceFrame(s, e.frame);
-  return finalizeOpen(s);
+  s = finalizeOpen(s);
+  // Mark any tool block without a result as interrupted
+  const blocks = s.blocks.map((b) =>
+    b.kind === 'tool' && !b.result
+      ? { ...b, result: { isError: true, preview: 'interrupted' } }
+      : b,
+  );
+  return { ...s, blocks };
 }
 
 export function isSettled(b: Block): boolean {

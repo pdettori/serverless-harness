@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { TurnFrame } from '../src/api/frames.js';
 import {
   EMPTY_BLOCKS,
+  addNotice,
   addUser,
   endTurn,
   fromTranscript,
@@ -150,5 +151,35 @@ describe('fromTranscript', () => {
     });
     expect(s.blocks.map((b) => b.kind)).toEqual(['user', 'assistant', 'turn-end']);
     expect(splitStatic(s.blocks).live).toEqual([]);
+  });
+
+  it('gives tool blocks without result the interrupted result', () => {
+    const s = fromTranscript({
+      sessionId: 's',
+      createdAt: 0,
+      entries: [
+        { kind: 'prompt', text: 'go' },
+        { kind: 'frame', frame: { type: 'tool_use', id: 't1', name: 'bash', args: {} } },
+      ],
+      prompts: ['go'],
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, turns: 1 },
+    });
+    expect(s.blocks[1]).toMatchObject({
+      kind: 'tool',
+      result: { isError: true, preview: 'interrupted' },
+    });
+    expect(splitStatic(s.blocks).live).toEqual([]);
+  });
+});
+
+describe('addNotice', () => {
+  it('does not finalize the open reply', () => {
+    let s = apply(EMPTY_BLOCKS, { type: 'text', delta: 'wor' });
+    s = addNotice(s, 'note', 'info');
+    s = apply(s, { type: 'text', delta: 'king' });
+    const blocks = s.blocks;
+    const assistants = blocks.filter((b) => b.kind === 'assistant');
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toMatchObject({ text: 'working', final: false });
   });
 });

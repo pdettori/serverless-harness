@@ -25,4 +25,12 @@ describe('toolSummary', () => {
   it('tolerates non-object arguments', () => {
     expect(toolSummary('bash', 'oops')).toBe('$ ');
   });
+
+  it('handles circular objects without throwing', () => {
+    const circ: any = { a: 1 };
+    circ.self = circ;
+    expect(() => toolSummary('custom', circ)).not.toThrow();
+    const result = toolSummary('custom', circ);
+    expect(result).toBe('custom(…)');
+  });
 });
