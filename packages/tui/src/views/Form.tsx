@@ -1,5 +1,5 @@
 import { Box, Text, useInput } from 'ink';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useTheme } from '../theme/context.js';
 
 export interface FormField {
@@ -30,46 +30,78 @@ export function Form({ title, fields, onSubmit, onCancel, validate, error }: Pro
   const [focus, setFocus] = useState(0);
   const [problem, setProblem] = useState<string>();
 
-  const shown = fields.filter((f) => !f.visible || f.visible(values));
-  const at = Math.min(focus, shown.length - 1);
-  const field = shown[at];
+  // A burst of keystrokes delivered before React re-renders (key repeat, a pasted "\n") invokes
+  // this same useInput closure several times with no render in between, so reading `values` /
+  // `focus` state (this render's snapshot) would make every call in the burst see the *same*
+  // snapshot — e.g. two Enters on the last field would both read "not yet submitted" and both
+  // call onSubmit. `values`/`focus` are mirrored into refs that are mutated synchronously
+  // alongside every state update; the handler derives `shown`/`at`/`field` from the refs (so
+  // each keystroke sees the previous keystroke's effect), while the JSX below still renders
+  // from state, which catches up once React flushes.
+  const valuesRef = useRef(values);
+  const focusRef = useRef(focus);
+  // Guards a repeated Enter on an already-submitted last field from calling onSubmit twice.
+  // Cleared on the next value change, so fixing a validation error and resubmitting still
+  // works; a fresh mount of the form also starts unblocked.
+  const submittedRef = useRef(false);
 
-  const submit = () => {
-    const out = Object.fromEntries(shown.map((f) => [f.key, values[f.key] ?? '']));
-    const missing = shown.find((f) => !f.optional && !out[f.key].trim());
+  const shownOf = (vals: Record<string, string>) =>
+    fields.filter((f) => !f.visible || f.visible(vals));
+
+  const setFieldValue = (key: string, next: string) => {
+    valuesRef.current = { ...valuesRef.current, [key]: next };
+    submittedRef.current = false;
+    setValues(valuesRef.current);
+  };
+
+  const setFocusNow = (next: number) => {
+    focusRef.current = next;
+    setFocus(next);
+  };
+
+  const submit = (vals: Record<string, string>, shownFields: FormField[]) => {
+    const out = Object.fromEntries(shownFields.map((f) => [f.key, vals[f.key] ?? '']));
+    const missing = shownFields.find((f) => !f.optional && !out[f.key].trim());
     if (missing) return setProblem(`${missing.label} is required`);
     const msg = validate?.(out);
     if (msg) return setProblem(msg);
     setProblem(undefined);
+    submittedRef.current = true;
     onSubmit(out);
   };
 
+  const shown = shownOf(values);
+  const at = Math.min(focus, shown.length - 1);
+
   useInput((input, key) => {
-    if (!field) return;
+    const valuesNow = valuesRef.current;
+    const shownNow = shownOf(valuesNow);
+    const atNow = Math.min(focusRef.current, shownNow.length - 1);
+    const fieldNow = shownNow[atNow];
+    if (!fieldNow) return;
     if (key.escape) return onCancel();
-    // Functional updates, same reasoning as SelectList: don't derive the next focus from `at`
-    // (this render's snapshot), since a rapid burst of presses would otherwise collapse to one.
-    if (key.upArrow) return setFocus((f) => Math.max(0, Math.min(f, shown.length - 1) - 1));
-    if (key.downArrow) return setFocus((f) => Math.min(shown.length - 1, f + 1));
+    if (key.upArrow) return setFocusNow(Math.max(0, atNow - 1));
+    if (key.downArrow) return setFocusNow(Math.min(shownNow.length - 1, atNow + 1));
     if (key.return) {
-      if (at === shown.length - 1) submit();
-      else setFocus(at + 1);
+      if (atNow === shownNow.length - 1) {
+        if (!submittedRef.current) submit(valuesNow, shownNow);
+      } else setFocusNow(atNow + 1);
       return;
     }
     if (key.tab) {
-      const s = field.suggestions;
+      const s = fieldNow.suggestions;
       if (s && s.length > 0) {
-        const next = s[(s.indexOf(values[field.key]) + 1) % s.length];
-        setValues((v) => ({ ...v, [field.key]: next }));
-      } else setFocus(Math.min(shown.length - 1, at + 1));
+        const next = s[(s.indexOf(valuesNow[fieldNow.key]) + 1) % s.length];
+        setFieldValue(fieldNow.key, next);
+      } else setFocusNow(Math.min(shownNow.length - 1, atNow + 1));
       return;
     }
     if (key.backspace || key.delete) {
-      setValues((v) => ({ ...v, [field.key]: (v[field.key] ?? '').slice(0, -1) }));
+      setFieldValue(fieldNow.key, (valuesNow[fieldNow.key] ?? '').slice(0, -1));
       return;
     }
     if (input && !key.ctrl && !key.meta)
-      setValues((v) => ({ ...v, [field.key]: (v[field.key] ?? '') + input }));
+      setFieldValue(fieldNow.key, (valuesNow[fieldNow.key] ?? '') + input);
   });
 
   return (
