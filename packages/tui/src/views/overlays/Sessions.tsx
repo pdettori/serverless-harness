@@ -1,0 +1,131 @@
+import { Box, Text } from 'ink';
+import { useEffect, useMemo, useState } from 'react';
+import type { ControlPlaneApi, SessionSummary } from '../../api/types.js';
+import { describeError } from '../../core/messages.js';
+import type { TranscriptStore } from '../../core/transcripts.js';
+import { useTheme } from '../../theme/context.js';
+import { Confirm } from '../Confirm.js';
+import { Form } from '../Form.js';
+import { formatRelative } from '../format.js';
+import { SelectList } from '../SelectList.js';
+import { Spinner } from '../Spinner.js';
+
+export function sessionTitle(s: SessionSummary, transcripts?: TranscriptStore): string {
+  const local = transcripts?.load(s.sessionId)?.title;
+  if (local) return local;
+  const when = new Date(s.createdAt).toISOString().slice(0, 16).replace('T', ' ');
+  return `${when} · ${s.sessionId.slice(0, 8)}`;
+}
+
+interface Props {
+  cp: ControlPlaneApi;
+  transcripts?: TranscriptStore;
+  now: () => number;
+  currentSessionId?: string;
+  remove: (id: string) => Promise<unknown>;
+  onResume: (id: string) => void;
+  onNew: () => void;
+  onDeleted: (id: string) => void;
+  onCancel: () => void;
+}
+
+type Mode =
+  | { kind: 'list' }
+  | { kind: 'confirm'; id: string; title: string }
+  | { kind: 'rename'; id: string; title: string };
+
+export function SessionsOverlay({
+  cp,
+  transcripts,
+  now,
+  currentSessionId,
+  remove,
+  onResume,
+  onNew,
+  onDeleted,
+  onCancel,
+}: Props) {
+  const { tokens: t } = useTheme();
+  const [sessions, setSessions] = useState<SessionSummary[]>();
+  const [error, setError] = useState<string>();
+  const [mode, setMode] = useState<Mode>({ kind: 'list' });
+  const [reload, setReload] = useState(0);
+
+  useEffect(() => {
+    cp.listSessions({ limit: 200 })
+      .then((page) => setSessions(page.sessions))
+      .catch((err) => setError(describeError(err)));
+  }, [reload]);
+
+  const items = useMemo(
+    () =>
+      (sessions ?? []).map((s) => {
+        const title = sessionTitle(s, transcripts);
+        const detail = [
+          formatRelative(s.lastTurnAt ?? s.createdAt, now()),
+          `${s.turns} turn${s.turns === 1 ? '' : 's'}`,
+          transcripts?.has(s.sessionId) ? 'local history' : undefined,
+          s.sessionId === currentSessionId ? 'current' : undefined,
+        ]
+          .filter(Boolean)
+          .join(' · ');
+        return { key: s.sessionId, label: title, detail, value: { id: s.sessionId, title } };
+      }),
+    [sessions, reload],
+  );
+
+  if (error) return <Text color={t.error}>{error}</Text>;
+  if (!sessions) return <Spinner label="loading sessions" />;
+
+  if (mode.kind === 'confirm') {
+    return (
+      <Confirm
+        message={`Delete "${mode.title}"?`}
+        onYes={() => {
+          setMode({ kind: 'list' });
+          remove(mode.id)
+            .then(() => {
+              onDeleted(mode.id);
+              setReload((n) => n + 1);
+            })
+            .catch((err) => setError(describeError(err)));
+        }}
+        onNo={() => setMode({ kind: 'list' })}
+      />
+    );
+  }
+
+  if (mode.kind === 'rename') {
+    return (
+      <Form
+        title="Rename session"
+        fields={[{ key: 'title', label: 'Title', initial: mode.title }]}
+        onCancel={() => setMode({ kind: 'list' })}
+        onSubmit={(v) => {
+          transcripts?.rename(mode.id, v.title.trim());
+          setMode({ kind: 'list' });
+          setReload((n) => n + 1);
+        }}
+      />
+    );
+  }
+
+  return (
+    <Box flexDirection="column">
+      <SelectList
+        title="Sessions"
+        items={items}
+        filter="slash"
+        emptyText="no sessions yet — press n to start one"
+        onSelect={(v) => onResume(v.id)}
+        onCancel={onCancel}
+        keys={{
+          n: () => onNew(),
+          d: (v) => v && setMode({ kind: 'confirm', ...v }),
+          r: (v) => v && setMode({ kind: 'rename', ...v }),
+        }}
+      />
+      <Text color={t.muted}>enter resume · n new · r rename · d delete · / filter · esc close</Text>
+    </Box>
+  );
+}
